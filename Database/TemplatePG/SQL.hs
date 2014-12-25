@@ -21,6 +21,7 @@ module Database.TemplatePG.SQL ( queryTuples
 import Database.TemplatePG.Protocol
 import Database.TemplatePG.Types
 
+import Control.Applicative ((<$>))
 import Control.Exception
 import Control.Monad
 import Data.ByteString.Lazy.UTF8 hiding (length, decode, take, foldr)
@@ -31,7 +32,6 @@ import Language.Haskell.TH.Syntax (returnQ)
 import Network
 import System.Environment
 import System.IO
-import System.IO.Error (isDoesNotExistError)
 import Text.ParserCombinators.Parsec
 
 import Prelude hiding (exp)
@@ -42,15 +42,13 @@ import Prelude hiding (exp)
 thConnection :: IO Handle
 thConnection = do
   database <- getEnv "TPG_DB"
-  hostName <- catchUndef (getEnv "TPG_HOST") (\ _ -> return "localhost")
-  portNum  <- catchUndef (getEnv "TPG_PORT") (\ _ -> return "5432")
-  username <- catchUndef (getEnv "TPG_USER") (\ _ -> return "postgres")
-  password <- catchUndef (getEnv "TPG_PASS") (\ _ -> return "")
-  let portNum' = PortNumber $ fromIntegral $ ((read portNum)::Integer)
-  pgConnect hostName portNum' database username password
- where catchUndef = catchJust (\e -> if isDoesNotExistError e
-                                       then Just ()
-                                       else Nothing)
+  hostName <- fromMaybe "localhost" <$> lookupEnv "TPG_HOST"
+  socket   <- lookupEnv "TPG_SOCK"
+  portNum  <- maybe (5432 :: PortNumber) (fromIntegral . read) <$> lookupEnv "TPG_PORT"
+  username <- fromMaybe "postgres" <$> lookupEnv "TPG_USER"
+  password <- fromMaybe "" <$> lookupEnv "TPG_PASS"
+  let portId = maybe (PortNumber $ fromIntegral portNum) UnixSocket socket
+  pgConnect hostName portId database username password
 
 -- |This is where most of the magic happens.
 -- This doesn't result in a PostgreSQL prepared statement, it just creates one

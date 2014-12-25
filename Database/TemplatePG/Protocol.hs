@@ -14,6 +14,7 @@ module Database.TemplatePG.Protocol ( PGException(..)
 
 import Database.TemplatePG.Types
 
+import Control.Applicative ((<$>))
 import Control.Exception
 import Control.Monad (liftM, replicateM)
 import Data.Binary
@@ -24,12 +25,12 @@ import Data.ByteString.Internal (c2w, w2c)
 import qualified Data.ByteString.Lazy.Char8 as B8
 import Data.ByteString.Lazy as L hiding (take, repeat, map, any, zipWith)
 import Data.ByteString.Lazy.UTF8 hiding (length, decode, take)
+import Data.Maybe (isJust)
 import Data.Monoid
 import Data.Typeable
 import Network
 import System.Environment
 import System.IO hiding (putStr, putStrLn)
-import System.IO.Error (isDoesNotExistError)
 
 import Prelude hiding (putStr, putStrLn)
 
@@ -90,11 +91,8 @@ protocolVersion = 0x30000
 
 -- |Determine whether or not to print debug output based on the value of the
 -- TPG_DEBUG environment variable.
-debug :: IO (Bool)
-debug = catchJust (\e -> if isDoesNotExistError e
-                                       then Just ()
-                                       else Nothing)
-                  (getEnv "TPG_DEBUG" >> return True) (\ _ -> return False)
+debug :: IO Bool
+debug = isJust <$> lookupEnv "TPG_DEBUG"
 
 -- |Connect to a PostgreSQL server.
 pgConnect :: HostName  -- ^ the host to connect to

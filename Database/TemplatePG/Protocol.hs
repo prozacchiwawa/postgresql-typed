@@ -30,7 +30,7 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
 import Data.Monoid
 import Data.Typeable
-import Network
+import Network (HostName, PortID, connectTo)
 import System.Environment (lookupEnv)
 import System.IO hiding (putStr, putStrLn)
 
@@ -87,7 +87,7 @@ data PGMessage = Authentication
                -- |SimpleQuery takes a simple SQL string. Parameters ($1, $2,
                --  etc.) aren't allowed.
                | SimpleQuery String
-               | UnknownMessage
+               | UnknownMessage Word8
   deriving (Show)
 
 -- |PGException is thrown upon encountering an 'ErrorResponse' with severity of
@@ -146,6 +146,7 @@ pgString :: String -> B.Builder
 pgString s = B.fromLazyByteString (U.fromString s) <> B.singleton 0
 
 pgMessageID :: PGMessage -> Word8
+pgMessageID (UnknownMessage t) = t
 pgMessageID m = c2w $ case m of
                   Authentication           -> 'R'
                   (BackendKeyData _ _)     -> 'K'
@@ -165,7 +166,7 @@ pgMessageID m = c2w $ case m of
                   ReadyForQuery            -> 'Z'
                   (RowDescription _)       -> 'T'
                   (SimpleQuery _)          -> 'Q'
-                  UnknownMessage           -> error "Unknown message type"
+                  (UnknownMessage _)       -> error "Unknown message type"
 
 -- |All PostgreSQL messages have a common header: an identifying character and
 -- a 32-bit size field.
@@ -254,7 +255,7 @@ getMessageBody typ =
       'I' -> return EmptyQueryResponse
       'n' -> return NoData
       'N' -> return NoticeResponse -- Ignore the notice body for now.
-      _   -> return UnknownMessage
+      _   -> return $ UnknownMessage typ
 
 -- |Send a message to PostgreSQL (low-level).
 pgSend :: PGConnection -> PGMessage -> IO ()

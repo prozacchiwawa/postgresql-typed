@@ -72,7 +72,7 @@ import Database.TemplatePG.SQL
 -- functions).
 --
 -- It's a Template Haskell function, so you need to splice it into your program
--- with @$()@. It requires a 'Handle' to a PostgreSQL server, but can't be
+-- with @$()@. It requires a 'PGConnection' to a PostgreSQL server, but can't be
 -- given one at compile-time, so you need to pass it after the splice:
 --
 -- @h <- pgConnect ...

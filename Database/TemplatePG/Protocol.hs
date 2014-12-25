@@ -4,7 +4,8 @@
 --  PostgreSQL server over TCP/IP. You probably don't want to use this module
 --  directly.
 
-module Database.TemplatePG.Protocol ( PGException(..)
+module Database.TemplatePG.Protocol ( PGConnection
+                                    , PGException(..)
                                     , pgConnect
                                     , pgDisconnect
                                     , describeStatement
@@ -16,30 +17,38 @@ import Database.TemplatePG.Types
 
 import Control.Applicative ((<$>))
 import Control.Exception
-import Control.Monad (liftM, replicateM, when)
+import Control.Monad (liftM, liftM2, replicateM, when)
 import Data.Binary
 import qualified Data.Binary.Builder as B
 import qualified Data.Binary.Get as G
 import qualified Data.Binary.Put as P
 import Data.ByteString.Internal (c2w, w2c)
 import qualified Data.ByteString.Lazy.Char8 as B8
-import Data.ByteString.Lazy as L hiding (take, repeat, map, any, zipWith)
-import Data.ByteString.Lazy.UTF8 hiding (length, decode, take)
+import qualified Data.ByteString.Lazy as L
+import qualified Data.ByteString.Lazy.UTF8 as U
+import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
 import Data.Monoid
 import Data.Typeable
 import Network
-import System.Environment
+import System.Environment (lookupEnv)
 import System.IO hiding (putStr, putStrLn)
-import System.IO.Unsafe (unsafeDupablePerformIO)
 
 import Prelude hiding (putStr, putStrLn)
+
+data PGConnection = PGConnection
+  { pgHandle :: Handle
+  , pgDebug :: !Bool
+  , pgPid :: !Word32
+  , pgKey :: !Word32
+  , pgParameters :: Map.Map L.ByteString L.ByteString
+  }
 
 -- |PGMessage represents a PostgreSQL protocol message that we'll either send
 --  or receive. See
 --  <http://www.postgresql.org/docs/current/interactive/protocol-message-formats.html>.
 data PGMessage = Authentication
-               | BackendKeyData
+               | BackendKeyData Word32 Word32
                -- |CommandComplete is bare for now, although it could be made
                --  to contain the number of rows affected by statements in a
                --  later version.
@@ -48,7 +57,7 @@ data PGMessage = Authentication
                --  (or just Nothing for null values, to distinguish them from
                --  emtpy strings). The ByteStrings can then be converted to
                --  the appropriate type by 'pgStringToType'.
-               | DataRow [Maybe ByteString]
+               | DataRow [Maybe L.ByteString]
                -- |Describe a SQL query/statement. The SQL string can contain
                --  parameters ($1, $2, etc.).
                | Describe String
@@ -66,7 +75,7 @@ data PGMessage = Authentication
                --  PostgreSQL does not give us nullability information for the
                --  parameter.
                | ParameterDescription [PGType]
-               | ParameterStatus
+               | ParameterStatus L.ByteString L.ByteString
                -- |Parse SQL Destination (prepared statement)
                | Parse String String
                | ParseComplete
@@ -79,6 +88,7 @@ data PGMessage = Authentication
                --  etc.) aren't allowed.
                | SimpleQuery String
                | UnknownMessage
+  deriving (Show)
 
 -- |PGException is thrown upon encountering an 'ErrorResponse' with severity of
 --  ERROR, FATAL, or PANIC. It holds the SQLSTATE and message of the error.
@@ -90,24 +100,19 @@ instance Exception PGException
 protocolVersion :: Word32
 protocolVersion = 0x30000
 
--- |Determine whether or not to print debug output based on the value of the
--- TPG_DEBUG environment variable.
-debug :: Bool
-debug = unsafeDupablePerformIO $ isJust <$> lookupEnv "TPG_DEBUG"
-
 -- |Connect to a PostgreSQL server.
 pgConnect :: HostName  -- ^ the host to connect to
           -> PortID    -- ^ the port to connect on
           -> String    -- ^ the database to connect to
           -> String    -- ^ the username to connect as
           -> String    -- ^ the password to connect with
-          -> IO Handle -- ^ a handle to communicate with the PostgreSQL server on
-pgConnect host port db user _ = do
+          -> IO PGConnection -- ^ a handle to communicate with the PostgreSQL server on
+pgConnect host port db user pass = do
+  debug <- isJust <$> lookupEnv "TPG_DEBUG"
   h <- connectTo host port
-  hPut h $ B.toLazyByteString $ pgMessage handshake
+  L.hPut h $ B.toLazyByteString $ pgMessage handshake
   hFlush h
-  _ <- pgWaitFor h [pgMessageID ReadyForQuery]
-  return h
+  conn (PGConnection h debug 0 0 Map.empty)
  -- These are here since the handshake message differs a bit from other
  -- messages (it's missing the inital identifying character). I could probably
  -- get rid of it with some refactoring.
@@ -119,24 +124,31 @@ pgConnect host port db user _ = do
        pgMessage :: B.Builder -> B.Builder
        pgMessage msg = B.append len msg
          where len = B.putWord32be $ fromIntegral $ (L.length $ B.toLazyByteString msg) + 4
+       conn c = do
+         m <- pgReceive c
+         case m of
+           ReadyForQuery -> return c
+           BackendKeyData p k -> conn c{ pgPid = p, pgKey = k }
+           ParameterStatus k v -> conn c{ pgParameters = Map.insert k v $ pgParameters c }
+           _ -> throwIO $ PGException "connect" $ "unhandled message: " ++ show m
 
 -- |Disconnect from a PostgreSQL server. Note that this currently doesn't send
 -- a close message.
-pgDisconnect :: Handle -- ^ a handle from 'pgConnect'
+pgDisconnect :: PGConnection -- ^ a handle from 'pgConnect'
              -> IO ()
-pgDisconnect = hClose
+pgDisconnect PGConnection{ pgHandle = h } = hClose h
 
 -- |Convert a string to a NULL-terminated UTF-8 string. The PostgreSQL
 --  protocol transmits most strings in this format.
 -- I haven't yet found a function for doing this without requiring manual
 -- memory management.
 pgString :: String -> B.Builder
-pgString s = B.fromLazyByteString (fromString s) <> B.singleton 0
+pgString s = B.fromLazyByteString (U.fromString s) <> B.singleton 0
 
 pgMessageID :: PGMessage -> Word8
 pgMessageID m = c2w $ case m of
                   Authentication           -> 'R'
-                  BackendKeyData           -> 'K'
+                  (BackendKeyData _ _)     -> 'K'
                   CommandComplete          -> 'C'
                   (DataRow _)              -> 'D'
                   (Describe _)             -> 'D'
@@ -147,7 +159,7 @@ pgMessageID m = c2w $ case m of
                   NoData                   -> 'n'
                   NoticeResponse           -> 'N'
                   (ParameterDescription _) -> 't'
-                  ParameterStatus          -> 'S'
+                  (ParameterStatus _ _)    -> 'S'
                   (Parse _ _)              -> 'P'
                   ParseComplete            -> '1'
                   ReadyForQuery            -> 'Z'
@@ -205,7 +217,7 @@ getMessageBody typ =
       'T' -> do numFields <- fromIntegral `liftM` G.getWord16be
                 ds <- replicateM numFields readField
                 return $ RowDescription ds
-              where readField = do name <- toString `liftM` G.getLazyByteStringNul
+              where readField = do name <- U.toString `liftM` G.getLazyByteStringNul
                                    oid <- fromIntegral `liftM` G.getWord32be -- table OID
                                    col <- fromIntegral `liftM` G.getWord16be -- column number
                                    typ' <- fromIntegral `liftM` G.getWord32be -- type
@@ -216,7 +228,7 @@ getMessageBody typ =
       'Z' -> G.getWord8 >> return ReadyForQuery
       '1' -> return ParseComplete
       'C' -> return CommandComplete
-      'S' -> return ParameterStatus
+      'S' -> liftM2 ParameterStatus G.getLazyByteStringNul G.getLazyByteStringNul
       'D' -> do numFields <- fromIntegral `liftM` G.getWord16be
                 ds <- replicateM numFields readField
                 return $ DataRow ds
@@ -225,7 +237,7 @@ getMessageBody typ =
                                           0xFFFFFFFF -> return Nothing
                                           _          -> Just `liftM` G.getLazyByteString len
                                    return s
-      'K' -> return BackendKeyData
+      'K' -> liftM2 BackendKeyData G.getWord32be G.getWord32be
       'E' -> do fs <- readFields
                 case (lookup (c2w 'S') fs,
                       lookup (c2w 'C') fs,
@@ -238,43 +250,42 @@ getMessageBody typ =
                                       0 -> return []
                                       _ -> do s <- G.getLazyByteStringNul
                                               f' <- readFields
-                                              return ((f,toString s):f')
+                                              return ((f,U.toString s):f')
       'I' -> return EmptyQueryResponse
       'n' -> return NoData
       'N' -> return NoticeResponse -- Ignore the notice body for now.
       _   -> return UnknownMessage
 
 -- |Send a message to PostgreSQL (low-level).
-pgSend :: Handle -> PGMessage -> IO ()
-pgSend h msg = do
-  when debug $ B8.putStrLn (encode msg)
-  hPut h (encode msg) >> hFlush h
+pgSend :: PGConnection -> PGMessage -> IO ()
+pgSend PGConnection{ pgHandle = h, pgDebug = d } msg = do
+  when d $ B8.putStrLn (encode msg)
+  L.hPut h (encode msg) >> hFlush h
 
 -- |Receive the next message from PostgreSQL (low-level). Note that this will
 -- block until it gets a message.
-pgReceive :: Handle -> IO PGMessage
-pgReceive h = do
-  (typ, len) <- G.runGet getMessageHeader `liftM` hGet h 5
-  body <- hGet h (len - 4)
-  when debug $ do
-            putStr (P.runPut (do P.putWord8 typ
-                                 P.putWord32be (fromIntegral len)))
+pgReceive :: PGConnection -> IO PGMessage
+pgReceive PGConnection{ pgHandle = h, pgDebug = d } = do
+  (typ, len) <- G.runGet getMessageHeader `liftM` L.hGet h 5
+  body <- L.hGet h (len - 4)
+  when d $ do
+            L.putStr (P.runPut (P.putWord8 typ >> P.putWord32be (fromIntegral len)))
             B8.putStrLn body
             hFlush stdout
-  let msg = decode $ cons typ (append (B.toLazyByteString $ B.putWord32be $ fromIntegral len) body)
+  let msg = decode $ L.cons typ (L.append (B.toLazyByteString $ B.putWord32be $ fromIntegral len) body)
   case msg of
     (ErrorResponse _ c m) -> throwIO (PGException c m)
     _                     -> return msg
 
 -- |Wait for a message of a given type.
-pgWaitFor :: Handle
+pgWaitFor :: PGConnection
           -> [Word8] -- ^ A list of message identifiers, the first of which
                      -- found while reading messages from PostgreSQL will be
                      -- returned.
           -> IO PGMessage
 pgWaitFor h ids = do
   response <- pgReceive h
-  if any (pgMessageID response ==) ids
+  if pgMessageID response `elem` ids
     then return response
     else pgWaitFor h ids
 
@@ -282,7 +293,7 @@ pgWaitFor h ids = do
 -- more parameter descriptions (a PostgreSQL type) and zero or more result
 -- field descriptions (for queries) (consist of the name of the field, the
 -- type of the field, and a nullability indicator).
-describeStatement :: Handle
+describeStatement :: PGConnection
                   -> String -- ^ SQL string
                   -> IO ([PGType], [(String, PGType, Bool)]) -- ^ a list of parameter types, and a list of result field names, types, and nullability indicators.
 describeStatement h sql = do
@@ -310,7 +321,7 @@ describeStatement h sql = do
        -- table, we can check there.
        else do r <- executeSimpleQuery ("SELECT attnotnull FROM pg_attribute WHERE attrelid = " ++ show oid ++ " AND attnum = " ++ show col) h
                case r of
-                 [[Just s]] -> return $ case toString s of
+                 [[Just s]] -> return $ case U.toString s of
                                           "t" -> False
                                           "f" -> True
                                           _   -> error "Unexpected result from PostgreSQL"
@@ -321,8 +332,8 @@ describeStatement h sql = do
 -- cannot bind parameters. Note that queries can return 0 results (an empty
 -- list).
 executeSimpleQuery :: String                    -- ^ SQL string
-                   -> Handle
-                   -> IO ([[Maybe ByteString]]) -- ^ A list of result rows,
+                   -> PGConnection
+                   -> IO ([[Maybe L.ByteString]]) -- ^ A list of result rows,
                                                 -- which themselves are a list
                                                 -- of fields.
 executeSimpleQuery sql h = do
@@ -343,7 +354,7 @@ executeSimpleQuery sql h = do
 -- |While not strictly necessary, this can make code a little bit clearer. It
 -- executes a 'SimpleQuery' but doesn't look for results.
 executeSimpleStatement :: String -- ^ SQL string
-                       -> Handle
+                       -> PGConnection
                        -> IO ()
 executeSimpleStatement sql h = do
   pgSend h $ SimpleQuery sql

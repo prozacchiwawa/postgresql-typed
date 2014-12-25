@@ -39,7 +39,7 @@ import Prelude hiding (exp)
 -- |Grab a PostgreSQL connection for compile time. We do so through the
 -- environment variables: @TPG_DB@, @TPG_HOST@, @TPG_PORT@, @TPG_USER@, and
 -- @TPG_PASS@. Only TPG_DB is required.
-thConnection :: IO Handle
+thConnection :: IO PGConnection
 thConnection = do
   database <- getEnv "TPG_DB"
   hostName <- fromMaybe "localhost" <$> lookupEnv "TPG_HOST"
@@ -85,7 +85,7 @@ weaveString (x:[]) (y:[]) = [| x ++ $(returnQ y) |]
 weaveString (x:xs) (y:ys) = [| x ++ $(returnQ y) ++ $(weaveString xs ys) |]
 weaveString _      _      = error "Weave mismatch (possible parse problem)"
 
--- |@queryTuples :: String -> (Handle -> IO [(column1, column2, ...)])@
+-- |@queryTuples :: String -> (PGConnection -> IO [(column1, column2, ...)])@
 -- 
 -- Query a PostgreSQL server and return the results as a list of tuples.
 -- 
@@ -100,7 +100,7 @@ queryTuples sql = do
   (sql', types) <- prepareSQL sql
   [| liftM (map $(convertRow types)) . executeSimpleQuery $(returnQ sql') |]
 
--- |@queryTuple :: String -> (Handle -> IO (Maybe (column1, column2, ...)))@
+-- |@queryTuple :: String -> (PGConnection -> IO (Maybe (column1, column2, ...)))@
 -- 
 -- Convenience function to query a PostgreSQL server and return the first
 -- result as a tuple. If the query produces no results, return 'Nothing'.
@@ -120,7 +120,7 @@ maybeHead :: [a] -> Maybe a
 maybeHead []    = Nothing
 maybeHead (x:_) = Just x
 
--- |@execute :: String -> (Handle -> IO ())@
+-- |@execute :: String -> (PGConnection -> IO ())@
 -- 
 -- Convenience function to execute a statement on the PostgreSQL server.
 -- 
@@ -141,7 +141,7 @@ execute sql = do
 -- transaction. Unfortunately you're restricted to using this in the 'IO'
 -- Monad for now due to the use of 'onException'. I'm debating adding a
 -- 'MonadPeelIO' version.
-withTransaction :: Handle -> IO a -> IO a
+withTransaction :: PGConnection -> IO a -> IO a
 withTransaction h a =
   onException (do executeSimpleStatement "BEGIN" h
                   c <- a
@@ -150,7 +150,7 @@ withTransaction h a =
               (executeSimpleStatement "ROLLBACK" h)
 
 -- |Roll back a transaction.
-rollback :: Handle -> IO ()
+rollback :: PGConnection -> IO ()
 rollback = executeSimpleStatement "ROLLBACK"
 
 -- |Ignore duplicate key errors. This is also limited to the 'IO' Monad.

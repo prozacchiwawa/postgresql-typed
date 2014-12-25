@@ -16,7 +16,7 @@ import Database.TemplatePG.Types
 
 import Control.Applicative ((<$>))
 import Control.Exception
-import Control.Monad (liftM, replicateM)
+import Control.Monad (liftM, replicateM, when)
 import Data.Binary
 import qualified Data.Binary.Builder as B
 import qualified Data.Binary.Get as G
@@ -31,6 +31,7 @@ import Data.Typeable
 import Network
 import System.Environment
 import System.IO hiding (putStr, putStrLn)
+import System.IO.Unsafe (unsafeDupablePerformIO)
 
 import Prelude hiding (putStr, putStrLn)
 
@@ -91,8 +92,8 @@ protocolVersion = 0x30000
 
 -- |Determine whether or not to print debug output based on the value of the
 -- TPG_DEBUG environment variable.
-debug :: IO Bool
-debug = isJust <$> lookupEnv "TPG_DEBUG"
+debug :: Bool
+debug = unsafeDupablePerformIO $ isJust <$> lookupEnv "TPG_DEBUG"
 
 -- |Connect to a PostgreSQL server.
 pgConnect :: HostName  -- ^ the host to connect to
@@ -246,23 +247,20 @@ getMessageBody typ =
 -- |Send a message to PostgreSQL (low-level).
 pgSend :: Handle -> PGMessage -> IO ()
 pgSend h msg = do
-  d <- debug
-  if d then B8.putStrLn (encode msg) else return ()
+  when debug $ B8.putStrLn (encode msg)
   hPut h (encode msg) >> hFlush h
 
 -- |Receive the next message from PostgreSQL (low-level). Note that this will
 -- block until it gets a message.
 pgReceive :: Handle -> IO PGMessage
 pgReceive h = do
-  d <- debug
   (typ, len) <- G.runGet getMessageHeader `liftM` hGet h 5
   body <- hGet h (len - 4)
-  if d
-    then do putStr (P.runPut (do P.putWord8 typ
+  when debug $ do
+            putStr (P.runPut (do P.putWord8 typ
                                  P.putWord32be (fromIntegral len)))
             B8.putStrLn body
             hFlush stdout
-    else return ()
   let msg = decode $ cons typ (append (B.toLazyByteString $ B.putWord32be $ fromIntegral len) body)
   case msg of
     (ErrorResponse _ c m) -> throwIO (PGException c m)

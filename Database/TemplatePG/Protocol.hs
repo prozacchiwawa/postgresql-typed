@@ -131,7 +131,7 @@ pgDisconnect = hClose
 -- I haven't yet found a function for doing this without requiring manual
 -- memory management.
 pgString :: String -> B.Builder
-pgString = B.fromLazyByteString . flip snoc 0 . fromString
+pgString s = B.fromLazyByteString (fromString s) <> B.singleton 0
 
 pgMessageID :: PGMessage -> Word8
 pgMessageID m = c2w $ case m of

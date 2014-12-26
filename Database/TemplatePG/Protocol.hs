@@ -158,6 +158,11 @@ pgConnect host port db user pass = do
                      [ B.putWord32be protocolVersion
                      , pgString "user", pgString user
                      , pgString "database", pgString db
+                     , pgString "client_encoding", pgString "UTF8"
+                     , pgString "standard_conforming_strings", pgString "on"
+                     , pgString "bytea_output", pgString "hex"
+                     , pgString "DateStyle", pgString "ISO, YMD"
+                     , pgString "IntervalStyle", pgString "postgres"
                      , B.singleton 0 ]
        pgMessage :: B.Builder -> B.Builder
        pgMessage msg = B.append len msg

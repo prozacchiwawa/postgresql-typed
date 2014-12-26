@@ -26,7 +26,6 @@ import Control.Applicative ((<$>), (<$))
 import Control.Concurrent.MVar (MVar, newMVar, modifyMVar, modifyMVar_)
 import Control.Exception (onException, catchJust)
 import Control.Monad (zipWithM, liftM, (>=>))
-import Data.ByteString.Lazy.UTF8 hiding (length, decode, take, foldr)
 import Data.Maybe (fromMaybe, fromJust)
 import Language.Haskell.Meta.Parse (parseExp)
 import Language.Haskell.TH
@@ -72,7 +71,7 @@ prepareSQL sql = do
   return (s, fTypes)
  where holdPlaces ss es = concat $ weave ss (take (length es) placeholders)
        placeholders = map (('$' :) . show) ([1..]::[Integer])
-       stringify typ s = [| $(pgTypeToString typ) $(returnQ $ parseExp' s) |]
+       stringify PGType{ pgTypeShow = shw } s = [| $(unType <$> shw) $(returnQ $ parseExp' s) |]
        parseExp' e = (either (\ _ -> error ("Failed to parse expression: " ++ e)) id) $ parseExp e
        (sqlStrings, expStrings) = parseSql sql
 
@@ -86,9 +85,9 @@ weave (x:xs) (y:ys) = x:y:(weave xs ys)
 weaveString :: [String] -- ^ SQL fragments
             -> [Exp]    -- ^ Haskell expressions
             -> Q Exp
+weaveString []     []     = [| "" |]
 weaveString [x]    []     = [| x |]
 weaveString []     [y]    = returnQ y
-weaveString (x:[]) (y:[]) = [| x ++ $(returnQ y) |]
 weaveString (x:xs) (y:ys) = [| x ++ $(returnQ y) ++ $(weaveString xs ys) |]
 weaveString _      _      = error "Weave mismatch (possible parse problem)"
 
@@ -191,8 +190,8 @@ convertColumn name ((_, typ, nullable), i) = [| $(pgStringToType' typ nullable) 
 pgStringToType' :: PGType
                 -> Bool  -- ^ nullability indicator
                 -> Q Exp
-pgStringToType' t False = [| ($(pgStringToType t)) . toString . fromJust |]
-pgStringToType' t True  = [| liftM (($(pgStringToType t)) . toString) |]
+pgStringToType' PGType{ pgTypeDecode = rd } False = [| ($(unType <$> rd)) . fromJust |]
+pgStringToType' PGType{ pgTypeDecode = rd } True  = [| liftM ($(unType <$> rd)) |]
 
 -- SQL Parser --
 

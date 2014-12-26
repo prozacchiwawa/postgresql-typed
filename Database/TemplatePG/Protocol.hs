@@ -47,7 +47,15 @@ data PGConnection = PGConnection
   , pgPid :: !Word32
   , pgKey :: !Word32
   , pgParameters :: Map.Map L.ByteString L.ByteString
+  , pgTypes :: PGTypeMap
   }
+
+data ColDescription = ColDescription
+  { colName :: String
+  , colTable :: !OID
+  , colNumber :: !Int
+  , colType :: !OID
+  } deriving (Show)
 
 -- |PGMessage represents a PostgreSQL protocol message that we'll either send
 --  or receive. See
@@ -81,7 +89,7 @@ data PGMessage = AuthenticationOk
                --  query/statement parameter ($1, $2, etc.). Unfortunately,
                --  PostgreSQL does not give us nullability information for the
                --  parameter.
-               | ParameterDescription [PGType]
+               | ParameterDescription [OID]
                | ParameterStatus L.ByteString L.ByteString
                -- |Parse SQL Destination (prepared statement)
                | Parse String String
@@ -91,7 +99,7 @@ data PGMessage = AuthenticationOk
                -- |A RowDescription contains the name, type, table OID, and
                --  column number of the resulting columns(s) of a query. The
                --  column number is useful for inferring nullability.
-               | RowDescription [(String, PGType, Integer, Int)]
+               | RowDescription [ColDescription]
                -- |SimpleQuery takes a simple SQL string. Parameters ($1, $2,
                --  etc.) aren't allowed.
                | SimpleQuery String
@@ -142,7 +150,7 @@ pgConnect host port db user pass = do
   h <- connectTo host port
   L.hPut h $ B.toLazyByteString $ pgMessage handshake
   hFlush h
-  conn (PGConnection h debug 0 0 Map.empty)
+  conn (PGConnection h debug 0 0 Map.empty defaultTypeMap)
  -- These are here since the handshake message differs a bit from other
  -- messages (it's missing the inital identifying character). I could probably
  -- get rid of it with some refactoring.
@@ -268,19 +276,23 @@ getMessageBody typ =
       't' -> do numParams <- fromIntegral `liftM` G.getWord16be
                 ps <- replicateM numParams readParam
                 return $ ParameterDescription ps
-              where readParam = do typ' <- fromIntegral `liftM` G.getWord32be
-                                   return $ pgTypeFromOID typ'
+              where readParam = G.getWord32be
       'T' -> do numFields <- fromIntegral `liftM` G.getWord16be
                 ds <- replicateM numFields readField
                 return $ RowDescription ds
-              where readField = do name <- U.toString `liftM` G.getLazyByteStringNul
-                                   oid <- fromIntegral `liftM` G.getWord32be -- table OID
-                                   col <- fromIntegral `liftM` G.getWord16be -- column number
-                                   typ' <- fromIntegral `liftM` G.getWord32be -- type
+              where readField = do name <- G.getLazyByteStringNul
+                                   oid <- G.getWord32be -- table OID
+                                   col <- G.getWord16be -- column number
+                                   typ' <- G.getWord32be -- type
                                    _ <- G.getWord16be -- type size
                                    _ <- G.getWord32be -- type modifier
                                    _ <- G.getWord16be -- format code
-                                   return (name, pgTypeFromOID typ', oid, col)
+                                   return $ ColDescription
+                                    { colName = U.toString name
+                                    , colTable = oid
+                                    , colNumber = fromIntegral col
+                                    , colType = typ'
+                                    }
       'Z' -> G.getWord8 >> return ReadyForQuery
       '1' -> return ParseComplete
       'C' -> return CommandComplete
@@ -334,6 +346,15 @@ pgWaitFor h ids = do
     then return response
     else pgWaitFor h ids
 
+getPGType :: PGConnection -> OID -> IO PGType
+getPGType c@PGConnection{ pgTypes = types } oid =
+  maybe notype return $ Map.lookup oid types where
+  notype = do
+    r <- executeSimpleQuery ("SELECT typname FROM pg_catalog.pg_type WHERE oid = " ++ show oid) c
+    case r of
+      [[Just s]] -> fail $ "Unsupported PostgreSQL type " ++ show oid ++ ": " ++ U.toString s
+      _ -> fail $ "Unknown PostgreSQL type: " ++ show oid
+
 -- |Describe a SQL statement/query. A statement description consists of 0 or
 -- more parameter descriptions (a PostgreSQL type) and zero or more result
 -- field descriptions (for queries) (consist of the name of the field, the
@@ -346,16 +367,18 @@ describeStatement h sql = do
   pgSend h $ Describe ""
   pgSend h $ Flush
   _ <- pgWaitFor h [pgMessageID ParseComplete]
-  (ParameterDescription ps) <- pgReceive h
-  m <- pgWaitFor h $ map c2w ['n', 'T']
-  case m of
-    NoData             -> return (ps, [])
-    (RowDescription r) -> do
-      r' <- zipWith (\ (name, typ, _, _) n -> (name, typ, n)) r `liftM` mapM nullable r
-      return (ps, r')
-    _                  -> error ""
+  ParameterDescription ps <- pgReceive h
+  m <- pgReceive h
+  liftM2 (,) (mapM (getPGType h) ps) $ case m of
+    NoData -> return []
+    RowDescription r -> mapM desc r
+    _ -> fail $ "unexpected describe response: " ++ show m
  where
-   nullable (_, _, oid, col) =
+   desc (ColDescription name tab col typ) = do
+     t <- getPGType h typ
+     n <- nullable tab col
+     return (name, t, n)
+   nullable oid col =
      -- We don't get nullability indication from PostgreSQL, at least not
      -- directly.
      if oid == 0
@@ -364,7 +387,7 @@ describeStatement h sql = do
        then return True
        -- In cases where the resulting field is tracable to the column of a
        -- table, we can check there.
-       else do r <- executeSimpleQuery ("SELECT attnotnull FROM pg_attribute WHERE attrelid = " ++ show oid ++ " AND attnum = " ++ show col) h
+       else do r <- executeSimpleQuery ("SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = " ++ show oid ++ " AND attnum = " ++ show col) h
                case r of
                  [[Just s]] -> return $ case U.toString s of
                                           "t" -> False

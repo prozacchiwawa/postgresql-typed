@@ -15,32 +15,31 @@ module Database.TemplatePG.SQL ( queryTuples
                                , insertIgnore
                                , withTransaction
                                , rollback
-                               , thConnection
+                               , withTHConnection
                                ) where
 
 import Database.TemplatePG.Protocol
 import Database.TemplatePG.Types
 
 import Control.Applicative ((<$>))
-import Control.Exception
-import Control.Monad
+import Control.Concurrent.MVar (MVar, newMVar, modifyMVar)
+import Control.Exception (onException, catchJust)
+import Control.Monad (zipWithM, liftM)
 import Data.ByteString.Lazy.UTF8 hiding (length, decode, take, foldr)
-import Data.Maybe
-import Language.Haskell.Meta.Parse
+import Data.Maybe (fromMaybe, fromJust)
+import Language.Haskell.Meta.Parse (parseExp)
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax (returnQ)
-import Network
-import System.Environment
-import System.IO
-import Text.ParserCombinators.Parsec
-
-import Prelude hiding (exp)
+import Network (PortID(UnixSocket, PortNumber), PortNumber)
+import System.Environment (getEnv, lookupEnv)
+import System.IO.Unsafe (unsafePerformIO)
+import qualified Text.ParserCombinators.Parsec as P
 
 -- |Grab a PostgreSQL connection for compile time. We do so through the
 -- environment variables: @TPG_DB@, @TPG_HOST@, @TPG_PORT@, @TPG_USER@, and
 -- @TPG_PASS@. Only TPG_DB is required.
-thConnection :: IO PGConnection
-thConnection = do
+thConnection :: MVar (IO PGConnection)
+thConnection = unsafePerformIO $ newMVar $ do
   database <- getEnv "TPG_DB"
   hostName <- fromMaybe "localhost" <$> lookupEnv "TPG_HOST"
   socket   <- lookupEnv "TPG_SOCK"
@@ -50,6 +49,9 @@ thConnection = do
   let portId = maybe (PortNumber $ fromIntegral portNum) UnixSocket socket
   pgConnect hostName portId database username password
 
+withTHConnection :: (PGConnection -> IO a) -> IO a
+withTHConnection f = modifyMVar thConnection $ (=<<) $ \c -> (,) (return c) <$> f c
+
 -- |This is where most of the magic happens.
 -- This doesn't result in a PostgreSQL prepared statement, it just creates one
 -- to do type inference.
@@ -57,17 +59,15 @@ thConnection = do
 prepareSQL :: String -- ^ a SQL string, with
            -> Q (Exp, [(String, PGType, Bool)]) -- ^ a prepared SQL string and result descriptions
 prepareSQL sql = do
-  -- TODO: It's a bit silly to establish a connection for every query to be
-  -- analyzed.
-  h <- runIO thConnection
-  let (sqlStrings, expStrings) = parseSql sql
-  (pTypes, fTypes) <- runIO $ describeStatement h $ holdPlaces sqlStrings expStrings
+  (pTypes, fTypes) <- runIO $ withTHConnection $ \c ->
+    describeStatement c (holdPlaces sqlStrings expStrings)
   s <- weaveString sqlStrings =<< zipWithM stringify pTypes expStrings
   return (s, fTypes)
  where holdPlaces ss es = concat $ weave ss (take (length es) placeholders)
        placeholders = map (('$' :) . show) ([1..]::[Integer])
        stringify typ s = [| $(pgTypeToString typ) $(returnQ $ parseExp' s) |]
        parseExp' e = (either (\ _ -> error ("Failed to parse expression: " ++ e)) id) $ parseExp e
+       (sqlStrings, expStrings) = parseSql sql
 
 -- |"weave" 2 lists of equal length into a single list.
 weave :: [a] -> [a] -> [a]
@@ -194,20 +194,20 @@ pgStringToType' t True  = [| liftM (($(pgStringToType t)) . toString) |]
 -- becomes: @(["SELECT * FROM table WHERE id = ", " AND age > "],
 --            ["someID", "baseAge * 1.5"])@
 parseSql :: String -> ([String], [String])
-parseSql sql = case (parse sqlStatement "" sql) of
+parseSql sql = case (P.parse sqlStatement "" sql) of
                  Left err -> error (show err)
                  Right ss -> every2nd ss
 
 every2nd :: [a] -> ([a], [a])
 every2nd = foldr (\a ~(x,y) -> (a:y,x)) ([],[])
 
-sqlStatement :: Parser [String]
-sqlStatement = many1 $ choice [sqlText, sqlParameter]
+sqlStatement :: P.Parser [String]
+sqlStatement = P.many1 $ P.choice [sqlText, sqlParameter]
 
-sqlText :: Parser String
-sqlText = many1 (noneOf "{")
+sqlText :: P.Parser String
+sqlText = P.many1 (P.noneOf "{")
 
 -- |Parameters are enclosed in @{}@ and can be any Haskell expression supported
 -- by haskell-src-meta.
-sqlParameter :: Parser String
-sqlParameter = between (char '{') (char '}') $ many1 (noneOf "}")
+sqlParameter :: P.Parser String
+sqlParameter = P.between (P.char '{') (P.char '}') $ P.many1 (P.noneOf "}")

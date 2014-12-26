@@ -107,11 +107,13 @@ displayMessage :: MessageFields -> String
 displayMessage m = "PG" ++ f 'S' ++ " [" ++ f 'C' ++ "]: " ++ f 'M' ++ '\n' : f 'D'
   where f c = maybe "" U.toString $ Map.lookup (c2w c) m
 
+-- |Message SQLState code.
+--  See <http://www.postgresql.org/docs/current/static/errcodes-appendix.html>.
 messageCode :: MessageFields -> String
 messageCode = maybe "" LC.unpack . Map.lookup (c2w 'C')
 
 -- |PGException is thrown upon encountering an 'ErrorResponse' with severity of
---  ERROR, FATAL, or PANIC. It holds the SQLSTATE and message of the error.
+--  ERROR, FATAL, or PANIC. It holds the message of the error.
 data PGException = PGException MessageFields
   deriving (Typeable)
 

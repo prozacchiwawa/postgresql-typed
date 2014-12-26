@@ -16,15 +16,16 @@ module Database.TemplatePG.SQL ( queryTuples
                                , withTransaction
                                , rollback
                                , withTHConnection
+                               , useTHConnection
                                ) where
 
 import Database.TemplatePG.Protocol
 import Database.TemplatePG.Types
 
-import Control.Applicative ((<$>))
-import Control.Concurrent.MVar (MVar, newMVar, modifyMVar)
+import Control.Applicative ((<$>), (<$))
+import Control.Concurrent.MVar (MVar, newMVar, modifyMVar, modifyMVar_)
 import Control.Exception (onException, catchJust)
-import Control.Monad (zipWithM, liftM)
+import Control.Monad (zipWithM, liftM, (>=>))
 import Data.ByteString.Lazy.UTF8 hiding (length, decode, take, foldr)
 import Data.Maybe (fromMaybe, fromJust)
 import Language.Haskell.Meta.Parse (parseExp)
@@ -38,8 +39,8 @@ import qualified Text.ParserCombinators.Parsec as P
 -- |Grab a PostgreSQL connection for compile time. We do so through the
 -- environment variables: @TPG_DB@, @TPG_HOST@, @TPG_PORT@, @TPG_USER@, and
 -- @TPG_PASS@. Only TPG_DB is required.
-thConnection :: MVar (IO PGConnection)
-thConnection = unsafePerformIO $ newMVar $ do
+thConnection :: MVar (Either (IO PGConnection) PGConnection)
+thConnection = unsafePerformIO $ newMVar $ Left $ do
   database <- getEnv "TPG_DB"
   hostName <- fromMaybe "localhost" <$> lookupEnv "TPG_HOST"
   socket   <- lookupEnv "TPG_SOCK"
@@ -50,7 +51,13 @@ thConnection = unsafePerformIO $ newMVar $ do
   pgConnect hostName portId database username password
 
 withTHConnection :: (PGConnection -> IO a) -> IO a
-withTHConnection f = modifyMVar thConnection $ (=<<) $ \c -> (,) (return c) <$> f c
+withTHConnection f = modifyMVar thConnection $ either id return >=> (\c -> (,) (Right c) <$> f c)
+
+setTHConnection :: Either (IO PGConnection) PGConnection -> IO ()
+setTHConnection c = modifyMVar_ thConnection $ either (const $ return c) ((c <$) . pgDisconnect)
+
+useTHConnection :: IO PGConnection -> Q [Dec]
+useTHConnection c = [] <$ runIO (setTHConnection (Left c))
 
 -- |This is where most of the magic happens.
 -- This doesn't result in a PostgreSQL prepared statement, it just creates one

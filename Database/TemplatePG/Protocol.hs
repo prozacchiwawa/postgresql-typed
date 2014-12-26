@@ -162,7 +162,7 @@ pgConnect host port db user pass = do
                      , pgString "standard_conforming_strings", pgString "on"
                      , pgString "bytea_output", pgString "hex"
                      , pgString "DateStyle", pgString "ISO, YMD"
-                     , pgString "IntervalStyle", pgString "postgres"
+                     , pgString "IntervalStyle", pgString "iso_8601"
                      , B.singleton 0 ]
        pgMessage :: B.Builder -> B.Builder
        pgMessage msg = B.append len msg

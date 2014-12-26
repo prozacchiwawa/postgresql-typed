@@ -58,7 +58,7 @@ Library
     CPP-options: -DUSE_MD5
 
 test-suite test
-  build-depends: base, network, templatepg
+  build-depends: base, network, time, templatepg
   type: exitcode-stdio-1.0
   main-is: Main.hs
   buildable: True

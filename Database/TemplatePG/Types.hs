@@ -5,10 +5,13 @@
 module Database.TemplatePG.Types
   ( OID
   , PGType(..)
+  , pgTypeDecoder
+  , pgTypeEscaper
   , PGTypeMap
   , defaultTypeMap
   ) where
 
+import Control.Applicative ((<$>))
 import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString.Lazy.Char8 as LC
 import qualified Data.ByteString.Lazy.UTF8 as U
@@ -23,8 +26,16 @@ data PGType = forall a . PGType
   { pgTypeName :: String
   , pgTypeType :: Type
   , pgTypeDecode :: Q (TExp (L.ByteString -> a))
-  , pgTypeShow :: Q (TExp (a -> String))
+  , pgTypeEscape :: Q (TExp (a -> String))
   }
+
+pgTypeDecoder :: PGType -> Q Exp
+pgTypeDecoder PGType{ pgTypeType = t, pgTypeDecode = f } =
+  sigE (unType <$> f) $ return $ ArrowT `AppT` ConT ''L.ByteString `AppT` t
+
+pgTypeEscaper :: PGType -> Q Exp
+pgTypeEscaper PGType{ pgTypeType = t, pgTypeEscape = f } =
+  sigE (unType <$> f) $ return $ ArrowT `AppT` t `AppT` ConT ''String
 
 mkPGType :: String -> Type -> Q (TExp (L.ByteString -> a)) -> Q (TExp (a -> String)) -> a -> PGType
 mkPGType name typ rd shw _ = PGType name typ rd shw

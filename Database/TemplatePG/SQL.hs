@@ -71,8 +71,8 @@ prepareSQL sql = do
   return (s, fTypes)
  where holdPlaces ss es = concat $ weave ss (take (length es) placeholders)
        placeholders = map (('$' :) . show) ([1..]::[Integer])
-       stringify PGType{ pgTypeShow = shw } s = [| $(unType <$> shw) $(returnQ $ parseExp' s) |]
-       parseExp' e = (either (\ _ -> error ("Failed to parse expression: " ++ e)) id) $ parseExp e
+       stringify t s = [| $(pgTypeEscaper t) $(parseExp' s) |]
+       parseExp' e = either (fail . (++) ("Failed to parse expression {" ++ e ++ "}: ")) returnQ $ parseExp e
        (sqlStrings, expStrings) = parseSql sql
 
 -- |"weave" 2 lists of equal length into a single list.
@@ -190,8 +190,8 @@ convertColumn name ((_, typ, nullable), i) = [| $(pgStringToType' typ nullable) 
 pgStringToType' :: PGType
                 -> Bool  -- ^ nullability indicator
                 -> Q Exp
-pgStringToType' PGType{ pgTypeDecode = rd } False = [| ($(unType <$> rd)) . fromJust |]
-pgStringToType' PGType{ pgTypeDecode = rd } True  = [| liftM ($(unType <$> rd)) |]
+pgStringToType' t False = [| $(pgTypeDecoder t) . fromJust |]
+pgStringToType' t True  = [| liftM $(pgTypeDecoder t) |]
 
 -- SQL Parser --
 

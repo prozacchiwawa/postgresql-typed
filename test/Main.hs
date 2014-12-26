@@ -15,5 +15,5 @@ useTHConnection connect
 main :: IO ()
 main = do
   c <- connect
-  Just (Just 1) <- $(queryTuple "SELECT 1") c
+  Just (Just 1) <- $(queryTuple "SELECT {1}::int") c
   exitSuccess

@@ -64,12 +64,18 @@ defaultTypeMap = Map.fromAscList
   , (26, mkPGLit "oid" (ConT ''OID) (0 :: OID))
   , (700, mkPGLit "float4" (ConT ''Float) (0 :: Float))
   , (701, mkPGLit "float8" (ConT ''Float) (0 :: Double))
+  -- , (1042, PGType "bpchar"
   , (1043, PGType "varchar" (ConT ''String)
       [|| U.toString ||]
       [|| escapeString ||])
-  , (1082, PGType "date" (ConT ''Time.Day)
+  , (1082, mkPGType "date" (ConT ''Time.Day)
       [|| Time.readTime defaultTimeLocale "%F" . LC.unpack ||]
-      [|| escapeString . Time.showGregorian ||])
+      [|| escapeString . Time.showGregorian ||]
+      (undefined :: Time.Day))
+  , (1083, mkPGType "time" (ConT ''Time.TimeOfDay)
+      [|| Time.readTime defaultTimeLocale "%T%Q" . LC.unpack ||]
+      [|| escapeString . Time.formatTime defaultTimeLocale "%T%Q" ||]
+      (undefined :: Time.TimeOfDay))
   , (1114, mkPGType "timestamp" (ConT ''Time.LocalTime)
       [|| Time.readTime defaultTimeLocale "%F %T%Q" . LC.unpack ||]
       [|| escapeString . Time.formatTime defaultTimeLocale "%F %T%Q" ||]
@@ -81,6 +87,9 @@ defaultTypeMap = Map.fromAscList
   , (1186, PGType "interval" (ConT ''Time.DiffTime)
       [|| parseInterval ||]
       [|| escapeString . show ||])
+  -- , (1560, PGType "bit"
+  -- , (1562, PGType "varbit"
+  -- , (1700, PGType "numeric"
   ]
 
 parseBool :: String -> Bool

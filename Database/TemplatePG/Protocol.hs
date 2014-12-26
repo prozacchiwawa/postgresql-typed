@@ -7,6 +7,7 @@
 
 module Database.TemplatePG.Protocol ( PGConnection
                                     , PGException(..)
+                                    , messageCode
                                     , pgConnect
                                     , pgDisconnect
                                     , describeStatement
@@ -17,7 +18,7 @@ module Database.TemplatePG.Protocol ( PGConnection
 import Database.TemplatePG.Types
 
 import Control.Applicative ((<$>))
-import Control.Exception
+import Control.Exception (Exception, throwIO)
 import Control.Monad (liftM, liftM2, replicateM, when)
 #ifdef USE_MD5
 import qualified Crypto.Hash as Hash
@@ -30,7 +31,7 @@ import Data.ByteString.Internal (c2w, w2c)
 import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString.Lazy.Char8 as LC
 import qualified Data.ByteString.Lazy.UTF8 as U
-import qualified Data.Map.Strict as Map
+import qualified Data.Map as Map
 import Data.Maybe (isJust)
 import Data.Monoid
 import Data.Typeable (Typeable)
@@ -71,11 +72,11 @@ data PGMessage = AuthenticationOk
                -- |An ErrorResponse contains the severity, "SQLSTATE", and
                --  message of an error. See
                --  <http://www.postgresql.org/docs/current/interactive/protocol-error-fields.html>.
-               | ErrorResponse String String String
+               | ErrorResponse MessageFields
                | Execute
                | Flush
                | NoData
-               | NoticeResponse
+               | NoticeResponse MessageFields
                -- |A ParameterDescription describes the type of a given SQL
                --  query/statement parameter ($1, $2, etc.). Unfortunately,
                --  PostgreSQL does not give us nullability information for the
@@ -97,10 +98,25 @@ data PGMessage = AuthenticationOk
                | UnknownMessage Word8
   deriving (Show)
 
+type MessageFields = Map.Map Word8 L.ByteString
+
+errorMessage :: String -> MessageFields
+errorMessage = Map.singleton (c2w 'M') . U.fromString
+
+displayMessage :: MessageFields -> String
+displayMessage m = "PG" ++ f 'S' ++ " [" ++ f 'C' ++ "]: " ++ f 'M' ++ '\n' : f 'D'
+  where f c = maybe "" U.toString $ Map.lookup (c2w c) m
+
+messageCode :: MessageFields -> String
+messageCode = maybe "" LC.unpack . Map.lookup (c2w 'C')
+
 -- |PGException is thrown upon encountering an 'ErrorResponse' with severity of
 --  ERROR, FATAL, or PANIC. It holds the SQLSTATE and message of the error.
-data PGException = PGException String String
-  deriving (Show, Typeable)
+data PGException = PGException MessageFields
+  deriving (Typeable)
+
+instance Show PGException where
+  show (PGException m) = displayMessage m
 
 instance Exception PGException
 
@@ -146,14 +162,12 @@ pgConnect host port db user pass = do
            AuthenticationCleartextPassword -> do
              pgSend c $ PasswordMessage $ U.fromString pass
              conn c
-           AuthenticationMD5Password salt -> do
 #ifdef USE_MD5
+           AuthenticationMD5Password salt -> do
              pgSend c $ PasswordMessage $ LC.pack "md5" `L.append` md5 (md5 (U.fromString (pass ++ user)) `L.append` salt)
              conn c
-#else
-             throwIO $ PGException "connect" "MD5 authentication requested but templatepg was built without MD5 support"
 #endif
-           _ -> throwIO $ PGException "connect" $ "unhandled message: " ++ show m
+           _ -> throwIO $ PGException $ errorMessage $ "unexpected: " ++ show m
 
 -- |Disconnect from a PostgreSQL server. Note that this currently doesn't send
 -- a close message.
@@ -179,11 +193,11 @@ pgMessageID m = c2w $ case m of
                   (DataRow _)              -> 'D'
                   (Describe _)             -> 'D'
                   EmptyQueryResponse       -> 'I'
-                  (ErrorResponse _ _ _)    -> 'E'
+                  (ErrorResponse _)        -> 'E'
                   Execute                  -> 'E'
                   Flush                    -> 'H'
                   NoData                   -> 'n'
-                  NoticeResponse           -> 'N'
+                  (NoticeResponse _)       -> 'N'
                   (ParameterDescription _) -> 't'
                   (ParameterStatus _ _)    -> 'S'
                   (Parse _ _)              -> 'P'
@@ -231,6 +245,12 @@ getMessageHeader = do
   len <- G.getWord32be
   return (typ, fromIntegral len)
 
+getMessageFields :: Get MessageFields
+getMessageFields = g =<< G.getWord8 where
+  g :: Word8 -> Get MessageFields
+  g 0 = return Map.empty
+  g f = liftM2 (Map.insert f) G.getLazyByteStringNul getMessageFields
+
 -- |Parse an incoming message.
 getMessageBody :: Word8 -- ^ the type of the message to parse
                -> Get PGMessage
@@ -241,7 +261,7 @@ getMessageBody typ =
         case op of
           0 -> return AuthenticationOk
           3 -> return AuthenticationCleartextPassword
-          5 -> AuthenticationMD5Password <$> G.getLazyByteString 4
+          5 -> AuthenticationMD5Password `liftM` G.getLazyByteString 4
           _ -> fail $ "Unsupported authentication message: " ++ show op
       't' -> do numParams <- fromIntegral `liftM` G.getWord16be
                 ps <- replicateM numParams readParam
@@ -272,22 +292,10 @@ getMessageBody typ =
                                           _          -> Just `liftM` G.getLazyByteString len
                                    return s
       'K' -> liftM2 BackendKeyData G.getWord32be G.getWord32be
-      'E' -> do fs <- readFields
-                case (lookup (c2w 'S') fs,
-                      lookup (c2w 'C') fs,
-                      lookup (c2w 'M') fs) of
-                  (Just s, Just c, Just m) -> return $ ErrorResponse s c m
-                  _                        -> fail "Unreadable error response"
-              where readFields :: Get [(Word8, String)]
-                    readFields = do f <- G.getWord8
-                                    case f of
-                                      0 -> return []
-                                      _ -> do s <- G.getLazyByteStringNul
-                                              f' <- readFields
-                                              return ((f,U.toString s):f')
+      'E' -> ErrorResponse `liftM` getMessageFields
       'I' -> return EmptyQueryResponse
       'n' -> return NoData
-      'N' -> return NoticeResponse -- Ignore the notice body for now.
+      'N' -> NoticeResponse `liftM` getMessageFields
       _   -> return $ UnknownMessage typ
 
 -- |Send a message to PostgreSQL (low-level).
@@ -299,7 +307,7 @@ pgSend PGConnection{ pgHandle = h, pgDebug = d } msg = do
 -- |Receive the next message from PostgreSQL (low-level). Note that this will
 -- block until it gets a message.
 pgReceive :: PGConnection -> IO PGMessage
-pgReceive PGConnection{ pgHandle = h, pgDebug = d } = do
+pgReceive c@PGConnection{ pgHandle = h, pgDebug = d } = do
   (typ, len) <- G.runGet getMessageHeader `liftM` L.hGet h 5
   body <- L.hGet h (len - 4)
   when d $ do
@@ -308,8 +316,9 @@ pgReceive PGConnection{ pgHandle = h, pgDebug = d } = do
             hFlush stdout
   let msg = decode $ L.cons typ (L.append (B.toLazyByteString $ B.putWord32be $ fromIntegral len) body)
   case msg of
-    (ErrorResponse _ c m) -> throwIO (PGException c m)
-    _                     -> return msg
+    (ErrorResponse m)  -> throwIO (PGException m)
+    (NoticeResponse m) -> hPutStrLn stderr (displayMessage m) >> pgReceive c
+    _                  -> return msg
 
 -- |Wait for a message of a given type.
 pgWaitFor :: PGConnection

@@ -157,8 +157,8 @@ rollback = executeSimpleStatement "ROLLBACK"
 insertIgnore :: IO () -> IO ()
 insertIgnore q = catchJust uniquenessError q (\ _ -> return ())
  where uniquenessError e = case e of
-                             (PGException c _) -> case c of
-                                                    "23505" -> Just e
+                             PGException m -> case messageCode m of
+                                                    "23505" -> Just ()
                                                     _       -> Nothing
 
 -- |Given a result description, create a function to convert a result to a

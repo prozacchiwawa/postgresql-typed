@@ -16,10 +16,11 @@ useTHConnection connect
 main :: IO ()
 main = do
   c <- connect
-  t <- Time.getZonedTime
-  let d = Time.localDay $ Time.zonedTimeToLocalTime t
+  z <- Time.getZonedTime
+  let t = Time.zonedTimeToLocalTime z
+      d = Time.localDay t
       p = -34881559
-  Just (Just 1, Just True, Just 3.14, Just d', Just t', Just p') <-
-    $(queryTuple "SELECT {1}::int, {True}::bool, {3.14}::float4, {d}::date, {t}::timestamptz, {p}::interval") c
-  assert $ d == d' && Time.zonedTimeToUTC t == Time.zonedTimeToUTC t' && p == p'
+  Just (Just 1, Just True, Just 3.14, Just d', Just t', Just z', Just p') <-
+    $(queryTuple "SELECT {1}::int, {True}::bool, {3.14}::float4, {d}::date, {t}::timestamp, {z}::timestamptz, {p}::interval") c
+  assert $ d == d' && t == t' && Time.zonedTimeToUTC z == Time.zonedTimeToUTC z' && p == p'
   exitSuccess

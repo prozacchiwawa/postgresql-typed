@@ -70,6 +70,10 @@ defaultTypeMap = Map.fromAscList
   , (1082, PGType "date" (ConT ''Time.Day)
       [|| Time.readTime defaultTimeLocale "%F" . LC.unpack ||]
       [|| escapeString . Time.showGregorian ||])
+  , (1114, mkPGType "timestamp" (ConT ''Time.LocalTime)
+      [|| Time.readTime defaultTimeLocale "%F %T%Q" . LC.unpack ||]
+      [|| escapeString . Time.formatTime defaultTimeLocale "%F %T%Q" ||]
+      (undefined :: Time.LocalTime))
   , (1184, mkPGType "timestamptz" (ConT ''Time.ZonedTime)
       [|| Time.readTime defaultTimeLocale "%F %T%Q%z" . fixTZ . LC.unpack ||]
       [|| escapeString . fixTZ . Time.formatTime defaultTimeLocale "%F %T%Q%z" ||]

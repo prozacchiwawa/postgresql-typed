@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP #-}
+{-# LANGUAGE CPP, DeriveDataTypeable #-}
 -- Copyright 2010, 2011, 2012, 2013 Chris Forno
 
 -- |The Protocol module allows for direct, low-level communication with a
@@ -33,7 +33,7 @@ import qualified Data.ByteString.Lazy.UTF8 as U
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
 import Data.Monoid
-import Data.Typeable
+import Data.Typeable (Typeable)
 import Network (HostName, PortID, connectTo)
 import System.Environment (lookupEnv)
 import System.IO hiding (putStr, putStrLn)

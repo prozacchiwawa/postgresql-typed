@@ -51,9 +51,7 @@ Library
     Database.TemplatePG.Protocol
     Database.TemplatePG.SQL
     Database.TemplatePG.Types
-  Extensions: DeriveDataTypeable,
-              ExistentialQuantification,
-              TemplateHaskell
+  Extensions: TemplateHaskell
   GHC-Options: -Wall -fno-warn-type-defaults
   if flag(md5)
     Build-Depends: cryptohash >= 0.5

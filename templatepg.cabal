@@ -26,6 +26,10 @@ source-repository head
   type:     git
   location: git://github.com/jekor/templatepg.git
 
+Flag md5
+  Description: Enable md5 password authentication method
+  Default: True
+
 Library
   Build-Depends:
     base >= 4.6 && < 5,
@@ -51,6 +55,9 @@ Library
               ExistentialQuantification,
               TemplateHaskell
   GHC-Options: -Wall -fno-warn-type-defaults
+  if flag(md5)
+    Build-Depends: cryptohash >= 0.5
+    CPP-options: -DUSE_MD5
 
 test-suite test
   build-depends: base, network, templatepg

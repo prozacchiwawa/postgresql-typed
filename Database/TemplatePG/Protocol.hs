@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 -- Copyright 2010, 2011, 2012, 2013 Chris Forno
 
 -- |The Protocol module allows for direct, low-level communication with a
@@ -18,13 +19,16 @@ import Database.TemplatePG.Types
 import Control.Applicative ((<$>))
 import Control.Exception
 import Control.Monad (liftM, liftM2, replicateM, when)
+#ifdef USE_MD5
+import qualified Crypto.Hash as Hash
+#endif
 import Data.Binary
 import qualified Data.Binary.Builder as B
 import qualified Data.Binary.Get as G
 import qualified Data.Binary.Put as P
 import Data.ByteString.Internal (c2w, w2c)
-import qualified Data.ByteString.Lazy.Char8 as B8
 import qualified Data.ByteString.Lazy as L
+import qualified Data.ByteString.Lazy.Char8 as LC
 import qualified Data.ByteString.Lazy.UTF8 as U
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
@@ -47,7 +51,9 @@ data PGConnection = PGConnection
 -- |PGMessage represents a PostgreSQL protocol message that we'll either send
 --  or receive. See
 --  <http://www.postgresql.org/docs/current/interactive/protocol-message-formats.html>.
-data PGMessage = Authentication
+data PGMessage = AuthenticationOk
+               | AuthenticationCleartextPassword
+               | AuthenticationMD5Password L.ByteString
                | BackendKeyData Word32 Word32
                -- |CommandComplete is bare for now, although it could be made
                --  to contain the number of rows affected by statements in a
@@ -79,6 +85,7 @@ data PGMessage = Authentication
                -- |Parse SQL Destination (prepared statement)
                | Parse String String
                | ParseComplete
+               | PasswordMessage L.ByteString
                | ReadyForQuery
                -- |A RowDescription contains the name, type, table OID, and
                --  column number of the resulting columns(s) of a query. The
@@ -99,6 +106,11 @@ instance Exception PGException
 
 protocolVersion :: Word32
 protocolVersion = 0x30000
+
+#ifdef USE_MD5
+md5 :: L.ByteString -> L.ByteString
+md5 = L.fromStrict . Hash.digestToHexByteString . (Hash.hashlazy :: L.ByteString -> Hash.Digest Hash.MD5)
+#endif
 
 -- |Connect to a PostgreSQL server.
 pgConnect :: HostName  -- ^ the host to connect to
@@ -130,6 +142,17 @@ pgConnect host port db user pass = do
            ReadyForQuery -> return c
            BackendKeyData p k -> conn c{ pgPid = p, pgKey = k }
            ParameterStatus k v -> conn c{ pgParameters = Map.insert k v $ pgParameters c }
+           AuthenticationOk -> conn c
+           AuthenticationCleartextPassword -> do
+             pgSend c $ PasswordMessage $ U.fromString pass
+             conn c
+           AuthenticationMD5Password salt -> do
+#ifdef USE_MD5
+             pgSend c $ PasswordMessage $ LC.pack "md5" `L.append` md5 (md5 (U.fromString (pass ++ user)) `L.append` salt)
+             conn c
+#else
+             throwIO $ PGException "connect" "MD5 authentication requested but templatepg was built without MD5 support"
+#endif
            _ -> throwIO $ PGException "connect" $ "unhandled message: " ++ show m
 
 -- |Disconnect from a PostgreSQL server. Note that this currently doesn't send
@@ -148,7 +171,9 @@ pgString s = B.fromLazyByteString (U.fromString s) <> B.singleton 0
 pgMessageID :: PGMessage -> Word8
 pgMessageID (UnknownMessage t) = t
 pgMessageID m = c2w $ case m of
-                  Authentication           -> 'R'
+                  AuthenticationOk         -> 'R'
+                  AuthenticationCleartextPassword -> 'R'
+                  (AuthenticationMD5Password _) -> 'R'
                   (BackendKeyData _ _)     -> 'K'
                   CommandComplete          -> 'C'
                   (DataRow _)              -> 'D'
@@ -163,6 +188,7 @@ pgMessageID m = c2w $ case m of
                   (ParameterStatus _ _)    -> 'S'
                   (Parse _ _)              -> 'P'
                   ParseComplete            -> '1'
+                  (PasswordMessage _)      -> 'p'
                   ReadyForQuery            -> 'Z'
                   (RowDescription _)       -> 'T'
                   (SimpleQuery _)          -> 'Q'
@@ -190,11 +216,12 @@ instance Binary PGMessage where
 -- |Given a message, build the over-the-wire representation of it. Note that we
 -- send fewer messages than we receive.
 putMessageBody :: PGMessage -> B.Builder
-putMessageBody (Describe n)    = mconcat [B.singleton $ c2w 'S', pgString n]
-putMessageBody Execute         = mconcat [pgString "", B.putWord32be 0]
+putMessageBody (Describe n)    = B.singleton (c2w 'S') <> pgString n
+putMessageBody Execute         = pgString "" <> B.putWord32be 0
 putMessageBody Flush           = B.empty
 putMessageBody (Parse s n)     = mconcat [pgString n, pgString s, B.putWord16be 0]
 putMessageBody (SimpleQuery s) = pgString s
+putMessageBody (PasswordMessage s) = B.fromLazyByteString s <> B.singleton 0
 putMessageBody _               = undefined
 
 -- |Get the type and size of an incoming message.
@@ -209,7 +236,13 @@ getMessageBody :: Word8 -- ^ the type of the message to parse
                -> Get PGMessage
 getMessageBody typ =
     case w2c typ of
-      'R' -> do return Authentication
+      'R' -> do
+        op <- G.getWord32be
+        case op of
+          0 -> return AuthenticationOk
+          3 -> return AuthenticationCleartextPassword
+          5 -> AuthenticationMD5Password <$> G.getLazyByteString 4
+          _ -> fail $ "Unsupported authentication message: " ++ show op
       't' -> do numParams <- fromIntegral `liftM` G.getWord16be
                 ps <- replicateM numParams readParam
                 return $ ParameterDescription ps
@@ -244,7 +277,7 @@ getMessageBody typ =
                       lookup (c2w 'C') fs,
                       lookup (c2w 'M') fs) of
                   (Just s, Just c, Just m) -> return $ ErrorResponse s c m
-                  _                        -> error "Unreadable error response"
+                  _                        -> fail "Unreadable error response"
               where readFields :: Get [(Word8, String)]
                     readFields = do f <- G.getWord8
                                     case f of
@@ -260,7 +293,7 @@ getMessageBody typ =
 -- |Send a message to PostgreSQL (low-level).
 pgSend :: PGConnection -> PGMessage -> IO ()
 pgSend PGConnection{ pgHandle = h, pgDebug = d } msg = do
-  when d $ B8.putStrLn (encode msg)
+  when d $ print msg
   L.hPut h (encode msg) >> hFlush h
 
 -- |Receive the next message from PostgreSQL (low-level). Note that this will
@@ -271,7 +304,7 @@ pgReceive PGConnection{ pgHandle = h, pgDebug = d } = do
   body <- L.hGet h (len - 4)
   when d $ do
             L.putStr (P.runPut (P.putWord8 typ >> P.putWord32be (fromIntegral len)))
-            B8.putStrLn body
+            LC.putStrLn body
             hFlush stdout
   let msg = decode $ L.cons typ (L.append (B.toLazyByteString $ B.putWord32be $ fromIntegral len) body)
   case msg of

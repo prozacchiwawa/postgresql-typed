@@ -13,6 +13,8 @@ module Database.TemplatePG.Protocol ( PGConnection
                                     , describeStatement
                                     , executeSimpleQuery
                                     , executeSimpleStatement
+                                    , pgAddType
+                                    , getTypeOID
                                     ) where
 
 import Database.TemplatePG.Types
@@ -32,7 +34,7 @@ import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString.Lazy.Char8 as LC
 import qualified Data.ByteString.Lazy.UTF8 as U
 import qualified Data.Map as Map
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, listToMaybe, fromJust)
 import Data.Monoid
 import Data.Typeable (Typeable)
 import Network (HostName, PortID, connectTo)
@@ -189,6 +191,9 @@ pgConnect host port db user pass = do
 pgDisconnect :: PGConnection -- ^ a handle from 'pgConnect'
              -> IO ()
 pgDisconnect PGConnection{ pgHandle = h } = hClose h
+
+pgAddType :: OID -> PGTypeHandler -> PGConnection -> PGConnection
+pgAddType oid th p = p{ pgTypes = Map.insert oid th $ pgTypes p }
 
 -- |Convert a string to a NULL-terminated UTF-8 string. The PostgreSQL
 --  protocol transmits most strings in this format.
@@ -351,11 +356,16 @@ pgWaitFor h ids = do
     then return response
     else pgWaitFor h ids
 
-getPGType :: PGConnection -> OID -> IO PGType
+getTypeOID :: PGConnection -> String -> IO (Maybe OID)
+getTypeOID c t =
+  (fmap (read . LC.unpack . fromJust . head) . listToMaybe) <$>
+    executeSimpleQuery ("SELECT oid FROM pg_catalog.pg_type WHERE typname = " ++ pgLiteral t) c
+
+getPGType :: PGConnection -> OID -> IO PGTypeHandler
 getPGType c@PGConnection{ pgTypes = types } oid =
   maybe notype return $ Map.lookup oid types where
   notype = do
-    r <- executeSimpleQuery ("SELECT typname FROM pg_catalog.pg_type WHERE oid = " ++ show oid) c
+    r <- executeSimpleQuery ("SELECT typname FROM pg_catalog.pg_type WHERE oid = " ++ pgLiteral oid) c
     case r of
       [[Just s]] -> fail $ "Unsupported PostgreSQL type " ++ show oid ++ ": " ++ U.toString s
       _ -> fail $ "Unknown PostgreSQL type: " ++ show oid
@@ -366,7 +376,7 @@ getPGType c@PGConnection{ pgTypes = types } oid =
 -- type of the field, and a nullability indicator).
 describeStatement :: PGConnection
                   -> String -- ^ SQL string
-                  -> IO ([PGType], [(String, PGType, Bool)]) -- ^ a list of parameter types, and a list of result field names, types, and nullability indicators.
+                  -> IO ([PGTypeHandler], [(String, PGTypeHandler, Bool)]) -- ^ a list of parameter types, and a list of result field names, types, and nullability indicators.
 describeStatement h sql = do
   pgSend h $ Parse sql ""
   pgSend h $ Describe ""

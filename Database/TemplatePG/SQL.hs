@@ -17,6 +17,7 @@ module Database.TemplatePG.SQL ( queryTuples
                                , rollback
                                , withTHConnection
                                , useTHConnection
+                               , handlePGType
                                ) where
 
 import Database.TemplatePG.Protocol
@@ -58,12 +59,15 @@ setTHConnection c = modifyMVar_ thConnection $ either (const $ return c) ((c <$)
 useTHConnection :: IO PGConnection -> Q [Dec]
 useTHConnection c = [] <$ runIO (setTHConnection (Left c))
 
+modifyTHConnection :: (PGConnection -> PGConnection) -> IO ()
+modifyTHConnection f = modifyMVar_ thConnection $ return . either (Left . liftM f) (Right . f)
+
 -- |This is where most of the magic happens.
 -- This doesn't result in a PostgreSQL prepared statement, it just creates one
 -- to do type inference.
 -- This returns a prepared SQL string with all values (as an expression)
 prepareSQL :: String -- ^ a SQL string, with
-           -> Q (Exp, [(String, PGType, Bool)]) -- ^ a prepared SQL string and result descriptions
+           -> Q (Exp, [(String, PGTypeHandler, Bool)]) -- ^ a prepared SQL string and result descriptions
 prepareSQL sql = do
   (pTypes, fTypes) <- runIO $ withTHConnection $ \c ->
     describeStatement c (holdPlaces sqlStrings expStrings)
@@ -87,8 +91,8 @@ weaveString :: [String] -- ^ SQL fragments
             -> Q Exp
 weaveString []     []     = [| "" |]
 weaveString [x]    []     = [| x |]
-weaveString []     [y]    = returnQ y
-weaveString (x:xs) (y:ys) = [| x ++ $(returnQ y) ++ $(weaveString xs ys) |]
+weaveString []     [y]    = return y
+weaveString (x:xs) (y:ys) = [| x ++ $(return y) ++ $(weaveString xs ys) |]
 weaveString _      _      = error "Weave mismatch (possible parse problem)"
 
 -- |@queryTuples :: String -> (PGConnection -> IO [(column1, column2, ...)])@
@@ -169,7 +173,7 @@ insertIgnore q = catchJust uniquenessError q (\ _ -> return ())
 
 -- |Given a result description, create a function to convert a result to a
 -- tuple.
-convertRow :: [(String, PGType, Bool)] -- ^ result description
+convertRow :: [(String, PGTypeHandler, Bool)] -- ^ result description
            -> Q Exp -- ^ A function for converting a row of the given result description
 convertRow types = do
   n <- newName "result"
@@ -178,7 +182,7 @@ convertRow types = do
 -- |Given a raw PostgreSQL result and a result field type, convert the
 -- appropriate field to a Haskell value.
 convertColumn :: Name  -- ^ the name of the variable containing the result list (of 'Maybe' 'ByteString')
-              -> ((String, PGType, Bool), Int) -- ^ the result field type and index
+              -> ((String, PGTypeHandler, Bool), Int) -- ^ the result field type and index
               -> Q Exp
 convertColumn name ((_, typ, nullable), i) = [| $(pgStringToType' typ nullable) ($(varE name) !! i) |]
 
@@ -187,7 +191,7 @@ convertColumn name ((_, typ, nullable), i) = [| $(pgStringToType' typ nullable) 
 -- and we can use 'fromJust' to keep the code simple. If it's 'True', then we
 -- don't know if the value is nullable and must return a 'Maybe' value in case
 -- it is.
-pgStringToType' :: PGType
+pgStringToType' :: PGTypeHandler
                 -> Bool  -- ^ nullability indicator
                 -> Q Exp
 pgStringToType' t False = [| $(pgTypeDecoder t) . fromJust |]
@@ -217,3 +221,8 @@ sqlText = P.many1 (P.noneOf "{")
 -- by haskell-src-meta.
 sqlParameter :: P.Parser String
 sqlParameter = P.between (P.char '{') (P.char '}') $ P.many1 (P.noneOf "}")
+
+handlePGType :: String -> Type -> Q [Dec]
+handlePGType name typ = [] <$ runIO (do
+  oid <- maybe (fail $ "PostgreSQL type not found: " ++ name) return =<< withTHConnection (\c -> getTypeOID c name)
+  modifyTHConnection (pgAddType oid (PGType name typ)))

@@ -86,15 +86,18 @@ import Database.TemplatePG.SQL
 -- To pass parameters to a query, include them in the string with {}. Most
 -- Haskell expressions should work. For example:
 --
--- @let owner = 33
+-- @let owner = 33 :: Int32
 -- 
--- tuples <- $(queryTuples \"SELECT * FROM pg_database WHERE datdba = {owner} LIMIT {2 * 3}\") h
+-- tuples <- $(queryTuples \"SELECT * FROM pg_database WHERE datdba = {owner} LIMIT {2 * 3 :: Int32}\") h
 -- @
 --
 -- Note that parameters may only be used where PostgreSQL will allow them. This
 -- will not work:
 --
 -- @tuples <- $(queryTuples \"SELECT * FROM {tableName}\") h@
+--
+-- The types of any parameter expressions must be fully known.  This may
+-- require explicit casts in some cases.
 --
 -- And in general, you cannot construct queries at run-time, since they
 -- wouldn't be available to be analyzed at compile time.
@@ -136,9 +139,7 @@ import Database.TemplatePG.SQL
 -- and column (such as when a function is applied to a result column), it's
 -- assumed to be nullable and will be returned as a 'Maybe' value.
 --
--- Additionally, you cannot directly use @NULL@ values in parameters. As a
--- workaround, you might have to use 2 or more separate queries (and @DEFAULT
--- NULL@) to @INSERT@ rows with @NULL@s.
+-- You can use @NULL@ values in parameters as well by using 'Maybe'.
 --
 -- Nullability is indicated incorrectly in the case of outer joins. TemplatePG
 -- incorrectly infers that a field cannot be @NULL@ when it's able to trace the

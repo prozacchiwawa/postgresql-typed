@@ -25,6 +25,7 @@ module Database.TemplatePG (-- *Introduction
                            , pgConnect
                            , pgDisconnect
                            , useTHConnection
+                           , handlePGType
                            , queryTuples
                            , queryTuple
                            , execute

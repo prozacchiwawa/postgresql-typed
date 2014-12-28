@@ -1,4 +1,4 @@
-{-# LANGUAGE ExistentialQuantification, TypeSynonymInstances, FlexibleInstances #-}
+{-# LANGUAGE ExistentialQuantification, TypeSynonymInstances, FlexibleInstances, OverlappingInstances, ScopedTypeVariables #-}
 -- Copyright 2010, 2011, 2013 Chris Forno
 -- Copyright 2014 Dylan Simon
 
@@ -11,6 +11,7 @@ module Database.TemplatePG.Types
   , pgTypeEscaper
   , PGTypeMap
   , defaultTypeMap
+  , pgArrayType
   ) where
 
 import Control.Applicative ((<$>), (<$))
@@ -22,6 +23,7 @@ import qualified Data.ByteString.Lazy.Char8 as LC
 import qualified Data.ByteString.Lazy.UTF8 as U
 import Data.Char (isDigit, digitToInt, intToDigit)
 import Data.Int
+import Data.List (intercalate)
 import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
 import Data.Ratio ((%), numerator, denominator)
@@ -248,7 +250,7 @@ instance PGType Rational where
 
 -- This may produce infinite strings
 showRational :: Rational -> String
-showRational r = show (ri :: Integer) ++ '.' : frac rf where
+showRational r = show (ri :: Integer) ++ '.' : frac (abs rf) where
   (ri, rf) = properFraction r
   frac 0 = ""
   frac f = intToDigit i : frac f' where (i, f') = properFraction (10 * f)
@@ -257,6 +259,26 @@ unReads :: [(a,String)] -> Maybe a
 unReads [(x,"")] = return x
 unReads _ = fail "unReads: no parse"
 
+instance PGType a => PGType [Maybe a] where
+  pgDecodeBS = either (fail . show) return . P.parse pa "array" where
+    pa = do
+      l <- P.between (P.char '{') (P.char '}') $
+        P.sepBy nel (P.char ',')
+      _ <- P.eof
+      return l
+    nel = Nothing <$ nul P.<|> Just <$> el
+    nul = P.oneOf "Nn" >> P.oneOf "Uu" >> P.oneOf "Ll" >> P.oneOf "Ll"
+    el = maybe (fail "array element") return . pgDecodeBS . LC.pack =<< qel P.<|> uqel
+    qel = P.between (P.char '"') (P.char '"') $
+      P.many $ (P.char '\\' >> P.anyChar) P.<|> P.noneOf "\\\""
+    uqel = P.many1 (P.noneOf "\",{}")
+  pgEncode l = '{' : intercalate "," (map el l) ++ "}" where
+    el Nothing = "null"
+    el (Just e) = '"' : es (pgEncode e) -- quoting may not be necessary but is always safe
+    es "" = "\""
+    es (c@'"':r) = '\\':c:es r
+    es (c@'\\':r) = '\\':c:es r
+    es (c:r) = c:es r
 
 data PGTypeHandler = PGType
   { pgTypeName :: String
@@ -273,27 +295,46 @@ pgTypeEscaper PGType{ pgTypeType = t } =
 
 type PGTypeMap = Map.Map OID PGTypeHandler
 
-defaultTypeMap :: PGTypeMap
-defaultTypeMap = Map.fromAscList
-  [ (16, PGType "bool" (ConT ''Bool))
-  , (17, PGType "bytea" (ConT ''L.ByteString))
-  , (18, PGType "char" (ConT ''Char))
-  -- , (19, PGType "name")
-  , (20, PGType "int8" (ConT ''Int64))
-  , (21, PGType "int2" (ConT ''Int16))
-  , (23, PGType "int4" (ConT ''Int32))
-  , (25, PGType "text" (ConT ''String))
-  , (26, PGType "oid" (ConT ''OID))
-  , (700, PGType "float4" (ConT ''Float))
-  , (701, PGType "float8" (ConT ''Double))
-  , (1042, PGType "bpchar" (ConT ''String))
-  , (1043, PGType "varchar" (ConT ''String))
-  , (1082, PGType "date" (ConT ''Time.Day))
-  , (1083, PGType "time" (ConT ''Time.TimeOfDay))
-  , (1114, PGType "timestamp" (ConT ''Time.LocalTime))
-  , (1184, PGType "timestamptz" (ConT ''Time.ZonedTime))
-  , (1186, PGType "interval" (ConT ''Time.DiffTime))
-  -- , (1560, PGType "bit")
-  -- , (1562, PGType "varbit")
-  , (1700, PGType "numeric" (ConT ''Rational))
+arrayType :: Type -> Type
+arrayType = AppT ListT . AppT (ConT ''Maybe)
+
+pgArrayType :: String -> Type -> PGTypeHandler
+pgArrayType n t = PGType ('_':n) (arrayType t)
+
+pgTypes :: [(OID, OID, String, Name)]
+pgTypes =
+  [ (  16, 1000, "bool",        ''Bool)
+  , (  17, 1001, "bytea",       ''L.ByteString)
+  , (  18, 1002, "char",        ''Char)
+  , (  19, 1003, "name",        ''String) -- limit 63 characters
+  , (  20, 1016, "int8",        ''Int64)
+  , (  21, 1005, "int2",        ''Int16)
+  , (  23, 1007, "int4",        ''Int32)
+  , (  25, 1009, "text",        ''String)
+  , (  26, 1028, "oid",         ''OID)
+--, ( 114,  199, "json",        ?)
+--, ( 142,  143, "xml",         ?)
+--, ( 600, 1017, "point",       ?)
+--, ( 650,  651, "cidr",        ?)
+  , ( 700, 1021, "float4",      ''Float)
+  , ( 701, 1022, "float8",      ''Double)
+--, ( 790, 791, "money",        Centi? Fixed?)
+--, ( 829, 1040, "macaddr",     ?)
+--, ( 869, 1041, "inet",        ?)
+  , (1042, 1014, "bpchar",      ''String)
+  , (1043, 1015, "varchar",     ''String)
+  , (1082, 1182, "date",        ''Time.Day)
+  , (1083, 1183, "time",        ''Time.TimeOfDay)
+  , (1114, 1115, "timestamp",   ''Time.LocalTime)
+  , (1184, 1185, "timestamptz", ''Time.ZonedTime)
+  , (1186, 1187, "interval",    ''Time.DiffTime)
+--, (1266, 1270, "timetz",      ?)
+--, (1560, 1561, "bit",         Bool?)
+--, (1562, 1563, "varbit",      ?)
+  , (1700, 1231, "numeric",     ''Rational)
+--, (2950, 2951, "uuid",        ?)
   ]
+
+defaultTypeMap :: PGTypeMap
+defaultTypeMap = Map.fromAscList [(o, PGType n (ConT t)) | (o, _, n, t) <- pgTypes]
+   `Map.union` Map.fromList [(o, pgArrayType n (ConT t)) | (_, o, n, t) <- pgTypes]

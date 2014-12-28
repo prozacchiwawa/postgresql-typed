@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP, DeriveDataTypeable #-}
+{-# LANGUAGE CPP, DeriveDataTypeable, PatternGuards #-}
 -- Copyright 2010, 2011, 2012, 2013 Chris Forno
 
 -- |The Protocol module allows for direct, low-level communication with a
@@ -34,7 +34,7 @@ import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString.Lazy.Char8 as LC
 import qualified Data.ByteString.Lazy.UTF8 as U
 import qualified Data.Map as Map
-import Data.Maybe (isJust, listToMaybe, fromJust)
+import Data.Maybe (isJust)
 import Data.Monoid
 import Data.Typeable (Typeable)
 import Network (HostName, PortID, connectTo)
@@ -356,10 +356,14 @@ pgWaitFor h ids = do
     then return response
     else pgWaitFor h ids
 
-getTypeOID :: PGConnection -> String -> IO (Maybe OID)
-getTypeOID c t =
-  (fmap (read . LC.unpack . fromJust . head) . listToMaybe) <$>
-    executeSimpleQuery ("SELECT oid FROM pg_catalog.pg_type WHERE typname = " ++ pgLiteral t) c
+getTypeOID :: PGConnection -> String -> IO (Maybe (OID, OID))
+getTypeOID c t = do
+  r <- executeSimpleQuery ("SELECT oid, typarray FROM pg_catalog.pg_type WHERE typname = " ++ pgLiteral t) c
+  case r of
+    [] -> return Nothing
+    [[Just o, Just lo]] | Just to <- pgDecodeBS o, Just lto <- pgDecodeBS lo ->
+      return (Just (to, lto))
+    _ -> fail $ "Unexpected PostgreSQL type result for " ++ t ++ ": " ++ show r
 
 getPGType :: PGConnection -> OID -> IO PGTypeHandler
 getPGType c@PGConnection{ pgTypes = types } oid =

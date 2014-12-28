@@ -26,7 +26,7 @@ import Database.TemplatePG.Types
 import Control.Applicative ((<$>), (<$))
 import Control.Concurrent.MVar (MVar, newMVar, modifyMVar, modifyMVar_)
 import Control.Exception (onException, catchJust)
-import Control.Monad (zipWithM, liftM, (>=>))
+import Control.Monad (zipWithM, liftM, (>=>), when)
 import Data.Maybe (fromMaybe, fromJust)
 import Language.Haskell.Meta.Parse (parseExp)
 import Language.Haskell.TH
@@ -224,5 +224,7 @@ sqlParameter = P.between (P.char '{') (P.char '}') $ P.many1 (P.noneOf "}")
 
 handlePGType :: String -> Type -> Q [Dec]
 handlePGType name typ = [] <$ runIO (do
-  oid <- maybe (fail $ "PostgreSQL type not found: " ++ name) return =<< withTHConnection (\c -> getTypeOID c name)
-  modifyTHConnection (pgAddType oid (PGType name typ)))
+  (oid, loid) <- maybe (fail $ "PostgreSQL type not found: " ++ name) return =<< withTHConnection (\c -> getTypeOID c name)
+  modifyTHConnection (pgAddType oid (PGType name typ))
+  when (loid /= 0) $
+    modifyTHConnection (pgAddType loid (pgArrayType name typ)))

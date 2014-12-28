@@ -19,10 +19,10 @@ module Database.TemplatePG.Protocol ( PGConnection
 
 import Database.TemplatePG.Types
 
-import Control.Applicative ((<$>))
+import Control.Applicative ((<$>), (<$))
 import Control.Arrow (second)
-import Control.Exception (Exception, throwIO)
-import Control.Monad (liftM, liftM2, replicateM, when, unless)
+import Control.Exception (Exception, throwIO, catch)
+import Control.Monad (liftM, liftM2, replicateM, when)
 #ifdef USE_MD5
 import qualified Crypto.Hash as Hash
 #endif
@@ -35,6 +35,7 @@ import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString.Lazy.Char8 as LC
 import qualified Data.ByteString.Lazy.UTF8 as U
 import Data.Foldable (foldMap)
+import Data.IORef (IORef, newIORef, writeIORef, readIORef)
 import qualified Data.Map as Map
 import Data.Maybe (isJust, fromMaybe)
 import Data.Monoid ((<>), mconcat)
@@ -44,13 +45,22 @@ import System.Environment (lookupEnv)
 import System.IO (Handle, hFlush, hClose, stderr, hPutStrLn)
 import Text.Read (readMaybe)
 
+data PGState
+  = StateUnknown
+  | StateIdle
+  | StateTransaction
+  | StateTransactionFailed
+  deriving (Show, Eq)
+
 data PGConnection = PGConnection
-  { pgHandle :: Handle
-  , pgDebug :: !Bool
-  , pgPid :: !Word32
-  , pgKey :: !Word32
-  , pgParameters :: Map.Map L.ByteString L.ByteString
-  , pgTypes :: PGTypeMap
+  { connHandle :: Handle
+  , connDebug :: !Bool
+  , connLogMessage :: MessageFields -> IO ()
+  , connPid :: !Word32
+  , connKey :: !Word32
+  , connParameters :: Map.Map L.ByteString L.ByteString
+  , connTypes :: PGTypeMap
+  , connState :: IORef PGState
   }
 
 data ColDescription = ColDescription
@@ -104,7 +114,7 @@ data PGMessage = AuthenticationOk
                | ParseComplete
                | PasswordMessage L.ByteString
                | PortalSuspended
-               | ReadyForQuery
+               | ReadyForQuery PGState
                -- |A RowDescription contains the name, type, table OID, and
                --  column number of the resulting columns(s) of a query. The
                --  column number is useful for inferring nullability.
@@ -141,6 +151,9 @@ instance Show PGException where
 
 instance Exception PGException
 
+defaultLogMessage :: MessageFields -> IO ()
+defaultLogMessage = hPutStrLn stderr . displayMessage
+
 protocolVersion :: Word32
 protocolVersion = 0x30000
 
@@ -158,53 +171,60 @@ pgConnect :: HostName  -- ^ the host to connect to
           -> IO PGConnection -- ^ a handle to communicate with the PostgreSQL server on
 pgConnect host port db user pass = do
   debug <- isJust <$> lookupEnv "TPG_DEBUG"
+  state <- newIORef StateUnknown
   h <- connectTo host port
-  L.hPut h $ B.toLazyByteString $ pgMessage handshake
+  L.hPut h $ B.toLazyByteString $ B.putWord32be $ fromIntegral $ 4 + L.length handshake
+  L.hPut h handshake
   hFlush h
-  conn (PGConnection h debug 0 0 Map.empty defaultTypeMap)
- -- These are here since the handshake message differs a bit from other
- -- messages (it's missing the inital identifying character). I could probably
- -- get rid of it with some refactoring.
- where handshake = mconcat
-                     [ B.putWord32be protocolVersion
-                     , pgString "user", pgString user
-                     , pgString "database", pgString db
-                     , pgString "client_encoding", pgString "UTF8"
-                     , pgString "standard_conforming_strings", pgString "on"
-                     , pgString "bytea_output", pgString "hex"
-                     , pgString "DateStyle", pgString "ISO, YMD"
-                     , pgString "IntervalStyle", pgString "iso_8601"
-                     , B.singleton 0 ]
-       pgMessage :: B.Builder -> B.Builder
-       pgMessage msg = B.append len msg
-         where len = B.putWord32be $ fromIntegral $ (L.length $ B.toLazyByteString msg) + 4
-       conn c = do
-         m <- pgReceive c
-         case m of
-           ReadyForQuery -> return c
-           BackendKeyData p k -> conn c{ pgPid = p, pgKey = k }
-           ParameterStatus k v -> conn c{ pgParameters = Map.insert k v $ pgParameters c }
-           AuthenticationOk -> conn c
-           AuthenticationCleartextPassword -> do
-             pgSend c $ PasswordMessage $ U.fromString pass
-             conn c
+  conn $ PGConnection
+    { connHandle = h
+    , connDebug = debug
+    , connLogMessage = defaultLogMessage
+    , connPid = 0
+    , connKey = 0
+    , connParameters = Map.empty
+    , connTypes = defaultTypeMap
+    , connState = state
+    }
+  where
+  -- These are here since the handshake message differs a bit from other
+  -- messages (it's missing the inital identifying character). I could probably
+  -- get rid of it with some refactoring.
+  handshake = B.toLazyByteString $ mconcat
+    [ B.putWord32be protocolVersion
+    , pgString "user", pgString user
+    , pgString "database", pgString db
+    , pgString "client_encoding", pgString "UTF8"
+    , pgString "standard_conforming_strings", pgString "on"
+    , pgString "bytea_output", pgString "hex"
+    , pgString "DateStyle", pgString "ISO, YMD"
+    , pgString "IntervalStyle", pgString "iso_8601"
+    , B.singleton 0 ]
+  conn c = msg c =<< pgReceive c
+  msg c (ReadyForQuery _) = return c
+  msg c (BackendKeyData p k) = conn c{ connPid = p, connKey = k }
+  msg c (ParameterStatus k v) = conn c{ connParameters = Map.insert k v $ connParameters c }
+  msg c AuthenticationOk = conn c
+  msg c AuthenticationCleartextPassword = do
+    pgSend c $ PasswordMessage $ U.fromString pass
+    conn c
 #ifdef USE_MD5
-           AuthenticationMD5Password salt -> do
-             pgSend c $ PasswordMessage $ LC.pack "md5" `L.append` md5 (md5 (U.fromString (pass ++ user)) `L.append` salt)
-             conn c
+  msg c (AuthenticationMD5Password salt) = do
+    pgSend c $ PasswordMessage $ LC.pack "md5" `L.append` md5 (md5 (U.fromString (pass ++ user)) `L.append` salt)
+    conn c
 #endif
-           _ -> throwIO $ PGException $ errorMessage $ "unexpected: " ++ show m
+  msg _ m = throwIO $ PGException $ errorMessage $ "unexpected: " ++ show m
 
 -- |Disconnect from a PostgreSQL server. Note that this currently doesn't send
 -- a close message.
 pgDisconnect :: PGConnection -- ^ a handle from 'pgConnect'
              -> IO ()
-pgDisconnect c@PGConnection{ pgHandle = h } = do
+pgDisconnect c@PGConnection{ connHandle = h } = do
   pgSend c Terminate
   hClose h
 
 pgAddType :: OID -> PGTypeHandler -> PGConnection -> PGConnection
-pgAddType oid th p = p{ pgTypes = Map.insert oid th $ pgTypes p }
+pgAddType oid th p = p{ connTypes = Map.insert oid th $ connTypes p }
 
 -- |Convert a string to a NULL-terminated UTF-8 string. The PostgreSQL
 --  protocol transmits most strings in this format.
@@ -237,7 +257,7 @@ pgMessageID m = c2w $ case m of
                   ParseComplete            -> '1'
                   (PasswordMessage _)      -> 'p'
                   PortalSuspended          -> 's'
-                  ReadyForQuery            -> 'Z'
+                  (ReadyForQuery _)        -> 'Z'
                   (RowDescription _)       -> 'T'
                   (SimpleQuery _)          -> 'Q'
                   Sync                     -> 'S'
@@ -291,6 +311,13 @@ getMessageFields = g =<< G.getWord8 where
   g 0 = return Map.empty
   g f = liftM2 (Map.insert f) G.getLazyByteStringNul getMessageFields
 
+getReadyState :: Get PGState
+getReadyState = rs . w2c =<< G.getWord8 where
+  rs 'I' = return StateIdle
+  rs 'T' = return StateTransaction
+  rs 'E' = return StateTransactionFailed
+  rs s = fail $ "Unknown ready state: " ++ show s
+
 -- |Parse an incoming message.
 getMessageBody :: Word8 -- ^ the type of the message to parse
                -> Get PGMessage
@@ -323,7 +350,7 @@ getMessageBody typ =
                                     , colNumber = fromIntegral col
                                     , colType = typ'
                                     }
-      'Z' -> G.getWord8 >> return ReadyForQuery
+      'Z' -> liftM ReadyForQuery getReadyState
       '1' -> return ParseComplete
       'C' -> liftM CommandComplete G.getLazyByteStringNul
       'S' -> liftM2 ParameterStatus G.getLazyByteStringNul G.getLazyByteStringNul
@@ -343,7 +370,8 @@ getMessageBody typ =
 
 -- |Send a message to PostgreSQL (low-level).
 pgSend :: PGConnection -> PGMessage -> IO ()
-pgSend PGConnection{ pgHandle = h, pgDebug = d } msg = do
+pgSend PGConnection{ connHandle = h, connDebug = d, connState = sr } msg = do
+  writeIORef sr StateUnknown
   when d $ putStrLn $ "> " ++ show msg
   L.hPut h (encode msg) >> hFlush h
 
@@ -353,27 +381,26 @@ runGet g s = either (\(_, _, e) -> fail e) (\(_, _, r) -> return r) $ G.runGetOr
 -- |Receive the next message from PostgreSQL (low-level). Note that this will
 -- block until it gets a message.
 pgReceive :: PGConnection -> IO PGMessage
-pgReceive c@PGConnection{ pgHandle = h, pgDebug = d } = do
-  (typ, body) <- recv
-  msg <- runGet (getMessageBody typ) body
+pgReceive c@PGConnection{ connHandle = h, connDebug = d } = do
+  (typ, len) <- runGet getMessageHeader =<< L.hGet h 5
+  msg <- runGet (getMessageBody typ) =<< L.hGet h (len - 4)
   when d $ putStrLn $ "< " ++ show msg
   case msg of
-    ErrorResponse{ messageFields = m } -> do
-      pgSend c Sync >> wait
-      throwIO (PGException m)
-      where
-      wait = do
-        (t, _) <- recv
-        unless (t == pgMessageID ReadyForQuery) wait
+    ReadyForQuery s -> msg <$ writeIORef (connState c) s
     NoticeResponse{ messageFields = m } ->
-      hPutStrLn stderr (displayMessage m) >> pgReceive c
+      connLogMessage c m >> pgReceive c
+    ErrorResponse{ messageFields = m } ->
+      writeIORef (connState c) StateUnknown >> throwIO (PGException m) 
     _ -> return msg
-  where
-  recv = do
-    (typ, len) <- runGet getMessageHeader =<< L.hGet h 5
-    body <- L.hGet h (len - 4)
-    return (typ, body)
 
+pgSync :: PGConnection -> IO ()
+pgSync c@PGConnection{ connState = sr } = do
+  s <- readIORef sr
+  when (s == StateUnknown) $ do
+    pgSend c Sync
+    _ <- pgReceive c `catch` \(PGException m) -> ErrorResponse m <$ connLogMessage c m
+    pgSync c
+    
 getTypeOID :: PGConnection -> String -> IO (Maybe (OID, OID))
 getTypeOID c t = do
   (_, r) <- pgSimpleQuery ("SELECT oid, typarray FROM pg_catalog.pg_type WHERE typname = " ++ pgLiteral t) c
@@ -384,7 +411,7 @@ getTypeOID c t = do
     _ -> fail $ "Unexpected PostgreSQL type result for " ++ t ++ ": " ++ show r
 
 getPGType :: PGConnection -> OID -> IO PGTypeHandler
-getPGType c@PGConnection{ pgTypes = types } oid =
+getPGType c@PGConnection{ connTypes = types } oid =
   maybe notype return $ Map.lookup oid types where
   notype = do
     (_, r) <- pgSimpleQuery ("SELECT typname FROM pg_catalog.pg_type WHERE oid = " ++ pgLiteral oid) c
@@ -400,6 +427,7 @@ describeStatement :: PGConnection
                   -> String -- ^ SQL string
                   -> IO ([PGTypeHandler], [(String, PGTypeHandler, Bool)]) -- ^ a list of parameter types, and a list of result field names, types, and nullability indicators.
 describeStatement h sql = do
+  pgSync h
   pgSend h $ Parse{ queryString = sql, statementName = "", parseTypes = [] }
   pgSend h $ Describe ""
   pgSend h $ Flush
@@ -441,6 +469,7 @@ pgSimpleQuery :: String -- ^ SQL string
                    -> PGConnection
                    -> IO (Int, [PGData]) -- ^ The number of rows affected and a list of result rows
 pgSimpleQuery sql h = do
+  pgSync h
   pgSend h $ SimpleQuery sql
   go start where 
   go = (>>=) $ pgReceive h
@@ -453,6 +482,6 @@ pgSimpleQuery sql h = do
   got c = (,) (rowsAffected $ LC.words c) <$> go end
   rowsAffected [] = -1
   rowsAffected l = fromMaybe (-1) $ readMaybe $ LC.unpack $ last l
-  end ReadyForQuery = return []
+  end (ReadyForQuery _) = return []
   end EmptyQueryResponse = go end
   end m = fail $ "executeSimpleQuery: unexpected message: " ++ show m

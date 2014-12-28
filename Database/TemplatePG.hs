@@ -21,7 +21,7 @@ module Database.TemplatePG (-- *Introduction
 
                             -- **Other Workarounds
                             -- $other
-                             PGException(..)
+                             PGError(..)
                            , pgConnect
                            , pgDisconnect
                            , useTHConnection

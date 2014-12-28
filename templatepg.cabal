@@ -34,7 +34,7 @@ Library
   Build-Depends:
     base >= 4.6 && < 5,
     binary,
-    bytestring,
+    bytestring >= 0.10.2,
     containers,
     haskell-src-meta,
     mtl,

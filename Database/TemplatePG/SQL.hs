@@ -19,7 +19,7 @@ module Database.TemplatePG.SQL ( makePGQuery
                                ) where
 
 import Control.Exception (onException, catchJust)
-import Control.Monad (liftM, void)
+import Control.Monad (liftM, void, guard)
 import Data.Maybe (listToMaybe)
 import Language.Haskell.TH
 
@@ -86,8 +86,5 @@ rollback = void . pgSimpleQuery "ROLLBACK"
 
 -- |Ignore duplicate key errors. This is also limited to the 'IO' Monad.
 insertIgnore :: IO () -> IO ()
-insertIgnore q = catchJust uniquenessError q (\ _ -> return ())
- where uniquenessError e = case e of
-                             PGException m -> case messageCode m of
-                                                    "23505" -> Just ()
-                                                    _       -> Nothing
+insertIgnore q = catchJust uniquenessError q (\ _ -> return ()) where
+  uniquenessError (PGError m) = guard (messageCode m == "24505")

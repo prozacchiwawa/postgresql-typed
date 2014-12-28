@@ -25,7 +25,6 @@ import Data.Char (isDigit, digitToInt, intToDigit)
 import Data.Int
 import Data.List (intercalate)
 import qualified Data.Map as Map
-import Data.Maybe (fromMaybe)
 import Data.Ratio ((%), numerator, denominator)
 import qualified Data.Time as Time
 import Data.Word (Word32)
@@ -34,7 +33,6 @@ import Numeric (readFloat)
 import System.Locale (defaultTimeLocale)
 import qualified Text.Parsec as P
 import Text.Parsec.Token (naturalOrFloat, makeTokenParser, GenLanguageDef(..))
-import Text.Read (readMaybe)
 
 pgQuoteUnsafe :: String -> String
 pgQuoteUnsafe s = '\'' : s ++ "'"
@@ -50,10 +48,10 @@ pgQuote = ('\'':) . es where
 -- The default implementations do UTF-8 conversion.
 class PGType a where
   -- |Decode a postgres raw text representation into a value.
-  pgDecodeBS :: L.ByteString -> Maybe a
+  pgDecodeBS :: L.ByteString -> a
   pgDecodeBS = pgDecode . U.toString
   -- |Decode a postgres unicode string representation into a value.
-  pgDecode :: String -> Maybe a
+  pgDecode :: String -> a
   pgDecode = pgDecodeBS . U.fromString
   -- |Encode a value to a postgres raw text representation.
   pgEncodeBS :: a -> L.ByteString
@@ -66,9 +64,9 @@ class PGType a where
   pgLiteral = pgQuote . pgEncode
 
 instance PGType Bool where
-  pgDecode "f" = return False
-  pgDecode "t" = return True
-  pgDecode _ = fail "bool"
+  pgDecode "f" = False
+  pgDecode "t" = True
+  pgDecode s = error $ "pgDecode bool: " ++ s
   pgEncode False = "f"
   pgEncode True = "t"
   pgLiteral False = "false"
@@ -78,43 +76,43 @@ type OID = Word32
 instance PGType OID where
   pgDecodeBS = pgDecode . LC.unpack
   pgEncodeBS = LC.pack . pgEncode
-  pgDecode = readMaybe
+  pgDecode = read
   pgEncode = show
   pgLiteral = show
 
 instance PGType Int where
   pgDecodeBS = pgDecode . LC.unpack
   pgEncodeBS = LC.pack . pgEncode
-  pgDecode = readMaybe
+  pgDecode = read
   pgEncode = show
   pgLiteral = show
 
 instance PGType Int16 where
   pgDecodeBS = pgDecode . LC.unpack
   pgEncodeBS = LC.pack . pgEncode
-  pgDecode = readMaybe
+  pgDecode = read
   pgEncode = show
   pgLiteral = show
 
 instance PGType Int32 where
   pgDecodeBS = pgDecode . LC.unpack
   pgEncodeBS = LC.pack . pgEncode
-  pgDecode = readMaybe
+  pgDecode = read
   pgEncode = show
   pgLiteral = show
 
 instance PGType Int64 where
   pgDecodeBS = pgDecode . LC.unpack
   pgEncodeBS = LC.pack . pgEncode
-  pgDecode = readMaybe
+  pgDecode = read
   pgEncode = show
   pgLiteral = show
 
 instance PGType Char where
   pgDecodeBS = pgDecode . LC.unpack
   pgEncodeBS = LC.pack . pgEncode
-  pgDecode [c] = return c
-  pgDecode _ = fail "char"
+  pgDecode [c] = c
+  pgDecode s = error $ "pgDecode char: " ++ s
   pgEncode c
     | fromEnum c < 256 = [c]
     | otherwise = error "pgEncode: Char out of range"
@@ -122,19 +120,19 @@ instance PGType Char where
 instance PGType Float where
   pgDecodeBS = pgDecode . LC.unpack
   pgEncodeBS = LC.pack . pgEncode
-  pgDecode = readMaybe
+  pgDecode = read
   pgEncode = show
   pgLiteral = show
 
 instance PGType Double where
   pgDecodeBS = pgDecode . LC.unpack
   pgEncodeBS = LC.pack . pgEncode
-  pgDecode = readMaybe
+  pgDecode = read
   pgEncode = show
   pgLiteral = show
 
 instance PGType String where
-  pgDecode = return
+  pgDecode = id
   pgEncode = id
 
 type Bytea = L.ByteString
@@ -142,12 +140,13 @@ instance PGType Bytea where
   pgDecode = pgDecodeBS . LC.pack
   pgEncodeBS = LC.pack . pgEncode
   pgDecodeBS s
-    | LC.unpack m /= "\\x" = fail "bytea"
-    | otherwise = return $ L.pack $ pd $ L.unpack d where
+    | sm /= "\\x" = error $ "pgDecode bytea: " ++ sm
+    | otherwise = L.pack $ pd $ L.unpack d where
     (m, d) = L.splitAt 2 s
+    sm = LC.unpack m
     pd [] = []
     pd (h:l:r) = (shiftL (unhex h) 4 .|. unhex l) : pd r
-    pd [x] = error $ "parseBytea: " ++ show x
+    pd [x] = error $ "pgDecode bytea: " ++ show x
     unhex = fromIntegral . digitToInt . w2c
   pgEncode = (++) "'\\x" . ed . L.unpack where
     ed [] = "\'"
@@ -158,28 +157,28 @@ instance PGType Bytea where
 instance PGType Time.Day where
   pgDecodeBS = pgDecode . LC.unpack
   pgEncodeBS = LC.pack . pgEncode
-  pgDecode = Time.parseTime defaultTimeLocale "%F"
+  pgDecode = Time.readTime defaultTimeLocale "%F"
   pgEncode = Time.showGregorian
   pgLiteral = pgQuoteUnsafe . pgEncode
 
 instance PGType Time.TimeOfDay where
   pgDecodeBS = pgDecode . LC.unpack
   pgEncodeBS = LC.pack . pgEncode
-  pgDecode = Time.parseTime defaultTimeLocale "%T%Q"
+  pgDecode = Time.readTime defaultTimeLocale "%T%Q"
   pgEncode = Time.formatTime defaultTimeLocale "%T%Q"
   pgLiteral = pgQuoteUnsafe . pgEncode
 
 instance PGType Time.LocalTime where
   pgDecodeBS = pgDecode . LC.unpack
   pgEncodeBS = LC.pack . pgEncode
-  pgDecode = Time.parseTime defaultTimeLocale "%F %T%Q"
+  pgDecode = Time.readTime defaultTimeLocale "%F %T%Q"
   pgEncode = Time.formatTime defaultTimeLocale "%F %T%Q"
   pgLiteral = pgQuoteUnsafe . pgEncode
 
 instance PGType Time.ZonedTime where
   pgDecodeBS = pgDecode . LC.unpack
   pgEncodeBS = LC.pack . pgEncode
-  pgDecode = Time.parseTime defaultTimeLocale "%F %T%Q%z" . fixTZ
+  pgDecode = Time.readTime defaultTimeLocale "%F %T%Q%z" . fixTZ
   pgEncode = fixTZ . Time.formatTime defaultTimeLocale "%F %T%Q%z"
   pgLiteral = pgQuoteUnsafe . pgEncode
 
@@ -199,7 +198,7 @@ fixTZ (c:s) = c:fixTZ s
 instance PGType Time.DiffTime where
   pgDecode = pgDecodeBS . LC.pack
   pgEncodeBS = LC.pack . pgEncode
-  pgDecodeBS = either (fail . show) return . P.parse ps "interval" where
+  pgDecodeBS = either (error . ("pgDecode interval: " ++) . show) id . P.parse ps "interval" where
     ps = do
       _ <- P.char 'P'
       d <- units [('Y', 12*month), ('M', month), ('W', 7*day), ('D', day)]
@@ -238,8 +237,10 @@ instance PGType Time.DiffTime where
 instance PGType Rational where
   pgDecodeBS = pgDecode . LC.unpack
   pgEncodeBS = LC.pack . pgEncode
-  pgDecode "NaN" = Just (0 % 0) -- this won't work
-  pgDecode s = unReads $ readFloat s
+  pgDecode "NaN" = 0 % 0 -- this won't work
+  pgDecode s = ur $ readFloat s where
+    ur [(x,"")] = x
+    ur _ = error $ "pgDecode numeric: " ++ s
   pgEncode r
     | denominator r == 0 = "NaN" -- this can't happen
     | otherwise = take 30 (showRational (r / (10 ^^ e))) ++ 'e' : show e where
@@ -248,19 +249,15 @@ instance PGType Rational where
     | denominator r == 0 = "'NaN'" -- this can't happen
     | otherwise = '(' : show (numerator r) ++ '/' : show (denominator r) ++ "::numeric)"
 
--- This may produce infinite strings
+-- This will produce infinite(-precision) strings
 showRational :: Rational -> String
 showRational r = show (ri :: Integer) ++ '.' : frac (abs rf) where
   (ri, rf) = properFraction r
   frac 0 = ""
   frac f = intToDigit i : frac f' where (i, f') = properFraction (10 * f)
 
-unReads :: [(a,String)] -> Maybe a
-unReads [(x,"")] = return x
-unReads _ = fail "unReads: no parse"
-
 instance PGType a => PGType [Maybe a] where
-  pgDecodeBS = either (fail . show) return . P.parse pa "array" where
+  pgDecodeBS = either (error . ("pgDecode array: " ++) . show) id . P.parse pa "array" where
     pa = do
       l <- P.between (P.char '{') (P.char '}') $
         P.sepBy nel (P.char ',')
@@ -268,7 +265,7 @@ instance PGType a => PGType [Maybe a] where
       return l
     nel = Nothing <$ nul P.<|> Just <$> el
     nul = P.oneOf "Nn" >> P.oneOf "Uu" >> P.oneOf "Ll" >> P.oneOf "Ll"
-    el = maybe (fail "array element") return . pgDecodeBS . LC.pack =<< qel P.<|> uqel
+    el = pgDecodeBS . LC.pack <$> (qel P.<|> uqel)
     qel = P.between (P.char '"') (P.char '"') $
       P.many $ (P.char '\\' >> P.anyChar) P.<|> P.noneOf "\\\""
     uqel = P.many1 (P.noneOf "\",{}")
@@ -287,7 +284,7 @@ data PGTypeHandler = PGType
 
 pgTypeDecoder :: PGTypeHandler -> Q Exp
 pgTypeDecoder PGType{ pgTypeType = t } =
-  [| fromMaybe (error "pgDecode: no parse") . pgDecodeBS :: L.ByteString -> $(return t) |]
+  [| pgDecodeBS :: L.ByteString -> $(return t) |]
 
 pgTypeEscaper :: PGTypeHandler -> Q Exp
 pgTypeEscaper PGType{ pgTypeType = t } =
@@ -318,7 +315,7 @@ pgTypes =
 --, ( 650,  651, "cidr",        ?)
   , ( 700, 1021, "float4",      ''Float)
   , ( 701, 1022, "float8",      ''Double)
---, ( 790, 791, "money",        Centi? Fixed?)
+--, ( 790,  791, "money",       Centi? Fixed?)
 --, ( 829, 1040, "macaddr",     ?)
 --, ( 869, 1041, "inet",        ?)
   , (1042, 1014, "bpchar",      ''String)

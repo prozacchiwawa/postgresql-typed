@@ -365,8 +365,7 @@ getTypeOID c t = do
   (_, r) <- pgSimpleQuery c ("SELECT oid, typarray FROM pg_catalog.pg_type WHERE typname = " ++ pgLiteral t)
   case r of
     [] -> return Nothing
-    [[Just o, Just lo]] | Just to <- pgDecodeBS o, Just lto <- pgDecodeBS lo ->
-      return (Just (to, lto))
+    [[Just o, Just lo]] -> return (Just (pgDecodeBS o, pgDecodeBS lo))
     _ -> fail $ "Unexpected PostgreSQL type result for " ++ t ++ ": " ++ show r
 
 getPGType :: PGConnection -> OID -> IO PGTypeHandler
@@ -413,7 +412,7 @@ pgDescribe h sql = do
        -- table, we can check there.
        else do (_, r) <- pgSimpleQuery h ("SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = " ++ pgLiteral oid ++ " AND attnum = " ++ pgLiteral col)
                case r of
-                 [[Just s]] -> maybe (fail "Failed to parse nullability value") (return . not) $ pgDecodeBS s
+                 [[Just s]] -> return $ not $ pgDecodeBS s
                  [] -> return True
                  _ -> fail $ "Failed to determine nullability of column #" ++ show col
 

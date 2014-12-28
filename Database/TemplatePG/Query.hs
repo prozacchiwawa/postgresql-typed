@@ -6,8 +6,8 @@ module Database.TemplatePG.Query
   ) where
 
 import Control.Applicative ((<$>))
-import Control.Monad (zipWithM, liftM)
-import Data.Maybe (fromJust)
+import Control.Monad (zipWithM, mapAndUnzipM)
+import Data.Maybe (fromMaybe)
 import Language.Haskell.Meta.Parse (parseExp)
 import qualified Language.Haskell.TH as TH
 import qualified Text.ParserCombinators.Parsec as P
@@ -73,15 +73,23 @@ weaveString _      _      = error "Weave mismatch (possible parse problem)"
 convertRow :: [(String, PGTypeHandler, Bool)] -- ^ result description
            -> TH.Q TH.Exp -- ^ A function for converting a row of the given result description
 convertRow types = do
-  n <- TH.newName "result"
-  TH.lamE [TH.varP n] $ TH.tupE $ map (convertColumn n) $ zip types [0..]
+  (pats, conv) <- mapAndUnzipM (\t@(n, _, _) -> do
+    v <- TH.newName n
+    return (TH.varP v, convertColumn (TH.varE v) t)) types
+  TH.lamE [TH.listP pats] $ TH.tupE conv
 
 -- |Given a raw PostgreSQL result and a result field type, convert the
--- appropriate field to a Haskell value.
-convertColumn :: TH.Name  -- ^ the name of the variable containing the result list (of 'Maybe' 'ByteString')
-              -> ((String, PGTypeHandler, Bool), Int) -- ^ the result field type and index
-              -> TH.Q TH.Exp
-convertColumn name ((_, typ, nullable), i) = [| $(pgStringToType' typ nullable) ($(TH.varE name) !! i) |]
+-- field to a Haskell value.
+-- If the boolean
+-- argument is 'False', that means that we know that the value is not nullable
+-- and we can use 'fromJust' to keep the code simple. If it's 'True', then we
+-- don't know if the value is nullable and must return a 'Maybe' value in case
+-- it is.
+convertColumn :: TH.ExpQ -- ^ the name of the variable containing the column value (of 'Maybe' 'ByteString')
+              -> (String, PGTypeHandler, Bool) -- ^ the result field type
+              -> TH.ExpQ
+convertColumn v (n, t, False) = [| $(pgTypeDecoder t) . fromMaybe (error $ "Unexpected NULL value in " ++ n) $(v) |]
+convertColumn v (_, t, True) = [| fmap $(pgTypeDecoder t) $(v) |]
 
 -- SQL Parser --
 
@@ -96,17 +104,6 @@ parseSql :: String -> ([String], [String])
 parseSql sql = case (P.parse sqlStatement "" sql) of
                  Left err -> error (show err)
                  Right ss -> every2nd ss
-
--- |Like 'pgStringToType', but deal with possible @NULL@s. If the boolean
--- argument is 'False', that means that we know that the value is not nullable
--- and we can use 'fromJust' to keep the code simple. If it's 'True', then we
--- don't know if the value is nullable and must return a 'Maybe' value in case
--- it is.
-pgStringToType' :: PGTypeHandler
-                -> Bool  -- ^ nullability indicator
-                -> TH.Q TH.Exp
-pgStringToType' t False = [| $(pgTypeDecoder t) . fromJust |]
-pgStringToType' t True  = [| liftM $(pgTypeDecoder t) |]
 
 sqlStatement :: P.Parser [String]
 sqlStatement = P.many1 $ P.choice [sqlText, sqlParameter]

@@ -26,6 +26,7 @@ import Data.Char (isDigit, digitToInt, intToDigit)
 import Data.Int
 import Data.List (intercalate)
 import qualified Data.Map as Map
+import Data.Maybe (fromMaybe)
 import Data.Ratio ((%), numerator, denominator)
 import qualified Data.Time as Time
 import Data.Word (Word32)
@@ -296,11 +297,14 @@ instance PGType a => PGType (Maybe a) where
 
 class PGType a => PossiblyMaybe m a {- | m -> a -} where
   possiblyMaybe :: m -> Maybe a
+  maybePossibly :: Maybe a -> m
 
 instance PGType a => PossiblyMaybe a a where
   possiblyMaybe = Just
+  maybePossibly = fromMaybe (error "Unexpected NULL value")
 instance PGType a => PossiblyMaybe (Maybe a) a where
   possiblyMaybe = id
+  maybePossibly = id
 
 data PGTypeHandler = PGType
   { pgTypeName :: String

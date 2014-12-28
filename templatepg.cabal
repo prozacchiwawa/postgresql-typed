@@ -37,12 +37,9 @@ Library
     bytestring >= 0.10.2,
     containers,
     haskell-src-meta,
-    mtl,
     network,
     old-locale,
     parsec,
-    regex-compat,
-    regex-posix,
     template-haskell,
     time,
     utf8-string

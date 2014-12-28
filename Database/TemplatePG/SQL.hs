@@ -9,91 +9,22 @@
 -- Note that transactions are messy and untested. Attempt to use them at your
 -- own risk.
 
-module Database.TemplatePG.SQL ( queryTuples
+module Database.TemplatePG.SQL ( makePGQuery
+                               , queryTuples
                                , queryTuple
                                , execute
                                , insertIgnore
                                , withTransaction
                                , rollback
-                               , withTHConnection
-                               , useTHConnection
-                               , handlePGType
                                ) where
 
-import Database.TemplatePG.Protocol
-import Database.TemplatePG.Types
-
-import Control.Applicative ((<$>), (<$))
-import Control.Concurrent.MVar (MVar, newMVar, modifyMVar, modifyMVar_)
 import Control.Exception (onException, catchJust)
-import Control.Monad (zipWithM, liftM, (>=>), when)
-import Data.Maybe (fromMaybe, fromJust, listToMaybe)
-import Language.Haskell.Meta.Parse (parseExp)
+import Control.Monad (liftM, void)
+import Data.Maybe (listToMaybe)
 import Language.Haskell.TH
-import Language.Haskell.TH.Syntax (returnQ)
-import Network (PortID(UnixSocket, PortNumber), PortNumber)
-import System.Environment (getEnv, lookupEnv)
-import System.IO.Unsafe (unsafePerformIO)
-import qualified Text.ParserCombinators.Parsec as P
 
--- |Grab a PostgreSQL connection for compile time. We do so through the
--- environment variables: @TPG_DB@, @TPG_HOST@, @TPG_PORT@, @TPG_USER@, and
--- @TPG_PASS@. Only TPG_DB is required.
-thConnection :: MVar (Either (IO PGConnection) PGConnection)
-thConnection = unsafePerformIO $ newMVar $ Left $ do
-  database <- getEnv "TPG_DB"
-  hostName <- fromMaybe "localhost" <$> lookupEnv "TPG_HOST"
-  socket   <- lookupEnv "TPG_SOCK"
-  portNum  <- maybe (5432 :: PortNumber) (fromIntegral . read) <$> lookupEnv "TPG_PORT"
-  username <- fromMaybe "postgres" <$> lookupEnv "TPG_USER"
-  password <- fromMaybe "" <$> lookupEnv "TPG_PASS"
-  let portId = maybe (PortNumber $ fromIntegral portNum) UnixSocket socket
-  pgConnect hostName portId database username password
-
-withTHConnection :: (PGConnection -> IO a) -> IO a
-withTHConnection f = modifyMVar thConnection $ either id return >=> (\c -> (,) (Right c) <$> f c)
-
-setTHConnection :: Either (IO PGConnection) PGConnection -> IO ()
-setTHConnection c = modifyMVar_ thConnection $ either (const $ return c) ((c <$) . pgDisconnect)
-
-useTHConnection :: IO PGConnection -> Q [Dec]
-useTHConnection c = [] <$ runIO (setTHConnection (Left c))
-
-modifyTHConnection :: (PGConnection -> PGConnection) -> IO ()
-modifyTHConnection f = modifyMVar_ thConnection $ return . either (Left . liftM f) (Right . f)
-
--- |This is where most of the magic happens.
--- This doesn't result in a PostgreSQL prepared statement, it just creates one
--- to do type inference.
--- This returns a prepared SQL string with all values (as an expression)
-prepareSQL :: String -- ^ a SQL string, with
-           -> Q (Exp, [(String, PGTypeHandler, Bool)]) -- ^ a prepared SQL string and result descriptions
-prepareSQL sql = do
-  (pTypes, fTypes) <- runIO $ withTHConnection $ \c ->
-    describeStatement c (holdPlaces sqlStrings expStrings)
-  s <- weaveString sqlStrings =<< zipWithM stringify pTypes expStrings
-  return (s, fTypes)
- where holdPlaces ss es = concat $ weave ss (take (length es) placeholders)
-       placeholders = map (('$' :) . show) ([1..]::[Integer])
-       stringify t s = [| $(pgTypeEscaper t) $(parseExp' s) |]
-       parseExp' e = either (fail . (++) ("Failed to parse expression {" ++ e ++ "}: ")) returnQ $ parseExp e
-       (sqlStrings, expStrings) = parseSql sql
-
--- |"weave" 2 lists of equal length into a single list.
-weave :: [a] -> [a] -> [a]
-weave x []          = x
-weave [] y          = y
-weave (x:xs) (y:ys) = x:y:(weave xs ys)
-
--- |"weave" a list of SQL fragements an Haskell expressions into a single SQL string.
-weaveString :: [String] -- ^ SQL fragments
-            -> [Exp]    -- ^ Haskell expressions
-            -> Q Exp
-weaveString []     []     = [| "" |]
-weaveString [x]    []     = [| x |]
-weaveString []     [y]    = return y
-weaveString (x:xs) (y:ys) = [| x ++ $(return y) ++ $(weaveString xs ys) |]
-weaveString _      _      = error "Weave mismatch (possible parse problem)"
+import Database.TemplatePG.Protocol
+import Database.TemplatePG.Query
 
 -- |@queryTuples :: String -> (PGConnection -> IO [(column1, column2, ...)])@
 -- 
@@ -106,9 +37,7 @@ weaveString _      _      = error "Weave mismatch (possible parse problem)"
 -- => IO [(Maybe String, Maybe Integer)]
 -- @
 queryTuples :: String -> Q Exp
-queryTuples sql = do
-  (sql', types) <- prepareSQL sql
-  [| liftM (map $(convertRow types)) . executeSimpleQuery $(returnQ sql') |]
+queryTuples sql = [| \c -> pgQuery c $(makePGQuery sql) |]
 
 -- |@queryTuple :: String -> (PGConnection -> IO (Maybe (column1, column2, ...)))@
 -- 
@@ -137,11 +66,7 @@ queryTuple sql = [| liftM listToMaybe . $(queryTuples sql) |]
 -- $(execute \"CREATE ROLE {rolename}\") h
 -- @
 execute :: String -> Q Exp
-execute sql = do
-  (sql', types) <- prepareSQL sql
-  case types of
-    [] -> [| executeSimpleStatement $(returnQ sql') |]
-    _  -> error "Execute can't be used on queries, only statements."
+execute sql = [| \c -> pgExecute c $(makePGQuery sql) |]
 
 -- |Run a sequence of IO actions (presumably SQL statements) wrapped in a
 -- transaction. Unfortunately you're restricted to using this in the 'IO'
@@ -149,15 +74,15 @@ execute sql = do
 -- 'MonadPeelIO' version.
 withTransaction :: PGConnection -> IO a -> IO a
 withTransaction h a =
-  onException (do executeSimpleStatement "BEGIN" h
+  onException (do void $ pgSimpleQuery "BEGIN" h
                   c <- a
-                  executeSimpleStatement "COMMIT" h
+                  void $ pgSimpleQuery "COMMIT" h
                   return c)
-              (executeSimpleStatement "ROLLBACK" h)
+              (void $ pgSimpleQuery "ROLLBACK" h)
 
 -- |Roll back a transaction.
 rollback :: PGConnection -> IO ()
-rollback = executeSimpleStatement "ROLLBACK"
+rollback = void . pgSimpleQuery "ROLLBACK"
 
 -- |Ignore duplicate key errors. This is also limited to the 'IO' Monad.
 insertIgnore :: IO () -> IO ()
@@ -166,61 +91,3 @@ insertIgnore q = catchJust uniquenessError q (\ _ -> return ())
                              PGException m -> case messageCode m of
                                                     "23505" -> Just ()
                                                     _       -> Nothing
-
--- |Given a result description, create a function to convert a result to a
--- tuple.
-convertRow :: [(String, PGTypeHandler, Bool)] -- ^ result description
-           -> Q Exp -- ^ A function for converting a row of the given result description
-convertRow types = do
-  n <- newName "result"
-  lamE [varP n] $ tupE $ map (convertColumn n) $ zip types [0..]
-
--- |Given a raw PostgreSQL result and a result field type, convert the
--- appropriate field to a Haskell value.
-convertColumn :: Name  -- ^ the name of the variable containing the result list (of 'Maybe' 'ByteString')
-              -> ((String, PGTypeHandler, Bool), Int) -- ^ the result field type and index
-              -> Q Exp
-convertColumn name ((_, typ, nullable), i) = [| $(pgStringToType' typ nullable) ($(varE name) !! i) |]
-
--- |Like 'pgStringToType', but deal with possible @NULL@s. If the boolean
--- argument is 'False', that means that we know that the value is not nullable
--- and we can use 'fromJust' to keep the code simple. If it's 'True', then we
--- don't know if the value is nullable and must return a 'Maybe' value in case
--- it is.
-pgStringToType' :: PGTypeHandler
-                -> Bool  -- ^ nullability indicator
-                -> Q Exp
-pgStringToType' t False = [| $(pgTypeDecoder t) . fromJust |]
-pgStringToType' t True  = [| liftM $(pgTypeDecoder t) |]
-
--- SQL Parser --
-
--- |Given a SQL string return a list of SQL parts and expression parts.
--- For example: @\"SELECT * FROM table WHERE id = {someID} AND age > {baseAge * 1.5}\"@
--- becomes: @(["SELECT * FROM table WHERE id = ", " AND age > "],
---            ["someID", "baseAge * 1.5"])@
-parseSql :: String -> ([String], [String])
-parseSql sql = case (P.parse sqlStatement "" sql) of
-                 Left err -> error (show err)
-                 Right ss -> every2nd ss
-
-every2nd :: [a] -> ([a], [a])
-every2nd = foldr (\a ~(x,y) -> (a:y,x)) ([],[])
-
-sqlStatement :: P.Parser [String]
-sqlStatement = P.many1 $ P.choice [sqlText, sqlParameter]
-
-sqlText :: P.Parser String
-sqlText = P.many1 (P.noneOf "{")
-
--- |Parameters are enclosed in @{}@ and can be any Haskell expression supported
--- by haskell-src-meta.
-sqlParameter :: P.Parser String
-sqlParameter = P.between (P.char '{') (P.char '}') $ P.many1 (P.noneOf "}")
-
-handlePGType :: String -> Type -> Q [Dec]
-handlePGType name typ = [] <$ runIO (do
-  (oid, loid) <- maybe (fail $ "PostgreSQL type not found: " ++ name) return =<< withTHConnection (\c -> getTypeOID c name)
-  modifyTHConnection (pgAddType oid (PGType name typ))
-  when (loid /= 0) $
-    modifyTHConnection (pgAddType loid (pgArrayType name typ)))

@@ -34,6 +34,7 @@ module Database.TemplatePG (-- *Introduction
                            , insertIgnore ) where
 
 import Database.TemplatePG.Protocol
+import Database.TemplatePG.Connection
 import Database.TemplatePG.SQL
 
 -- $intro

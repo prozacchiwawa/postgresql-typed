@@ -6,13 +6,13 @@
 --  directly.
 
 module Database.TemplatePG.Protocol ( PGConnection
+                                    , PGData
                                     , PGException(..)
                                     , messageCode
                                     , pgConnect
                                     , pgDisconnect
                                     , describeStatement
-                                    , executeSimpleQuery
-                                    , executeSimpleStatement
+                                    , pgSimpleQuery
                                     , pgAddType
                                     , getTypeOID
                                     ) where
@@ -20,8 +20,9 @@ module Database.TemplatePG.Protocol ( PGConnection
 import Database.TemplatePG.Types
 
 import Control.Applicative ((<$>))
+import Control.Arrow (second)
 import Control.Exception (Exception, throwIO)
-import Control.Monad (liftM, liftM2, replicateM, when)
+import Control.Monad (liftM, liftM2, replicateM, when, unless)
 #ifdef USE_MD5
 import qualified Crypto.Hash as Hash
 #endif
@@ -35,14 +36,13 @@ import qualified Data.ByteString.Lazy.Char8 as LC
 import qualified Data.ByteString.Lazy.UTF8 as U
 import Data.Foldable (foldMap)
 import qualified Data.Map as Map
-import Data.Maybe (isJust)
-import Data.Monoid
+import Data.Maybe (isJust, fromMaybe)
+import Data.Monoid ((<>), mconcat)
 import Data.Typeable (Typeable)
 import Network (HostName, PortID, connectTo)
 import System.Environment (lookupEnv)
-import System.IO hiding (putStr, putStrLn)
-
-import Prelude hiding (putStr, putStrLn)
+import System.IO (Handle, hFlush, hClose, stderr, hPutStrLn)
+import Text.Read (readMaybe)
 
 data PGConnection = PGConnection
   { pgHandle :: Handle
@@ -60,6 +60,9 @@ data ColDescription = ColDescription
   , colType :: !OID
   } deriving (Show)
 
+-- |A list of (nullable) data values, e.g. a single row or query parameters.
+type PGData = [Maybe L.ByteString]
+
 -- |PGMessage represents a PostgreSQL protocol message that we'll either send
 --  or receive. See
 --  <http://www.postgresql.org/docs/current/interactive/protocol-message-formats.html>.
@@ -67,7 +70,8 @@ data PGMessage = AuthenticationOk
                | AuthenticationCleartextPassword
                | AuthenticationMD5Password L.ByteString
                | BackendKeyData Word32 Word32
-               | Bind String [Maybe L.ByteString]
+               | Bind { statementName :: String, bindParameters :: PGData }
+               | Close { statementName :: String }
                -- |CommandComplete is bare for now, although it could be made
                --  to contain the number of rows affected by statements in a
                --  later version.
@@ -76,19 +80,19 @@ data PGMessage = AuthenticationOk
                --  (or just Nothing for null values, to distinguish them from
                --  emtpy strings). The ByteStrings can then be converted to
                --  the appropriate type by 'pgStringToType'.
-               | DataRow [Maybe L.ByteString]
+               | DataRow PGData
                -- |Describe a SQL query/statement. The SQL string can contain
                --  parameters ($1, $2, etc.).
-               | Describe String
+               | Describe { statementName :: String }
                | EmptyQueryResponse
                -- |An ErrorResponse contains the severity, "SQLSTATE", and
                --  message of an error. See
                --  <http://www.postgresql.org/docs/current/interactive/protocol-error-fields.html>.
-               | ErrorResponse MessageFields
-               | Execute
+               | ErrorResponse { messageFields :: MessageFields }
+               | Execute Word32
                | Flush
                | NoData
-               | NoticeResponse MessageFields
+               | NoticeResponse { messageFields :: MessageFields }
                -- |A ParameterDescription describes the type of a given SQL
                --  query/statement parameter ($1, $2, etc.). Unfortunately,
                --  PostgreSQL does not give us nullability information for the
@@ -96,9 +100,10 @@ data PGMessage = AuthenticationOk
                | ParameterDescription [OID]
                | ParameterStatus L.ByteString L.ByteString
                -- |Parse SQL Destination (prepared statement)
-               | Parse { parseName :: String, parseSQL :: String, parseTypes :: [OID] }
+               | Parse { statementName :: String, queryString :: String, parseTypes :: [OID] }
                | ParseComplete
                | PasswordMessage L.ByteString
+               | PortalSuspended
                | ReadyForQuery
                -- |A RowDescription contains the name, type, table OID, and
                --  column number of the resulting columns(s) of a query. The
@@ -106,7 +111,9 @@ data PGMessage = AuthenticationOk
                | RowDescription [ColDescription]
                -- |SimpleQuery takes a simple SQL string. Parameters ($1, $2,
                --  etc.) aren't allowed.
-               | SimpleQuery String
+               | SimpleQuery { queryString :: String }
+               | Sync
+               | Terminate
                | UnknownMessage Word8
   deriving (Show)
 
@@ -192,7 +199,9 @@ pgConnect host port db user pass = do
 -- a close message.
 pgDisconnect :: PGConnection -- ^ a handle from 'pgConnect'
              -> IO ()
-pgDisconnect PGConnection{ pgHandle = h } = hClose h
+pgDisconnect c@PGConnection{ pgHandle = h } = do
+  pgSend c Terminate
+  hClose h
 
 pgAddType :: OID -> PGTypeHandler -> PGConnection -> PGConnection
 pgAddType oid th p = p{ pgTypes = Map.insert oid th $ pgTypes p }
@@ -212,12 +221,13 @@ pgMessageID m = c2w $ case m of
                   (AuthenticationMD5Password _) -> 'R'
                   (BackendKeyData _ _)     -> 'K'
                   (Bind _ _)               -> 'B'
+                  (Close _)                -> 'C'
                   (CommandComplete _)      -> 'C'
                   (DataRow _)              -> 'D'
                   (Describe _)             -> 'D'
                   EmptyQueryResponse       -> 'I'
                   (ErrorResponse _)        -> 'E'
-                  Execute                  -> 'E'
+                  (Execute _)              -> 'E'
                   Flush                    -> 'H'
                   NoData                   -> 'n'
                   (NoticeResponse _)       -> 'N'
@@ -226,9 +236,12 @@ pgMessageID m = c2w $ case m of
                   (Parse _ _ _)            -> 'P'
                   ParseComplete            -> '1'
                   (PasswordMessage _)      -> 'p'
+                  PortalSuspended          -> 's'
                   ReadyForQuery            -> 'Z'
                   (RowDescription _)       -> 'T'
                   (SimpleQuery _)          -> 'Q'
+                  Sync                     -> 'S'
+                  Terminate                -> 'X'
                   (UnknownMessage _)       -> error "Unknown message type"
 
 -- |All PostgreSQL messages have a common header: an identifying character and
@@ -239,34 +252,31 @@ instance Binary PGMessage where
   put m = do
     let body = B.toLazyByteString $ putMessageBody m
     P.putWord8 $ pgMessageID m
-    P.putWord32be $ fromIntegral $ (L.length body) + 4
+    P.putWord32be $ fromIntegral $ L.length body + 4
     P.putLazyByteString body
-  -- |Getting a message takes care of reading the message type and message size
-  -- and ensures that just the necessary amount is read and given to
-  -- 'getMessageBody' (so that if a 'getMessageBody' parser doesn't read the
-  -- entire message it doesn't leave data to interfere with later messages).
-  get = do
-    (typ, len) <- getMessageHeader
-    body <- G.getLazyByteString ((fromIntegral len) - 4)
-    return $ G.runGet (getMessageBody typ) body
+  get = getMessageBody . fst =<< getMessageHeader
 
 -- |Given a message, build the over-the-wire representation of it. Note that we
 -- send fewer messages than we receive.
 putMessageBody :: PGMessage -> B.Builder
-putMessageBody (Describe n)    = B.singleton (c2w 'S') <> pgString n
-putMessageBody Execute         = B.singleton 0 <> B.putWord32be 0
-putMessageBody Flush           = B.empty
-putMessageBody Parse{ parseName = n, parseSQL = s, parseTypes = t } =
+putMessageBody Describe{ statementName = n } =
+  B.singleton (c2w 'S') <> pgString n
+putMessageBody Close{ statementName = n } =
+  B.singleton (c2w 'S') <> pgString n
+putMessageBody (Execute r)     = B.singleton 0 <> B.putWord32be r
+putMessageBody Parse{ statementName = n, queryString = s, parseTypes = t } =
   pgString n <> pgString s <>
     B.putWord16be (fromIntegral $ length t) <> foldMap B.putWord32be t
-putMessageBody (Bind s p) =
-  B.singleton 0 <> pgString s <> B.putWord16be 0 <>
+putMessageBody Bind{ statementName = n, bindParameters = p } =
+  B.singleton 0 <> pgString n <> B.putWord16be 0 <>
     B.putWord16be (fromIntegral $ length p) <> foldMap (maybe (B.putWord32be 0xFFFFFFFF) val) p <>
     B.putWord16be 0
   where val v = B.putWord32be (fromIntegral $ L.length v) <> B.fromLazyByteString v
-putMessageBody (SimpleQuery s) = pgString s
-putMessageBody (PasswordMessage s) = B.fromLazyByteString s <> B.singleton 0
-putMessageBody _               = undefined
+putMessageBody SimpleQuery{ queryString = s } =
+  pgString s
+putMessageBody (PasswordMessage s) =
+  B.fromLazyByteString s <> B.singleton 0
+putMessageBody _ = B.empty
 
 -- |Get the type and size of an incoming message.
 getMessageHeader :: Get (Word8, Int)
@@ -327,34 +337,46 @@ getMessageBody typ =
       'E' -> ErrorResponse `liftM` getMessageFields
       'I' -> return EmptyQueryResponse
       'n' -> return NoData
+      's' -> return PortalSuspended
       'N' -> NoticeResponse `liftM` getMessageFields
       _   -> return $ UnknownMessage typ
 
 -- |Send a message to PostgreSQL (low-level).
 pgSend :: PGConnection -> PGMessage -> IO ()
 pgSend PGConnection{ pgHandle = h, pgDebug = d } msg = do
-  when d $ print msg
+  when d $ putStrLn $ "> " ++ show msg
   L.hPut h (encode msg) >> hFlush h
+
+runGet :: Monad m => G.Get a -> L.ByteString -> m a
+runGet g s = either (\(_, _, e) -> fail e) (\(_, _, r) -> return r) $ G.runGetOrFail g s
 
 -- |Receive the next message from PostgreSQL (low-level). Note that this will
 -- block until it gets a message.
 pgReceive :: PGConnection -> IO PGMessage
 pgReceive c@PGConnection{ pgHandle = h, pgDebug = d } = do
-  (typ, len) <- G.runGet getMessageHeader `liftM` L.hGet h 5
-  body <- L.hGet h (len - 4)
-  when d $ do
-            L.putStr (P.runPut (P.putWord8 typ >> P.putWord32be (fromIntegral len)))
-            LC.putStrLn body
-            hFlush stdout
-  let msg = decode $ L.cons typ (L.append (B.toLazyByteString $ B.putWord32be $ fromIntegral len) body)
+  (typ, body) <- recv
+  msg <- runGet (getMessageBody typ) body
+  when d $ putStrLn $ "< " ++ show msg
   case msg of
-    (ErrorResponse m)  -> throwIO (PGException m)
-    (NoticeResponse m) -> hPutStrLn stderr (displayMessage m) >> pgReceive c
-    _                  -> return msg
+    ErrorResponse{ messageFields = m } -> do
+      pgSend c Sync >> wait
+      throwIO (PGException m)
+      where
+      wait = do
+        (t, _) <- recv
+        unless (t == pgMessageID ReadyForQuery) wait
+    NoticeResponse{ messageFields = m } ->
+      hPutStrLn stderr (displayMessage m) >> pgReceive c
+    _ -> return msg
+  where
+  recv = do
+    (typ, len) <- runGet getMessageHeader =<< L.hGet h 5
+    body <- L.hGet h (len - 4)
+    return (typ, body)
 
 getTypeOID :: PGConnection -> String -> IO (Maybe (OID, OID))
 getTypeOID c t = do
-  r <- executeSimpleQuery ("SELECT oid, typarray FROM pg_catalog.pg_type WHERE typname = " ++ pgLiteral t) c
+  (_, r) <- pgSimpleQuery ("SELECT oid, typarray FROM pg_catalog.pg_type WHERE typname = " ++ pgLiteral t) c
   case r of
     [] -> return Nothing
     [[Just o, Just lo]] | Just to <- pgDecodeBS o, Just lto <- pgDecodeBS lo ->
@@ -365,7 +387,7 @@ getPGType :: PGConnection -> OID -> IO PGTypeHandler
 getPGType c@PGConnection{ pgTypes = types } oid =
   maybe notype return $ Map.lookup oid types where
   notype = do
-    r <- executeSimpleQuery ("SELECT typname FROM pg_catalog.pg_type WHERE oid = " ++ pgLiteral oid) c
+    (_, r) <- pgSimpleQuery ("SELECT typname FROM pg_catalog.pg_type WHERE oid = " ++ pgLiteral oid) c
     case r of
       [[Just s]] -> fail $ "Unsupported PostgreSQL type " ++ show oid ++ ": " ++ U.toString s
       _ -> fail $ "Unknown PostgreSQL type: " ++ show oid
@@ -378,7 +400,7 @@ describeStatement :: PGConnection
                   -> String -- ^ SQL string
                   -> IO ([PGTypeHandler], [(String, PGTypeHandler, Bool)]) -- ^ a list of parameter types, and a list of result field names, types, and nullability indicators.
 describeStatement h sql = do
-  pgSend h $ Parse{ parseSQL = sql, parseName = "", parseTypes = [] }
+  pgSend h $ Parse{ queryString = sql, statementName = "", parseTypes = [] }
   pgSend h $ Describe ""
   pgSend h $ Flush
   ParseComplete <- pgReceive h
@@ -402,50 +424,35 @@ describeStatement h sql = do
        then return True
        -- In cases where the resulting field is tracable to the column of a
        -- table, we can check there.
-       else do r <- executeSimpleQuery ("SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = " ++ show oid ++ " AND attnum = " ++ show col) h
+       else do (_, r) <- pgSimpleQuery ("SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = " ++ pgLiteral oid ++ " AND attnum = " ++ pgLiteral col) h
                case r of
                  [[Just s]] -> return $ case U.toString s of
                                           "t" -> False
                                           "f" -> True
                                           _   -> error "Unexpected result from PostgreSQL"
                  [] -> return True
-                 _ -> error $ "Can't determine nullability of column #" ++ show col
+                 _ -> fail $ "Can't determine nullability of column #" ++ show col
 
 -- |A simple query is one which requires sending only a single 'SimpleQuery'
 -- message to the PostgreSQL server. The query is sent as a single string; you
 -- cannot bind parameters. Note that queries can return 0 results (an empty
 -- list).
-executeSimpleQuery :: String                    -- ^ SQL string
+pgSimpleQuery :: String -- ^ SQL string
                    -> PGConnection
-                   -> IO [[Maybe L.ByteString]] -- ^ A list of result rows,
-                                                -- which themselves are a list
-                                                -- of fields.
-executeSimpleQuery sql h = do
+                   -> IO (Int, [PGData]) -- ^ The number of rows affected and a list of result rows
+pgSimpleQuery sql h = do
   pgSend h $ SimpleQuery sql
   go start where 
   go = (>>=) $ pgReceive h
-  start (CommandComplete _) = go end
+  start (CommandComplete c) = got c
   start (RowDescription _) = go row
   start m = fail $ "executeSimpleQuery: unexpected response: " ++ show m
-  row (CommandComplete _) = go end
-  row (DataRow fs) = (fs:) <$> go row
+  row (CommandComplete c) = got c
+  row (DataRow fs) = second (fs:) <$> go row
   row m = fail $ "executeSimpleQuery: unexpected row: " ++ show m
+  got c = (,) (rowsAffected $ LC.words c) <$> go end
+  rowsAffected [] = -1
+  rowsAffected l = fromMaybe (-1) $ readMaybe $ LC.unpack $ last l
   end ReadyForQuery = return []
   end EmptyQueryResponse = go end
-  end m = fail $ "executeSimpleQuery: unexpected response: " ++ show m
-
--- |While not strictly necessary, this can make code a little bit clearer. It
--- executes a 'SimpleQuery' but doesn't look for results.
-executeSimpleStatement :: String -- ^ SQL string
-                       -> PGConnection
-                       -> IO ()
-executeSimpleStatement sql h = do
-  pgSend h $ SimpleQuery sql
-  loop where 
-  loop = msg =<< pgReceive h
-  msg ReadyForQuery = return ()
-  msg (CommandComplete _) = loop
-  msg EmptyQueryResponse = loop
-  msg (RowDescription _) = loop
-  msg (DataRow _) = loop
-  msg m = fail $ "executeSimpleStatement: unexpected response: " ++ show m
+  end m = fail $ "executeSimpleQuery: unexpected message: " ++ show m

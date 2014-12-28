@@ -48,7 +48,9 @@ Library
     utf8-string
   Exposed-Modules:
     Database.TemplatePG
+    Database.TemplatePG.Connection
     Database.TemplatePG.Protocol
+    Database.TemplatePG.Query
     Database.TemplatePG.SQL
     Database.TemplatePG.Types
   Extensions: TemplateHaskell

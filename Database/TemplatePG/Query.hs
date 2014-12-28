@@ -88,7 +88,7 @@ convertRow types = do
 convertColumn :: TH.ExpQ -- ^ the name of the variable containing the column value (of 'Maybe' 'ByteString')
               -> (String, PGTypeHandler, Bool) -- ^ the result field type
               -> TH.ExpQ
-convertColumn v (n, t, False) = [| $(pgTypeDecoder t) . fromMaybe (error $ "Unexpected NULL value in " ++ n) $(v) |]
+convertColumn v (n, t, False) = [| $(pgTypeDecoder t) (fromMaybe (error $ "Unexpected NULL value in " ++ n) $(v)) |]
 convertColumn v (_, t, True) = [| fmap $(pgTypeDecoder t) $(v) |]
 
 -- SQL Parser --

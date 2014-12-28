@@ -17,7 +17,7 @@ useTHConnection connect
 main :: IO ()
 main = do
   c <- connect
-  _ <- $(queryTuples "SELECT oid, typname from pg_type") c
+  _ <- $(queryTuples "SELECT typname from pg_type") c :: IO [String]
   z <- Time.getZonedTime
   let i = 1
       b = True

@@ -1,4 +1,4 @@
-{-# LANGUAGE ExistentialQuantification, TypeSynonymInstances, FlexibleInstances, OverlappingInstances, ScopedTypeVariables #-}
+{-# LANGUAGE ExistentialQuantification, TypeSynonymInstances, FlexibleInstances, OverlappingInstances, ScopedTypeVariables, MultiParamTypeClasses, FunctionalDependencies #-}
 -- Copyright 2010, 2011, 2013 Chris Forno
 -- Copyright 2014 Dylan Simon
 
@@ -6,6 +6,7 @@ module Database.TemplatePG.Types
   ( pgQuote
   , PGType(..)
   , OID
+  , PossiblyMaybe(..)
   , PGTypeHandler(..)
   , pgTypeDecoder
   , pgTypeEscaper
@@ -277,6 +278,30 @@ instance PGType a => PGType [Maybe a] where
     es (c@'\\':r) = '\\':c:es r
     es (c:r) = c:es r
 
+{-
+-- Since PG values cannot contain '\0', we use it as a special flag for NULL values (which will later be encoded with length -1)
+pgNull :: String
+pgNull = "\0"
+pgNullBS :: L.ByteString
+pgNullBS = L.singleton 0
+
+-- This is a nice idea, but isn't actually useful because these types will never be resolved
+instance PGType a => PGType (Maybe a) where
+  pgDecodeBS s = pgDecodeBS s <$ guard (s /= pgNullBS)
+  pgDecode s = pgDecode s <$ guard (s /= pgNull)
+  pgEncodeBS = maybe pgNullBS pgEncodeBS
+  pgEncode = maybe pgNull pgEncode
+  pgLiteral = maybe "NULL" pgLiteral
+-}
+
+class PGType a => PossiblyMaybe m a {- | m -> a -} where
+  possiblyMaybe :: m -> Maybe a
+
+instance PGType a => PossiblyMaybe a a where
+  possiblyMaybe = Just
+instance PGType a => PossiblyMaybe (Maybe a) a where
+  possiblyMaybe = id
+
 data PGTypeHandler = PGType
   { pgTypeName :: String
   , pgTypeType :: Type
@@ -288,7 +313,7 @@ pgTypeDecoder PGType{ pgTypeType = t } =
 
 pgTypeEscaper :: PGTypeHandler -> Q Exp
 pgTypeEscaper PGType{ pgTypeType = t } =
-  [| pgLiteral :: $(return t) -> String |]
+  [| maybe "NULL" (pgLiteral :: $(return t) -> String) . possiblyMaybe |]
 
 type PGTypeMap = Map.Map OID PGTypeHandler
 

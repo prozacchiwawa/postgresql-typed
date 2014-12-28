@@ -27,7 +27,7 @@ import Control.Applicative ((<$>), (<$))
 import Control.Concurrent.MVar (MVar, newMVar, modifyMVar, modifyMVar_)
 import Control.Exception (onException, catchJust)
 import Control.Monad (zipWithM, liftM, (>=>), when)
-import Data.Maybe (fromMaybe, fromJust)
+import Data.Maybe (fromMaybe, fromJust, listToMaybe)
 import Language.Haskell.Meta.Parse (parseExp)
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax (returnQ)
@@ -124,11 +124,7 @@ queryTuples sql = do
 -- => IO (Maybe (Maybe String, Maybe Integer))
 -- @
 queryTuple :: String -> Q Exp
-queryTuple sql = [| liftM maybeHead . $(queryTuples sql) |]
-
-maybeHead :: [a] -> Maybe a
-maybeHead []    = Nothing
-maybeHead (x:_) = Just x
+queryTuple sql = [| liftM listToMaybe . $(queryTuples sql) |]
 
 -- |@execute :: String -> (PGConnection -> IO ())@
 -- 

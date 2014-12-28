@@ -33,6 +33,7 @@ import Data.ByteString.Internal (c2w, w2c)
 import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString.Lazy.Char8 as LC
 import qualified Data.ByteString.Lazy.UTF8 as U
+import Data.Foldable (foldMap)
 import qualified Data.Map as Map
 import Data.Maybe (isJust)
 import Data.Monoid
@@ -66,10 +67,11 @@ data PGMessage = AuthenticationOk
                | AuthenticationCleartextPassword
                | AuthenticationMD5Password L.ByteString
                | BackendKeyData Word32 Word32
+               | Bind String [Maybe L.ByteString]
                -- |CommandComplete is bare for now, although it could be made
                --  to contain the number of rows affected by statements in a
                --  later version.
-               | CommandComplete
+               | CommandComplete L.ByteString
                -- |Each DataRow (result of a query) is a list of ByteStrings
                --  (or just Nothing for null values, to distinguish them from
                --  emtpy strings). The ByteStrings can then be converted to
@@ -94,7 +96,7 @@ data PGMessage = AuthenticationOk
                | ParameterDescription [OID]
                | ParameterStatus L.ByteString L.ByteString
                -- |Parse SQL Destination (prepared statement)
-               | Parse String String
+               | Parse { parseName :: String, parseSQL :: String, parseTypes :: [OID] }
                | ParseComplete
                | PasswordMessage L.ByteString
                | ReadyForQuery
@@ -209,7 +211,8 @@ pgMessageID m = c2w $ case m of
                   AuthenticationCleartextPassword -> 'R'
                   (AuthenticationMD5Password _) -> 'R'
                   (BackendKeyData _ _)     -> 'K'
-                  CommandComplete          -> 'C'
+                  (Bind _ _)               -> 'B'
+                  (CommandComplete _)      -> 'C'
                   (DataRow _)              -> 'D'
                   (Describe _)             -> 'D'
                   EmptyQueryResponse       -> 'I'
@@ -220,7 +223,7 @@ pgMessageID m = c2w $ case m of
                   (NoticeResponse _)       -> 'N'
                   (ParameterDescription _) -> 't'
                   (ParameterStatus _ _)    -> 'S'
-                  (Parse _ _)              -> 'P'
+                  (Parse _ _ _)            -> 'P'
                   ParseComplete            -> '1'
                   (PasswordMessage _)      -> 'p'
                   ReadyForQuery            -> 'Z'
@@ -251,9 +254,16 @@ instance Binary PGMessage where
 -- send fewer messages than we receive.
 putMessageBody :: PGMessage -> B.Builder
 putMessageBody (Describe n)    = B.singleton (c2w 'S') <> pgString n
-putMessageBody Execute         = pgString "" <> B.putWord32be 0
+putMessageBody Execute         = B.singleton 0 <> B.putWord32be 0
 putMessageBody Flush           = B.empty
-putMessageBody (Parse s n)     = mconcat [pgString n, pgString s, B.putWord16be 0]
+putMessageBody Parse{ parseName = n, parseSQL = s, parseTypes = t } =
+  pgString n <> pgString s <>
+    B.putWord16be (fromIntegral $ length t) <> foldMap B.putWord32be t
+putMessageBody (Bind s p) =
+  B.singleton 0 <> pgString s <> B.putWord16be 0 <>
+    B.putWord16be (fromIntegral $ length p) <> foldMap (maybe (B.putWord32be 0xFFFFFFFF) val) p <>
+    B.putWord16be 0
+  where val v = B.putWord32be (fromIntegral $ L.length v) <> B.fromLazyByteString v
 putMessageBody (SimpleQuery s) = pgString s
 putMessageBody (PasswordMessage s) = B.fromLazyByteString s <> B.singleton 0
 putMessageBody _               = undefined
@@ -296,7 +306,7 @@ getMessageBody typ =
                                    typ' <- G.getWord32be -- type
                                    _ <- G.getWord16be -- type size
                                    _ <- G.getWord32be -- type modifier
-                                   _ <- G.getWord16be -- format code
+                                   0 <- G.getWord16be -- format code
                                    return $ ColDescription
                                     { colName = U.toString name
                                     , colTable = oid
@@ -305,16 +315,14 @@ getMessageBody typ =
                                     }
       'Z' -> G.getWord8 >> return ReadyForQuery
       '1' -> return ParseComplete
-      'C' -> return CommandComplete
+      'C' -> liftM CommandComplete G.getLazyByteStringNul
       'S' -> liftM2 ParameterStatus G.getLazyByteStringNul G.getLazyByteStringNul
-      'D' -> do numFields <- fromIntegral `liftM` G.getWord16be
-                ds <- replicateM numFields readField
-                return $ DataRow ds
-              where readField = do len <- fromIntegral `liftM` G.getWord32be
-                                   s <- case len of
+      'D' -> do numFields <- G.getWord16be
+                DataRow <$> replicateM (fromIntegral numFields) readField
+              where readField = do len <- G.getWord32be
+                                   case len of
                                           0xFFFFFFFF -> return Nothing
-                                          _          -> Just `liftM` G.getLazyByteString len
-                                   return s
+                                          _          -> Just `liftM` G.getLazyByteString (fromIntegral len)
       'K' -> liftM2 BackendKeyData G.getWord32be G.getWord32be
       'E' -> ErrorResponse `liftM` getMessageFields
       'I' -> return EmptyQueryResponse
@@ -344,18 +352,6 @@ pgReceive c@PGConnection{ pgHandle = h, pgDebug = d } = do
     (NoticeResponse m) -> hPutStrLn stderr (displayMessage m) >> pgReceive c
     _                  -> return msg
 
--- |Wait for a message of a given type.
-pgWaitFor :: PGConnection
-          -> [Word8] -- ^ A list of message identifiers, the first of which
-                     -- found while reading messages from PostgreSQL will be
-                     -- returned.
-          -> IO PGMessage
-pgWaitFor h ids = do
-  response <- pgReceive h
-  if pgMessageID response `elem` ids
-    then return response
-    else pgWaitFor h ids
-
 getTypeOID :: PGConnection -> String -> IO (Maybe (OID, OID))
 getTypeOID c t = do
   r <- executeSimpleQuery ("SELECT oid, typarray FROM pg_catalog.pg_type WHERE typname = " ++ pgLiteral t) c
@@ -382,16 +378,16 @@ describeStatement :: PGConnection
                   -> String -- ^ SQL string
                   -> IO ([PGTypeHandler], [(String, PGTypeHandler, Bool)]) -- ^ a list of parameter types, and a list of result field names, types, and nullability indicators.
 describeStatement h sql = do
-  pgSend h $ Parse sql ""
+  pgSend h $ Parse{ parseSQL = sql, parseName = "", parseTypes = [] }
   pgSend h $ Describe ""
   pgSend h $ Flush
-  _ <- pgWaitFor h [pgMessageID ParseComplete]
+  ParseComplete <- pgReceive h
   ParameterDescription ps <- pgReceive h
   m <- pgReceive h
   liftM2 (,) (mapM (getPGType h) ps) $ case m of
     NoData -> return []
     RowDescription r -> mapM desc r
-    _ -> fail $ "unexpected describe response: " ++ show m
+    _ -> fail $ "describeStatement: unexpected response: " ++ show m
  where
    desc (ColDescription name tab col typ) = do
      t <- getPGType h typ
@@ -412,7 +408,8 @@ describeStatement h sql = do
                                           "t" -> False
                                           "f" -> True
                                           _   -> error "Unexpected result from PostgreSQL"
-                 _          -> error $ "Can't determine nullability of column #" ++ show col
+                 [] -> return True
+                 _ -> error $ "Can't determine nullability of column #" ++ show col
 
 -- |A simple query is one which requires sending only a single 'SimpleQuery'
 -- message to the PostgreSQL server. The query is sent as a single string; you
@@ -420,23 +417,22 @@ describeStatement h sql = do
 -- list).
 executeSimpleQuery :: String                    -- ^ SQL string
                    -> PGConnection
-                   -> IO ([[Maybe L.ByteString]]) -- ^ A list of result rows,
+                   -> IO [[Maybe L.ByteString]] -- ^ A list of result rows,
                                                 -- which themselves are a list
                                                 -- of fields.
 executeSimpleQuery sql h = do
   pgSend h $ SimpleQuery sql
-  m <- pgWaitFor h $ map c2w ['C', 'I', 'T']
-  case m of
-    EmptyQueryResponse -> return [[]]
-    (RowDescription _) -> readDataRows
-    _                  -> error "executeSimpleQuery: Unexpected Message"
- where readDataRows = do
-         m <- pgWaitFor h $ map c2w ['C', 'D']
-         case m of
-           CommandComplete -> return []
-           (DataRow fs)    -> do rs <- readDataRows
-                                 return (fs:rs)
-           _               -> error ""
+  go start where 
+  go = (>>=) $ pgReceive h
+  start (CommandComplete _) = go end
+  start (RowDescription _) = go row
+  start m = fail $ "executeSimpleQuery: unexpected response: " ++ show m
+  row (CommandComplete _) = go end
+  row (DataRow fs) = (fs:) <$> go row
+  row m = fail $ "executeSimpleQuery: unexpected row: " ++ show m
+  end ReadyForQuery = return []
+  end EmptyQueryResponse = go end
+  end m = fail $ "executeSimpleQuery: unexpected response: " ++ show m
 
 -- |While not strictly necessary, this can make code a little bit clearer. It
 -- executes a 'SimpleQuery' but doesn't look for results.
@@ -445,8 +441,11 @@ executeSimpleStatement :: String -- ^ SQL string
                        -> IO ()
 executeSimpleStatement sql h = do
   pgSend h $ SimpleQuery sql
-  m <- pgWaitFor h $ map c2w ['C', 'I']
-  case m of
-    CommandComplete    -> return ()
-    EmptyQueryResponse -> return ()
-    _                  -> error "executeSimpleStatement: Unexpected Message"
+  loop where 
+  loop = msg =<< pgReceive h
+  msg ReadyForQuery = return ()
+  msg (CommandComplete _) = loop
+  msg EmptyQueryResponse = loop
+  msg (RowDescription _) = loop
+  msg (DataRow _) = loop
+  msg m = fail $ "executeSimpleStatement: unexpected response: " ++ show m

@@ -16,6 +16,7 @@ useTHConnection connect
 main :: IO ()
 main = do
   c <- connect
+  _ <- $(queryTuples "SELECT oid, typname from pg_type") c
   z <- Time.getZonedTime
   let t = Time.zonedTimeToLocalTime z
       d = Time.localDay t

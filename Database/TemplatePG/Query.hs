@@ -28,13 +28,13 @@ instance Functor PGQuery where
 -- |Run a query and return a list of row results.
 pgQuery :: PGConnection -> PGQuery a -> IO [a]
 pgQuery c PGSimpleQuery{ pgQueryString = s, pgQueryParser = p } =
-  map p . snd <$> pgSimpleQuery s c
+  map p . snd <$> pgSimpleQuery c s
 
 -- |Execute a query that does not return result.
 -- Return the number of rows affected (or -1 if not known).
 pgExecute :: PGConnection -> PGQuery () -> IO Int
 pgExecute c PGSimpleQuery{ pgQueryString = s } =
-  fst <$> pgSimpleQuery s c
+  fst <$> pgSimpleQuery c s
 
 -- |Produce a new PGQuery from a SQL query string.
 -- This should be used as @$(makePGQuery \"SELECT ...\")@
@@ -42,7 +42,7 @@ makePGQuery :: String -- ^ a SQL query string
             -> TH.Q TH.Exp -- ^ a PGQuery
 makePGQuery sql = do
   (pTypes, fTypes) <- TH.runIO $ withTHConnection $ \c ->
-    describeStatement c (holdPlaces sqlStrings expStrings)
+    pgDescribe c (holdPlaces sqlStrings expStrings)
   s <- weaveString sqlStrings =<< zipWithM stringify pTypes expStrings
   [| PGSimpleQuery $(return s) $(convertRow fTypes) |]
   where

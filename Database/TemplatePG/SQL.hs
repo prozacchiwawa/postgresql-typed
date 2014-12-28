@@ -74,15 +74,15 @@ execute sql = [| \c -> pgExecute c $(makePGQuery sql) |]
 -- 'MonadPeelIO' version.
 withTransaction :: PGConnection -> IO a -> IO a
 withTransaction h a =
-  onException (do void $ pgSimpleQuery "BEGIN" h
+  onException (do void $ pgSimpleQuery h "BEGIN"
                   c <- a
-                  void $ pgSimpleQuery "COMMIT" h
+                  void $ pgSimpleQuery h "COMMIT"
                   return c)
-              (void $ pgSimpleQuery "ROLLBACK" h)
+              (void $ pgSimpleQuery h "ROLLBACK")
 
 -- |Roll back a transaction.
 rollback :: PGConnection -> IO ()
-rollback = void . pgSimpleQuery "ROLLBACK"
+rollback h = void $ pgSimpleQuery h "ROLLBACK"
 
 -- |Ignore duplicate key errors. This is also limited to the 'IO' Monad.
 insertIgnore :: IO () -> IO ()

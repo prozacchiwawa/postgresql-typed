@@ -11,7 +11,7 @@ module Database.TemplatePG.Protocol ( PGConnection
                                     , messageCode
                                     , pgConnect
                                     , pgDisconnect
-                                    , describeStatement
+                                    , pgDescribe
                                     , pgSimpleQuery
                                     , pgAddType
                                     , getTypeOID
@@ -238,7 +238,7 @@ getMessageBody 'T' = do
   numFields <- G.getWord16be
   RowDescription <$> replicateM (fromIntegral numFields) getField where
   getField = do
-    name <- G.getLazyByteStringNul
+    name <- getPGString
     oid <- G.getWord32be -- table OID
     col <- G.getWord16be -- column number
     typ' <- G.getWord32be -- type
@@ -246,7 +246,7 @@ getMessageBody 'T' = do
     _ <- G.getWord32be -- type modifier
     0 <- G.getWord16be -- format code
     return $ ColDescription
-      { colName = U.toString name
+      { colName = name
       , colTable = oid
       , colNumber = fromIntegral col
       , colType = typ'
@@ -362,7 +362,7 @@ pgAddType oid th p = p{ connTypes = Map.insert oid th $ connTypes p }
 
 getTypeOID :: PGConnection -> String -> IO (Maybe (OID, OID))
 getTypeOID c t = do
-  (_, r) <- pgSimpleQuery ("SELECT oid, typarray FROM pg_catalog.pg_type WHERE typname = " ++ pgLiteral t) c
+  (_, r) <- pgSimpleQuery c ("SELECT oid, typarray FROM pg_catalog.pg_type WHERE typname = " ++ pgLiteral t)
   case r of
     [] -> return Nothing
     [[Just o, Just lo]] | Just to <- pgDecodeBS o, Just lto <- pgDecodeBS lo ->
@@ -373,7 +373,7 @@ getPGType :: PGConnection -> OID -> IO PGTypeHandler
 getPGType c@PGConnection{ connTypes = types } oid =
   maybe notype return $ Map.lookup oid types where
   notype = do
-    (_, r) <- pgSimpleQuery ("SELECT typname FROM pg_catalog.pg_type WHERE oid = " ++ pgLiteral oid) c
+    (_, r) <- pgSimpleQuery c ("SELECT typname FROM pg_catalog.pg_type WHERE oid = " ++ pgLiteral oid)
     case r of
       [[Just s]] -> fail $ "Unsupported PostgreSQL type " ++ show oid ++ ": " ++ U.toString s
       _ -> fail $ "Unknown PostgreSQL type: " ++ show oid
@@ -382,10 +382,9 @@ getPGType c@PGConnection{ connTypes = types } oid =
 -- more parameter descriptions (a PostgreSQL type) and zero or more result
 -- field descriptions (for queries) (consist of the name of the field, the
 -- type of the field, and a nullability indicator).
-describeStatement :: PGConnection
-                  -> String -- ^ SQL string
+pgDescribe :: PGConnection -> String -- ^ SQL string
                   -> IO ([PGTypeHandler], [(String, PGTypeHandler, Bool)]) -- ^ a list of parameter types, and a list of result field names, types, and nullability indicators.
-describeStatement h sql = do
+pgDescribe h sql = do
   pgSync h
   pgSend h $ Parse{ queryString = sql, statementName = "", parseTypes = [] }
   pgSend h $ Describe ""
@@ -412,23 +411,19 @@ describeStatement h sql = do
        then return True
        -- In cases where the resulting field is tracable to the column of a
        -- table, we can check there.
-       else do (_, r) <- pgSimpleQuery ("SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = " ++ pgLiteral oid ++ " AND attnum = " ++ pgLiteral col) h
+       else do (_, r) <- pgSimpleQuery h ("SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = " ++ pgLiteral oid ++ " AND attnum = " ++ pgLiteral col)
                case r of
-                 [[Just s]] -> return $ case U.toString s of
-                                          "t" -> False
-                                          "f" -> True
-                                          _   -> error "Unexpected result from PostgreSQL"
+                 [[Just s]] -> maybe (fail "Failed to parse nullability value") (return . not) $ pgDecodeBS s
                  [] -> return True
-                 _ -> fail $ "Can't determine nullability of column #" ++ show col
+                 _ -> fail $ "Failed to determine nullability of column #" ++ show col
 
 -- |A simple query is one which requires sending only a single 'SimpleQuery'
 -- message to the PostgreSQL server. The query is sent as a single string; you
 -- cannot bind parameters. Note that queries can return 0 results (an empty
 -- list).
-pgSimpleQuery :: String -- ^ SQL string
-                   -> PGConnection
+pgSimpleQuery :: PGConnection -> String -- ^ SQL string
                    -> IO (Int, [PGData]) -- ^ The number of rows affected and a list of result rows
-pgSimpleQuery sql h = do
+pgSimpleQuery h sql = do
   pgSync h
   pgSend h $ SimpleQuery sql
   pgFlush h

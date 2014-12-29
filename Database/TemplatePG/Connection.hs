@@ -1,7 +1,7 @@
 module Database.TemplatePG.Connection 
   ( withTHConnection
   , useTHConnection
-  , handlePGType
+  , registerPGType
   ) where
 
 import Control.Applicative ((<$>), (<$))
@@ -49,8 +49,8 @@ modifyTHConnection f = modifyMVar_ thConnection $ return . either (Left . liftM 
 
 -- |Register a new handler for PostgreSQL type and a Haskell type, which should be an instance of 'PGType'.
 -- This should be called as a top-level declaration and produces no code.
-handlePGType :: String -> TH.Type -> TH.Q [TH.Dec]
-handlePGType name typ = [] <$ TH.runIO (do
+registerPGType :: String -> TH.Type -> TH.Q [TH.Dec]
+registerPGType name typ = [] <$ TH.runIO (do
   (oid, loid) <- maybe (fail $ "PostgreSQL type not found: " ++ name) return =<< withTHConnection (\c -> getTypeOID c name)
   modifyTHConnection (pgAddType oid (PGType name typ))
   when (loid /= 0) $

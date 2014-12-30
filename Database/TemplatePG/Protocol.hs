@@ -14,6 +14,7 @@ module Database.TemplatePG.Protocol ( PGConnection
                                     , pgDescribe
                                     , pgSimpleQuery
                                     , pgPreparedQuery
+                                    , pgPreparedLazyQuery
                                     , pgCloseQuery
                                     , pgAddType
                                     , getTypeOID
@@ -44,6 +45,7 @@ import Data.Word (Word8, Word32)
 import Network (HostName, PortID, connectTo)
 import System.Environment (lookupEnv)
 import System.IO (Handle, hFlush, hClose, stderr, hPutStrLn)
+import System.IO.Unsafe (unsafeInterleaveIO)
 import Text.Read (readMaybe)
 
 data PGState
@@ -298,6 +300,9 @@ pgReceive c@PGConnection{ connHandle = h, connDebug = d } = do
       writeIORef (connState c) StateUnknown >> throwIO (PGError m) 
     _ -> return msg
 
+pgHandle :: PGConnection -> (PGBackendMessage -> IO a) -> IO a
+pgHandle c = (pgReceive c >>=)
+
 -- |Connect to a PostgreSQL server.
 pgConnect :: HostName  -- ^ the host to connect to
           -> PortID    -- ^ the port to connect on
@@ -333,7 +338,7 @@ pgConnect host port db user pass = do
   pgFlush c
   conn c
   where
-  conn c = msg c =<< pgReceive c
+  conn c = pgHandle c (msg c)
   msg c (ReadyForQuery _) = return c
   msg c (BackendKeyData p k) = conn c{ connPid = p, connKey = k }
   msg c (ParameterStatus k v) = conn c{ connParameters = Map.insert k v $ connParameters c }
@@ -443,7 +448,7 @@ pgSimpleQuery h sql = do
   pgSend h $ SimpleQuery sql
   pgFlush h
   go start where 
-  go = (>>=) $ pgReceive h
+  go = pgHandle h
   start (CommandComplete c) = got c
   start (RowDescription _) = go row
   start m = fail $ "pgSimpleQuery: unexpected response: " ++ show m
@@ -455,12 +460,8 @@ pgSimpleQuery h sql = do
   end EmptyQueryResponse = go end
   end m = fail $ "pgSimpleQuery: unexpected message: " ++ show m
 
--- |Prepare a statement, bind it, and execute it.
--- If the given statement has already been prepared (and not yet closed) on this connection, it will be re-used.
-pgPreparedQuery :: PGConnection -> String -- ^ SQL statement with placeholders
-  -> PGData -- ^ Paremeters to bind to placeholders
-  -> IO (Int, [PGData])
-pgPreparedQuery c@PGConnection{ connPreparedStatements = psr } sql bind = do
+pgPreparedBind :: PGConnection -> String -> PGData -> IO (IO ())
+pgPreparedBind c@PGConnection{ connPreparedStatements = psr } sql bind = do
   pgSync c
   (p, n) <- atomicModifyIORef' psr $ \(i, m) ->
     maybe ((succ i, m), (False, i)) ((,) (i, m) . (,) True) $ Map.lookup sql m
@@ -468,22 +469,54 @@ pgPreparedQuery c@PGConnection{ connPreparedStatements = psr } sql bind = do
   unless p $
     pgSend c $ Parse{ queryString = sql, statementName = sn, parseTypes = [] }
   pgSend c $ Bind{ statementName = sn, bindParameters = bind }
-  pgSend c $ Execute 0
-  pgSend c $ Flush
-  pgFlush c
   let
+    go = pgHandle c start
     start ParseComplete = do
       modifyIORef psr $ \(i, m) ->
         (i, Map.insert sql n m)
-      go start
-    start BindComplete = go row
-    start m = fail $ "pgPreparedQuery: unexpected response: " ++ show m
-  go start
+      go
+    start BindComplete = return ()
+    start m = fail $ "pgPrepared: unexpected response: " ++ show m
+  return go
+
+-- |Prepare a statement, bind it, and execute it.
+-- If the given statement has already been prepared (and not yet closed) on this connection, it will be re-used.
+pgPreparedQuery :: PGConnection -> String -- ^ SQL statement with placeholders
+  -> PGData -- ^ Paremeters to bind to placeholders
+  -> IO (Int, [PGData])
+pgPreparedQuery c sql bind = do
+  start <- pgPreparedBind c sql bind
+  pgSend c $ Execute 0
+  pgSend c $ Flush
+  pgFlush c
+  start
+  go
   where
-  go = (>>=) $ pgReceive c
-  row (DataRow fs) = second (fs:) <$> go row
+  go = pgHandle c row
+  row (DataRow fs) = second (fs:) <$> go
   row (CommandComplete r) = return (rowsAffected r, [])
   row m = fail $ "pgPreparedQuery: unexpected row: " ++ show m
+
+pgPreparedLazyQuery :: PGConnection -> String -- ^ SQL statement with placeholders
+  -> PGData -- ^ Paremeters to bind to placeholders
+  -> Word32 -- ^ Chunk size (1 is common, 0 is all-at-once)
+  -> IO [PGData]
+pgPreparedLazyQuery c sql bind count = do
+  start <- pgPreparedBind c sql bind
+  unsafeInterleaveIO $ do
+    execute
+    start
+    go
+  where
+  execute = do
+    pgSend c $ Execute count
+    pgSend c $ Flush
+    pgFlush c
+  go = pgHandle c row
+  row (DataRow fs) = (fs:) <$> go
+  row PortalSuspended = unsafeInterleaveIO (execute >> go)
+  row (CommandComplete _) = return []
+  row m = fail $ "pgPreparedLazyQuery: unexpected row: " ++ show m
 
 -- |Close a previously prepared query (if necessary).
 pgCloseQuery :: PGConnection -> String -- ^ SQL statement with placeholders

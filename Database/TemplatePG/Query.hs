@@ -3,6 +3,7 @@ module Database.TemplatePG.Query
   ( PGQuery(..)
   , pgExecute
   , pgQuery
+  , pgLazyQuery
   , PGSimpleQuery
   , PGPreparedQuery
   , makePGSimpleQuery
@@ -15,6 +16,7 @@ import Control.Monad (when, mapAndUnzipM)
 import Data.Array (listArray, (!), inRange)
 import Data.Char (isDigit)
 import Data.Maybe (fromMaybe)
+import Data.Word (Word32)
 import Language.Haskell.Meta.Parse (parseExp)
 import qualified Language.Haskell.TH as TH
 import Numeric (readDec)
@@ -56,9 +58,16 @@ instance Functor (QueryParser q a) where
 idParser :: q -> QueryParser q a a
 idParser q = QueryParser q id
 
-type PGSimpleQuery = QueryParser SimpleQuery
-type PGPreparedQuery = QueryParser PreparedQuery
+type PGSimpleQuery = QueryParser SimpleQuery PGData
+type PGPreparedQuery = QueryParser PreparedQuery PGData
 
+-- |Run a prepared query in lazy mode, where only chunk size rows are requested at a time.
+-- If you eventually retrieve all the rows this way, it will be far less efficient than using @pgQuery@, since every chunk requires an additional round-trip.
+-- Although you may safely stop consuming rows early, currently you may not interleave any other database operation while reading rows.  (This limitation could theoretically be lifted if required.)
+pgLazyQuery :: PGConnection -> PGPreparedQuery a -> Word32 -- ^ Chunk size (1 is common, 0 is all-at-once)
+  -> IO [a]
+pgLazyQuery c (QueryParser (PreparedQuery sql bind) p) count =
+  fmap p <$> pgPreparedLazyQuery c sql bind count
 
 -- |Given a result description, create a function to convert a result to a
 -- tuple.

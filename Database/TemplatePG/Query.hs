@@ -1,18 +1,18 @@
-{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE PatternGuards, MultiParamTypeClasses, FunctionalDependencies, TypeSynonymInstances, FlexibleInstances, FlexibleContexts #-}
 module Database.TemplatePG.Query
-  ( PGStatement
+  ( PGQuery(..)
+  , pgExecute
+  , pgQuery
   , PGSimpleQuery
   , PGPreparedStatement
   , PGQueryParser
   , pgRawParser
-  , pgExecute
-  , pgQuery
   , makePGSimpleQuery
   , makePGPreparedQuery
   ) where
 
 import Control.Applicative ((<$>))
-import Control.Arrow ((***), first)
+import Control.Arrow ((***), first, second)
 import Control.Monad (when, mapAndUnzipM)
 import Data.Array (listArray, (!), inRange)
 import Data.Char (isDigit)
@@ -25,40 +25,36 @@ import Database.TemplatePG.Types
 import Database.TemplatePG.Protocol
 import Database.TemplatePG.Connection
 
-class PGStatement q where
-  pgRawQuery :: PGConnection -> q -> IO (Int, [PGData])
-
-pgRawExecute :: PGStatement q => PGConnection -> q -> IO Int
-pgRawExecute c q = fst <$> pgRawQuery c q
-
-data PGSimpleQuery = PGSimpleQuery String
-instance PGStatement PGSimpleQuery where
-  pgRawQuery c (PGSimpleQuery sql) = pgSimpleQuery c sql
-
-data PGPreparedStatement = PGPreparedStatement String [PGData]
-
-data PGQueryParser q a = PGQueryParser
-  { pgQueryStatement :: q
-  , pgQueryParser :: PGData -> a
-  }
-instance PGStatement q => PGStatement (PGQueryParser q a) where
-  pgRawQuery c (PGQueryParser q _) = pgRawQuery c q
-
-instance Functor (PGQueryParser q) where
-  fmap f q = q{ pgQueryParser = f . pgQueryParser q }
-
-pgRawParser :: q -> PGQueryParser q PGData
-pgRawParser q = PGQueryParser q id
-
--- |Run a query and return a list of row results.
-pgQuery :: PGStatement q => PGConnection -> PGQueryParser q a -> IO [a]
-pgQuery c PGQueryParser{ pgQueryStatement = s, pgQueryParser = p } =
-  map p . snd <$> pgRawQuery c s
+class PGQuery q a | q -> a where
+  pgRunQuery :: PGConnection -> q -> IO (Int, [a])
 
 -- |Execute a query that does not return result.
 -- Return the number of rows affected (or -1 if not known).
-pgExecute :: PGStatement q => PGConnection -> PGQueryParser q () -> IO Int
-pgExecute = pgRawExecute
+pgExecute :: PGQuery q () => PGConnection -> q -> IO Int
+pgExecute c q = fst <$> pgRunQuery c q
+
+-- |Run a query and return a list of row results.
+pgQuery :: PGQuery q a => PGConnection -> q -> IO [a]
+pgQuery c q = snd <$> pgRunQuery c q
+
+
+data PGSimpleQuery = PGSimpleQuery String
+instance PGQuery PGSimpleQuery PGData where
+  pgRunQuery c (PGSimpleQuery sql) = pgSimpleQuery c sql
+
+
+data PGPreparedStatement = PGPreparedStatement String [PGData]
+
+
+data PGQueryParser q a b = PGQueryParser q (a -> b)
+instance PGQuery q a => PGQuery (PGQueryParser q a b) b where
+  pgRunQuery c (PGQueryParser q p) = second (map p) <$> pgRunQuery c q
+
+instance Functor (PGQueryParser q a) where
+  fmap f (PGQueryParser q p) = PGQueryParser q (f . p)
+
+pgRawParser :: q -> PGQueryParser q a a
+pgRawParser q = PGQueryParser q id
 
 
 -- |Given a result description, create a function to convert a result to a

@@ -22,10 +22,17 @@ module Database.TemplatePG (-- *Introduction
                             -- **Other Workarounds
                             -- $other
                              PGError(..)
+                           , PGConnection
                            , pgConnect
                            , pgDisconnect
                            , useTHConnection
                            , registerPGType
+
+                           , makePGSimpleQuery
+                           , makePGPreparedQuery
+                           , pgQuery
+                           , pgExecute
+
                            , queryTuples
                            , queryTuple
                            , execute
@@ -35,6 +42,7 @@ module Database.TemplatePG (-- *Introduction
 
 import Database.TemplatePG.Protocol
 import Database.TemplatePG.Connection
+import Database.TemplatePG.Query
 import Database.TemplatePG.SQL
 
 -- $intro

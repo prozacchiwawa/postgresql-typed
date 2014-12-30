@@ -51,6 +51,7 @@ data PGState
   | StateIdle
   | StateTransaction
   | StateTransactionFailed
+  | StateClosed
   deriving (Show, Eq)
 
 -- |An established connection to the PostgreSQL server.
@@ -83,13 +84,13 @@ type MessageFields = Map.Map Word8 L.ByteString
 -- See <http://www.postgresql.org/docs/current/interactive/protocol-message-formats.html>.
 data PGFrontendMessage
   = StartupMessage [(String, String)] -- only sent first
-  | CancelRequest Word32 Word32 -- sent first on separate connection
+  | CancelRequest !Word32 !Word32 -- sent first on separate connection
   | Bind { statementName :: String, bindParameters :: PGData }
   | Close { statementName :: String }
   -- |Describe a SQL query/statement. The SQL string can contain
   --  parameters ($1, $2, etc.).
   | Describe { statementName :: String }
-  | Execute Word32
+  | Execute !Word32
   | Flush
   -- |Parse SQL Destination (prepared statement)
   | Parse { statementName :: String, queryString :: String, parseTypes :: [OID] }
@@ -262,6 +263,8 @@ getMessageBody 'Z' = ReadyForQuery <$> (rs . w2c =<< G.getWord8) where
   rs 'E' = return StateTransactionFailed
   rs s = fail $ "pgGetMessage: unknown ready state: " ++ show s
 getMessageBody '1' = return ParseComplete
+getMessageBody '2' = return BindComplete
+getMessageBody '3' = return CloseComplete
 getMessageBody 'C' = CommandComplete <$> G.getLazyByteStringNul
 getMessageBody 'S' = liftM2 ParameterStatus getPGString getPGString
 getMessageBody 'D' = do 
@@ -350,13 +353,15 @@ pgConnect host port db user pass = do
 -- |Disconnect cleanly from the PostgreSQL server.
 pgDisconnect :: PGConnection -- ^ a handle from 'pgConnect'
              -> IO ()
-pgDisconnect c@PGConnection{ connHandle = h } = do
+pgDisconnect c@PGConnection{ connHandle = h, connState = s } = do
   pgSend c Terminate
+  writeIORef s StateClosed
   hClose h
 
 pgSync :: PGConnection -> IO ()
 pgSync c@PGConnection{ connState = sr } = do
   s <- readIORef sr
+  when (s == StateClosed) $ fail "pgSync: operation on closed connection"
   when (s == StateUnknown) $ do
     pgSend c Sync
     pgFlush c

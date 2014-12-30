@@ -1,16 +1,20 @@
+{-# LANGUAGE PatternGuards #-}
 module Database.TemplatePG.Query
   ( PGQuery
   , pgExecute
   , pgQuery
-  , makePGQuery
+  , makePGSimpleQuery
   ) where
 
 import Control.Applicative ((<$>))
-import Control.Monad (zipWithM, mapAndUnzipM)
+import Control.Arrow ((***), first)
+import Control.Monad (when, zipWithM, mapAndUnzipM)
+import Data.Array (listArray, (!), inRange)
+import Data.Char (isDigit)
 import Data.Maybe (fromMaybe)
 import Language.Haskell.Meta.Parse (parseExp)
 import qualified Language.Haskell.TH as TH
-import qualified Text.ParserCombinators.Parsec as P
+import Numeric (readDec)
 
 import Database.TemplatePG.Types
 import Database.TemplatePG.Protocol
@@ -36,37 +40,6 @@ pgExecute :: PGConnection -> PGQuery () -> IO Int
 pgExecute c PGSimpleQuery{ pgQueryString = s } =
   fst <$> pgSimpleQuery c s
 
--- |Produce a new PGQuery from a SQL query string.
--- This should be used as @$(makePGQuery \"SELECT ...\")@
-makePGQuery :: String -- ^ a SQL query string
-            -> TH.Q TH.Exp -- ^ a PGQuery
-makePGQuery sql = do
-  (pTypes, fTypes) <- TH.runIO $ withTHConnection $ \c ->
-    pgDescribe c (holdPlaces sqlStrings expStrings)
-  s <- weaveString sqlStrings =<< zipWithM stringify pTypes expStrings
-  [| PGSimpleQuery $(return s) $(convertRow fTypes) |]
-  where
-  holdPlaces ss es = concat $ weave ss (take (length es) placeholders)
-  placeholders = map (('$' :) . show) ([1..]::[Int])
-  stringify t s = [| $(pgTypeEscaper t) $(parseExp' s) |]
-  parseExp' e = either (fail . (++) ("Failed to parse expression {" ++ e ++ "}: ")) return $ parseExp e
-  (sqlStrings, expStrings) = parseSql sql
-
--- |"weave" 2 lists of equal length into a single list.
-weave :: [a] -> [a] -> [a]
-weave x []          = x
-weave [] y          = y
-weave (x:xs) (y:ys) = x:y:(weave xs ys)
-
--- |"weave" a list of SQL fragements an Haskell expressions into a single SQL string.
-weaveString :: [String] -- ^ SQL fragments
-            -> [TH.Exp]    -- ^ Haskell expressions
-            -> TH.Q TH.Exp
-weaveString []     []     = [| "" |]
-weaveString [x]    []     = [| x |]
-weaveString []     [y]    = return y
-weaveString (x:xs) (y:ys) = [| x ++ $(return y) ++ $(weaveString xs ys) |]
-weaveString _      _      = error "Weave mismatch (possible parse problem)"
 
 -- |Given a result description, create a function to convert a result to a
 -- tuple.
@@ -91,27 +64,55 @@ convertColumn :: TH.ExpQ -- ^ the name of the variable containing the column val
 convertColumn v (n, t, False) = [| $(pgTypeDecoder t) (fromMaybe (error $ "Unexpected NULL value in " ++ n) $(v)) |]
 convertColumn v (_, t, True) = [| fmap $(pgTypeDecoder t) $(v) |]
 
--- SQL Parser --
+-- |Given a SQL statement with placeholders of the form @${expr}@, return a (hopefully) valid SQL statement with @$N@ placeholders and the list of expressions.
+-- This does not understand strings or other SQL syntax, so any literal occurrence of the string @${@ must be escaped as @$${@.
+-- Embedded expressions may not contain @{@ or @}@.
+sqlPlaceholders :: String -> (String, [String])
+sqlPlaceholders = sph 1 where
+  sph n ('$':'$':'{':s) = first (('$':) . ('{':)) $ sph n s
+  sph n ('$':'{':s)
+    | (e, '}':r) <- break (\c -> c == '{' || c == '}') s =
+      (('$':show n) ++) *** (e :) $ sph (succ n) r
+    | otherwise = error $ "Error parsing SQL statement: could not find end of expression: ${" ++ s
+  sph n (c:s) = first (c:) $ sph n s
+  sph _ "" = ("", [])
 
-every2nd :: [a] -> ([a], [a])
-every2nd = foldr (\a ~(x,y) -> (a:y,x)) ([],[])
+-- |Given a SQL statement with placeholders of the form @$N@ and a list of TH 'String' expressions, return a new 'String' expression that substitutes the expressions for the placeholders.
+-- This does not understand strings or other SQL syntax, so any literal occurrence of a string like @$N@ must be escaped as @$$N@.
+sqlSubstitute :: String -> [TH.Exp] -> TH.Exp
+sqlSubstitute sql exprl = se sql where
+  bnds = (1, length exprl)
+  exprs = listArray bnds exprl
+  expr n
+    | inRange bnds n = exprs ! n
+    | otherwise = error $ "SQL placeholder '$" ++ show n ++ "' out of range (not recognized by PostgreSQL); literal occurances may need to be escaped with '$$'"
 
--- |Given a SQL string return a list of SQL parts and expression parts.
--- For example: @\"SELECT * FROM table WHERE id = {someID} AND age > {baseAge * 1.5}\"@
--- becomes: @(["SELECT * FROM table WHERE id = ", " AND age > "],
---            ["someID", "baseAge * 1.5"])@
-parseSql :: String -> ([String], [String])
-parseSql sql = case (P.parse sqlStatement "" sql) of
-                 Left err -> error (show err)
-                 Right ss -> every2nd ss
+  se = uncurry ((+$+) . lit) . ss
+  ss ('$':'$':d:r) | isDigit d = first (('$':) . (d:)) $ ss r
+  ss ('$':s@(d:_)) | isDigit d, [(n, r)] <- readDec s = ("", expr n +$+ se r)
+  ss (c:r) = first (c:) $ ss r
+  ss "" = ("", lit "")
 
-sqlStatement :: P.Parser [String]
-sqlStatement = P.many1 $ P.choice [sqlText, sqlParameter]
+  lit = TH.LitE . TH.StringL
+  TH.LitE (TH.StringL "") +$+ e = e
+  e +$+ TH.LitE (TH.StringL "") = e
+  TH.LitE (TH.StringL l) +$+ TH.LitE (TH.StringL r) = lit (l ++ r)
+  l +$+ r = TH.InfixE (Just l) (TH.VarE '(++)) (Just r)
 
-sqlText :: P.Parser String
-sqlText = P.many1 (P.noneOf "{")
+-- |Produce a new PGQuery from a SQL query string.
+-- This should be used as @$(makePGQuery \"SELECT ...\")@
+makePGSimpleQuery :: String -> TH.Q TH.Exp -- ^ a PGQuery
+makePGSimpleQuery sqle = do
+  (pTypes, fTypes) <- TH.runIO $ withTHConnection $ \c -> pgDescribe c sqlp
+  let np = length pTypes
+  when (np < length exprs) $ fail "Not all expression placeholders were recognized by PostgreSQL; literal occurances of '${' may need to be escaped with '$${'"
 
--- |Parameters are enclosed in @{}@ and can be any Haskell expression supported
--- by haskell-src-meta.
-sqlParameter :: P.Parser String
-sqlParameter = P.between (P.char '{') (P.char '}') $ P.many1 (P.noneOf "}")
+  rowp <- convertRow fTypes
+  vars <- mapM (TH.newName . ('p':) . show) [1..np]
+  lits <- zipWithM (\v t -> (`TH.AppE` TH.VarE v) <$> pgTypeEscaper t) vars pTypes
+  let pgf = TH.LamE (map TH.VarP vars) $
+        TH.ConE 'PGSimpleQuery `TH.AppE` sqlSubstitute sqlp lits `TH.AppE` rowp
+  foldl TH.AppE pgf <$> mapM parse exprs
+  where
+  (sqlp, exprs) = sqlPlaceholders sqle
+  parse e = either (fail . (++) ("Failed to parse expression {" ++ e ++ "}: ")) return $ parseExp e

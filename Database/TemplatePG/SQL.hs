@@ -9,8 +9,7 @@
 -- Note that transactions are messy and untested. Attempt to use them at your
 -- own risk.
 
-module Database.TemplatePG.SQL ( makePGQuery
-                               , queryTuples
+module Database.TemplatePG.SQL ( queryTuples
                                , queryTuple
                                , execute
                                , insertIgnore
@@ -26,6 +25,12 @@ import Language.Haskell.TH
 import Database.TemplatePG.Protocol
 import Database.TemplatePG.Query
 
+-- |Convert a 'queryTuple'-style string with placeholders into a new style SQL string.
+querySQL :: String -> String
+querySQL ('{':s) = '$':'{':querySQL s
+querySQL (c:s) = c:querySQL s
+querySQL "" = ""
+
 -- |@queryTuples :: String -> (PGConnection -> IO [(column1, column2, ...)])@
 -- 
 -- Query a PostgreSQL server and return the results as a list of tuples.
@@ -37,7 +42,7 @@ import Database.TemplatePG.Query
 -- => IO [(Maybe String, Maybe Integer)]
 -- @
 queryTuples :: String -> Q Exp
-queryTuples sql = [| \c -> pgQuery c $(makePGQuery sql) |]
+queryTuples sql = [| \c -> pgQuery c $(makePGSimpleQuery $ querySQL sql) |]
 
 -- |@queryTuple :: String -> (PGConnection -> IO (Maybe (column1, column2, ...)))@
 -- 
@@ -66,7 +71,7 @@ queryTuple sql = [| liftM listToMaybe . $(queryTuples sql) |]
 -- $(execute \"CREATE ROLE {rolename}\") h
 -- @
 execute :: String -> Q Exp
-execute sql = [| \c -> pgExecute c $(makePGQuery sql) |]
+execute sql = [| \c -> pgExecute c $(makePGSimpleQuery $ querySQL sql) |]
 
 -- |Run a sequence of IO actions (presumably SQL statements) wrapped in a
 -- transaction. Unfortunately you're restricted to using this in the 'IO'

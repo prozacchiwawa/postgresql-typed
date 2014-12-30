@@ -33,15 +33,12 @@ Flag md5
 Library
   Build-Depends:
     base >= 4.6 && < 5,
-    binary,
+    array, binary, containers, old-locale, time,
     bytestring >= 0.10.2,
-    containers,
+    template-haskell,
     haskell-src-meta,
     network,
-    old-locale,
     parsec,
-    template-haskell,
-    time,
     utf8-string
   Exposed-Modules:
     Database.TemplatePG

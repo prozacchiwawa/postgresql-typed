@@ -13,6 +13,8 @@ module Database.TemplatePG.Protocol ( PGConnection
                                     , pgDisconnect
                                     , pgDescribe
                                     , pgSimpleQuery
+                                    , pgPreparedQuery
+                                    , pgCloseQuery
                                     , pgAddType
                                     , getTypeOID
                                     ) where
@@ -22,7 +24,7 @@ import Database.TemplatePG.Types
 import Control.Applicative ((<$>), (<$))
 import Control.Arrow (second)
 import Control.Exception (Exception, throwIO, catch)
-import Control.Monad (liftM2, replicateM, when)
+import Control.Monad (liftM2, replicateM, when, unless)
 #ifdef USE_MD5
 import qualified Crypto.Hash as Hash
 #endif
@@ -32,8 +34,8 @@ import Data.ByteString.Internal (c2w, w2c)
 import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString.Lazy.Char8 as LC
 import qualified Data.ByteString.Lazy.UTF8 as U
-import Data.Foldable (foldMap)
-import Data.IORef (IORef, newIORef, writeIORef, readIORef)
+import Data.Foldable (foldMap, forM_)
+import Data.IORef (IORef, newIORef, writeIORef, readIORef, atomicModifyIORef, atomicModifyIORef', modifyIORef)
 import qualified Data.Map as Map
 import Data.Maybe (isJust, fromMaybe)
 import Data.Monoid (mempty, (<>))
@@ -51,6 +53,8 @@ data PGState
   | StateTransactionFailed
   deriving (Show, Eq)
 
+-- |An established connection to the PostgreSQL server.
+-- These objects are not thread-safe and must only be used for a single request at a time.
 data PGConnection = PGConnection
   { connHandle :: Handle
   , connDebug :: !Bool
@@ -59,6 +63,7 @@ data PGConnection = PGConnection
   , connKey :: !Word32
   , connParameters :: Map.Map String String
   , connTypes :: PGTypeMap
+  , connPreparedStatements :: IORef (Integer, Map.Map String Integer)
   , connState :: IORef PGState
   }
 
@@ -300,6 +305,7 @@ pgConnect :: HostName  -- ^ the host to connect to
 pgConnect host port db user pass = do
   debug <- isJust <$> lookupEnv "TPG_DEBUG"
   state <- newIORef StateUnknown
+  prep <- newIORef (0, Map.empty)
   h <- connectTo host port
   let c = PGConnection
         { connHandle = h
@@ -309,6 +315,7 @@ pgConnect host port db user pass = do
         , connKey = 0
         , connParameters = Map.empty
         , connTypes = defaultTypeMap
+        , connPreparedStatements = prep
         , connState = state
         }
   pgSend c $ StartupMessage
@@ -340,8 +347,7 @@ pgConnect host port db user pass = do
 #endif
   msg _ m = fail $ "pgConnect: unexpected response: " ++ show m
 
--- |Disconnect from a PostgreSQL server. Note that this currently doesn't send
--- a close message.
+-- |Disconnect cleanly from the PostgreSQL server.
 pgDisconnect :: PGConnection -- ^ a handle from 'pgConnect'
              -> IO ()
 pgDisconnect c@PGConnection{ connHandle = h } = do
@@ -416,6 +422,11 @@ pgDescribe h sql = do
                  [] -> return True
                  _ -> fail $ "Failed to determine nullability of column #" ++ show col
 
+rowsAffected :: L.ByteString -> Int
+rowsAffected = ra . LC.words where
+  ra [] = -1
+  ra l = fromMaybe (-1) $ readMaybe $ LC.unpack $ last l
+
 -- |A simple query is one which requires sending only a single 'SimpleQuery'
 -- message to the PostgreSQL server. The query is sent as a single string; you
 -- cannot bind parameters. Note that queries can return 0 results (an empty
@@ -430,13 +441,53 @@ pgSimpleQuery h sql = do
   go = (>>=) $ pgReceive h
   start (CommandComplete c) = got c
   start (RowDescription _) = go row
-  start m = fail $ "executeSimpleQuery: unexpected response: " ++ show m
-  row (CommandComplete c) = got c
+  start m = fail $ "pgSimpleQuery: unexpected response: " ++ show m
   row (DataRow fs) = second (fs:) <$> go row
-  row m = fail $ "executeSimpleQuery: unexpected row: " ++ show m
-  got c = (,) (rowsAffected $ LC.words c) <$> go end
-  rowsAffected [] = -1
-  rowsAffected l = fromMaybe (-1) $ readMaybe $ LC.unpack $ last l
+  row (CommandComplete c) = got c
+  row m = fail $ "pgSimpleQuery: unexpected row: " ++ show m
+  got c = (,) (rowsAffected c) <$> go end
   end (ReadyForQuery _) = return []
   end EmptyQueryResponse = go end
-  end m = fail $ "executeSimpleQuery: unexpected message: " ++ show m
+  end m = fail $ "pgSimpleQuery: unexpected message: " ++ show m
+
+-- |Prepare a statement, bind it, and execute it.
+-- If the given statement has already been prepared (and not yet closed) on this connection, it will be re-used.
+pgPreparedQuery :: PGConnection -> String -- ^ SQL statement with placeholders
+  -> PGData -- ^ Paremeters to bind to placeholders
+  -> IO (Int, [PGData])
+pgPreparedQuery c@PGConnection{ connPreparedStatements = psr } sql bind = do
+  pgSync c
+  (p, n) <- atomicModifyIORef' psr $ \(i, m) ->
+    maybe ((succ i, m), (False, i)) ((,) (i, m) . (,) True) $ Map.lookup sql m
+  let sn = show n
+  unless p $
+    pgSend c $ Parse{ queryString = sql, statementName = sn, parseTypes = [] }
+  pgSend c $ Bind{ statementName = sn, bindParameters = bind }
+  pgSend c $ Execute 0
+  pgSend c $ Flush
+  pgFlush c
+  let
+    start ParseComplete = do
+      modifyIORef psr $ \(i, m) ->
+        (i, Map.insert sql n m)
+      go start
+    start BindComplete = go row
+    start m = fail $ "pgPreparedQuery: unexpected response: " ++ show m
+  go start
+  where
+  go = (>>=) $ pgReceive c
+  row (DataRow fs) = second (fs:) <$> go row
+  row (CommandComplete r) = return (rowsAffected r, [])
+  row m = fail $ "pgPreparedQuery: unexpected row: " ++ show m
+
+-- |Close a previously prepared query (if necessary).
+pgCloseQuery :: PGConnection -> String -- ^ SQL statement with placeholders
+  -> IO ()
+pgCloseQuery c@PGConnection{ connPreparedStatements = psr } sql = do
+  mn <- atomicModifyIORef psr $ \(i, m) ->
+    let (n, m') = Map.updateLookupWithKey (\_ _ -> Nothing) sql m in ((i, m'), n)
+  forM_ mn $ \n -> do
+    pgSend c $ Close{ statementName = show n }
+    pgFlush c
+    CloseComplete <- pgReceive c
+    return ()

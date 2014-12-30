@@ -4,7 +4,7 @@ module Database.TemplatePG.Query
   , pgExecute
   , pgQuery
   , PGSimpleQuery
-  , PGPreparedStatement
+  , PGPreparedQuery
   , PGQueryParser
   , pgRawParser
   , makePGSimpleQuery
@@ -43,7 +43,9 @@ instance PGQuery PGSimpleQuery PGData where
   pgRunQuery c (PGSimpleQuery sql) = pgSimpleQuery c sql
 
 
-data PGPreparedStatement = PGPreparedStatement String [PGData]
+data PGPreparedQuery = PGPreparedQuery String PGData
+instance PGQuery PGPreparedQuery PGData where
+  pgRunQuery c (PGPreparedQuery sql bind) = pgPreparedQuery c sql bind
 
 
 data PGQueryParser q a b = PGQueryParser q (a -> b)
@@ -137,4 +139,4 @@ makePGSimpleQuery = makePGQuery pgTypeEscaper $ \sql ps ->
 
 makePGPreparedQuery :: String -> TH.Q TH.Exp
 makePGPreparedQuery = makePGQuery pgTypeEncoder $ \sql ps ->
-  TH.ConE 'PGPreparedStatement `TH.AppE` TH.LitE (TH.StringL sql) `TH.AppE` TH.ListE ps
+  TH.ConE 'PGPreparedQuery `TH.AppE` TH.LitE (TH.StringL sql) `TH.AppE` TH.ListE ps

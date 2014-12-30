@@ -1,13 +1,15 @@
 {-# LANGUAGE PatternGuards, MultiParamTypeClasses, FunctionalDependencies, TypeSynonymInstances, FlexibleInstances, FlexibleContexts #-}
 module Database.TemplatePG.Query
   ( PGQuery(..)
+  , PGSimpleQuery
+  , PGPreparedQuery
+  , rawPGSimpleQuery
+  , rawPGPreparedQuery
+  , makePGSimpleQuery
+  , makePGPreparedQuery
   , pgExecute
   , pgQuery
   , pgLazyQuery
-  , PGSimpleQuery
-  , PGPreparedQuery
-  , makePGSimpleQuery
-  , makePGPreparedQuery
   ) where
 
 import Control.Applicative ((<$>))
@@ -60,6 +62,14 @@ idParser q = QueryParser q id
 
 type PGSimpleQuery = QueryParser SimpleQuery PGData
 type PGPreparedQuery = QueryParser PreparedQuery PGData
+
+-- Make a simple query directly from a query string, with no type inference
+rawPGSimpleQuery :: String -> PGSimpleQuery PGData
+rawPGSimpleQuery = idParser . SimpleQuery
+
+-- Make a prepared query directly from a query string and bind parameters, with no type inference
+rawPGPreparedQuery :: String -> PGData -> PGPreparedQuery PGData
+rawPGPreparedQuery sql = idParser . PreparedQuery sql
 
 -- |Run a prepared query in lazy mode, where only chunk size rows are requested at a time.
 -- If you eventually retrieve all the rows this way, it will be far less efficient than using @pgQuery@, since every chunk requires an additional round-trip.

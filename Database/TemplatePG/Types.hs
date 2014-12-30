@@ -9,6 +9,7 @@ module Database.TemplatePG.Types
   , PossiblyMaybe(..)
   , PGTypeHandler(..)
   , pgTypeDecoder
+  , pgTypeEncoder
   , pgTypeEscaper
   , PGTypeMap
   , defaultTypeMap
@@ -314,6 +315,10 @@ data PGTypeHandler = PGType
 pgTypeDecoder :: PGTypeHandler -> Q Exp
 pgTypeDecoder PGType{ pgTypeType = t } =
   [| pgDecodeBS :: L.ByteString -> $(return t) |]
+
+pgTypeEncoder :: PGTypeHandler -> Q Exp
+pgTypeEncoder PGType{ pgTypeType = t } =
+  [| fmap (pgEncodeBS :: $(return t) -> L.ByteString) . possiblyMaybe |]
 
 pgTypeEscaper :: PGTypeHandler -> Q Exp
 pgTypeEscaper PGType{ pgTypeType = t } =

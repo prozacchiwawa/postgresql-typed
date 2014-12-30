@@ -1,14 +1,19 @@
 {-# LANGUAGE PatternGuards #-}
 module Database.TemplatePG.Query
-  ( PGQuery
+  ( PGStatement
+  , PGSimpleQuery
+  , PGPreparedStatement
+  , PGQueryParser
+  , pgRawParser
   , pgExecute
   , pgQuery
   , makePGSimpleQuery
+  , makePGPreparedQuery
   ) where
 
 import Control.Applicative ((<$>))
 import Control.Arrow ((***), first)
-import Control.Monad (when, zipWithM, mapAndUnzipM)
+import Control.Monad (when, mapAndUnzipM)
 import Data.Array (listArray, (!), inRange)
 import Data.Char (isDigit)
 import Data.Maybe (fromMaybe)
@@ -20,25 +25,40 @@ import Database.TemplatePG.Types
 import Database.TemplatePG.Protocol
 import Database.TemplatePG.Connection
 
--- |A query returning rows of the given type.
-data PGQuery a = PGSimpleQuery 
-  { pgQueryString :: String
+class PGStatement q where
+  pgRawQuery :: PGConnection -> q -> IO (Int, [PGData])
+
+pgRawExecute :: PGStatement q => PGConnection -> q -> IO Int
+pgRawExecute c q = fst <$> pgRawQuery c q
+
+data PGSimpleQuery = PGSimpleQuery String
+instance PGStatement PGSimpleQuery where
+  pgRawQuery c (PGSimpleQuery sql) = pgSimpleQuery c sql
+
+data PGPreparedStatement = PGPreparedStatement String [PGData]
+
+data PGQueryParser q a = PGQueryParser
+  { pgQueryStatement :: q
   , pgQueryParser :: PGData -> a
   }
+instance PGStatement q => PGStatement (PGQueryParser q a) where
+  pgRawQuery c (PGQueryParser q _) = pgRawQuery c q
 
-instance Functor PGQuery where
+instance Functor (PGQueryParser q) where
   fmap f q = q{ pgQueryParser = f . pgQueryParser q }
 
+pgRawParser :: q -> PGQueryParser q PGData
+pgRawParser q = PGQueryParser q id
+
 -- |Run a query and return a list of row results.
-pgQuery :: PGConnection -> PGQuery a -> IO [a]
-pgQuery c PGSimpleQuery{ pgQueryString = s, pgQueryParser = p } =
-  map p . snd <$> pgSimpleQuery c s
+pgQuery :: PGStatement q => PGConnection -> PGQueryParser q a -> IO [a]
+pgQuery c PGQueryParser{ pgQueryStatement = s, pgQueryParser = p } =
+  map p . snd <$> pgRawQuery c s
 
 -- |Execute a query that does not return result.
 -- Return the number of rows affected (or -1 if not known).
-pgExecute :: PGConnection -> PGQuery () -> IO Int
-pgExecute c PGSimpleQuery{ pgQueryString = s } =
-  fst <$> pgSimpleQuery c s
+pgExecute :: PGStatement q => PGConnection -> PGQueryParser q () -> IO Int
+pgExecute = pgRawExecute
 
 
 -- |Given a result description, create a function to convert a result to a
@@ -99,20 +119,26 @@ sqlSubstitute sql exprl = se sql where
   TH.LitE (TH.StringL l) +$+ TH.LitE (TH.StringL r) = lit (l ++ r)
   l +$+ r = TH.InfixE (Just l) (TH.VarE '(++)) (Just r)
 
--- |Produce a new PGQuery from a SQL query string.
--- This should be used as @$(makePGQuery \"SELECT ...\")@
-makePGSimpleQuery :: String -> TH.Q TH.Exp -- ^ a PGQuery
-makePGSimpleQuery sqle = do
-  (pTypes, fTypes) <- TH.runIO $ withTHConnection $ \c -> pgDescribe c sqlp
-  let np = length pTypes
-  when (np < length exprs) $ fail "Not all expression placeholders were recognized by PostgreSQL; literal occurances of '${' may need to be escaped with '$${'"
+makePGQuery :: (PGTypeHandler -> TH.ExpQ) -> (String -> [TH.Exp] -> TH.Exp) -> String -> TH.ExpQ -- ^ a PGQuery
+makePGQuery encf pgf sqle = do
+  (pt, rt) <- TH.runIO $ withTHConnection $ \c -> pgDescribe c sqlp
+  when (length pt < length exprs) $ fail "Not all expression placeholders were recognized by PostgreSQL; literal occurances of '${' may need to be escaped with '$${'"
 
-  rowp <- convertRow fTypes
-  vars <- mapM (TH.newName . ('p':) . show) [1..np]
-  lits <- zipWithM (\v t -> (`TH.AppE` TH.VarE v) <$> pgTypeEscaper t) vars pTypes
-  let pgf = TH.LamE (map TH.VarP vars) $
-        TH.ConE 'PGSimpleQuery `TH.AppE` sqlSubstitute sqlp lits `TH.AppE` rowp
-  foldl TH.AppE pgf <$> mapM parse exprs
+  (vars, vals) <- mapAndUnzipM (\t -> do
+    v <- TH.newName "p"
+    (,) (TH.VarP v) . (`TH.AppE` TH.VarE v) <$> encf t) pt
+  conv <- convertRow rt
+  foldl TH.AppE (TH.LamE vars $ TH.ConE 'PGQueryParser `TH.AppE` pgf sqlp vals `TH.AppE` conv) <$> mapM parse exprs
   where
   (sqlp, exprs) = sqlPlaceholders sqle
   parse e = either (fail . (++) ("Failed to parse expression {" ++ e ++ "}: ")) return $ parseExp e
+
+-- |Produce a new PGQuery from a SQL query string.
+-- This should be used as @$(makePGQuery \"SELECT ...\")@
+makePGSimpleQuery :: String -> TH.Q TH.Exp
+makePGSimpleQuery = makePGQuery pgTypeEscaper $ \sql ps ->
+  TH.ConE 'PGSimpleQuery `TH.AppE` sqlSubstitute sql ps
+
+makePGPreparedQuery :: String -> TH.Q TH.Exp
+makePGPreparedQuery = makePGQuery pgTypeEncoder $ \sql ps ->
+  TH.ConE 'PGPreparedStatement `TH.AppE` TH.LitE (TH.StringL sql) `TH.AppE` TH.ListE ps

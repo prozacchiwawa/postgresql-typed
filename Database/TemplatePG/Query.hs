@@ -5,8 +5,6 @@ module Database.TemplatePG.Query
   , pgQuery
   , PGSimpleQuery
   , PGPreparedQuery
-  , PGQueryParser
-  , pgRawParser
   , makePGSimpleQuery
   , makePGPreparedQuery
   ) where
@@ -38,25 +36,28 @@ pgQuery :: PGQuery q a => PGConnection -> q -> IO [a]
 pgQuery c q = snd <$> pgRunQuery c q
 
 
-data PGSimpleQuery = PGSimpleQuery String
-instance PGQuery PGSimpleQuery PGData where
-  pgRunQuery c (PGSimpleQuery sql) = pgSimpleQuery c sql
+data SimpleQuery = SimpleQuery String
+instance PGQuery SimpleQuery PGData where
+  pgRunQuery c (SimpleQuery sql) = pgSimpleQuery c sql
 
 
-data PGPreparedQuery = PGPreparedQuery String PGData
-instance PGQuery PGPreparedQuery PGData where
-  pgRunQuery c (PGPreparedQuery sql bind) = pgPreparedQuery c sql bind
+data PreparedQuery = PreparedQuery String PGData
+instance PGQuery PreparedQuery PGData where
+  pgRunQuery c (PreparedQuery sql bind) = pgPreparedQuery c sql bind
 
 
-data PGQueryParser q a b = PGQueryParser q (a -> b)
-instance PGQuery q a => PGQuery (PGQueryParser q a b) b where
-  pgRunQuery c (PGQueryParser q p) = second (map p) <$> pgRunQuery c q
+data QueryParser q a b = QueryParser q (a -> b)
+instance PGQuery q a => PGQuery (QueryParser q a b) b where
+  pgRunQuery c (QueryParser q p) = second (map p) <$> pgRunQuery c q
 
-instance Functor (PGQueryParser q a) where
-  fmap f (PGQueryParser q p) = PGQueryParser q (f . p)
+instance Functor (QueryParser q a) where
+  fmap f (QueryParser q p) = QueryParser q (f . p)
 
-pgRawParser :: q -> PGQueryParser q a a
-pgRawParser q = PGQueryParser q id
+idParser :: q -> QueryParser q a a
+idParser q = QueryParser q id
+
+type PGSimpleQuery = QueryParser SimpleQuery
+type PGPreparedQuery = QueryParser PreparedQuery
 
 
 -- |Given a result description, create a function to convert a result to a
@@ -126,7 +127,7 @@ makePGQuery encf pgf sqle = do
     v <- TH.newName "p"
     (,) (TH.VarP v) . (`TH.AppE` TH.VarE v) <$> encf t) pt
   conv <- convertRow rt
-  foldl TH.AppE (TH.LamE vars $ TH.ConE 'PGQueryParser `TH.AppE` pgf sqlp vals `TH.AppE` conv) <$> mapM parse exprs
+  foldl TH.AppE (TH.LamE vars $ TH.ConE 'QueryParser `TH.AppE` pgf sqlp vals `TH.AppE` conv) <$> mapM parse exprs
   where
   (sqlp, exprs) = sqlPlaceholders sqle
   parse e = either (fail . (++) ("Failed to parse expression {" ++ e ++ "}: ")) return $ parseExp e
@@ -135,8 +136,8 @@ makePGQuery encf pgf sqle = do
 -- This should be used as @$(makePGQuery \"SELECT ...\")@
 makePGSimpleQuery :: String -> TH.Q TH.Exp
 makePGSimpleQuery = makePGQuery pgTypeEscaper $ \sql ps ->
-  TH.ConE 'PGSimpleQuery `TH.AppE` sqlSubstitute sql ps
+  TH.ConE 'SimpleQuery `TH.AppE` sqlSubstitute sql ps
 
 makePGPreparedQuery :: String -> TH.Q TH.Exp
 makePGPreparedQuery = makePGQuery pgTypeEncoder $ \sql ps ->
-  TH.ConE 'PGPreparedQuery `TH.AppE` TH.LitE (TH.StringL sql) `TH.AppE` TH.ListE ps
+  TH.ConE 'PreparedQuery `TH.AppE` TH.LitE (TH.StringL sql) `TH.AppE` TH.ListE ps

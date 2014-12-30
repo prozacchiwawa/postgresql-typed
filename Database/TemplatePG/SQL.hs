@@ -37,9 +37,7 @@ querySQL "" = ""
 -- 
 -- Example (where @h@ is a handle from 'pgConnect'):
 -- 
--- @$(queryTuples \"SELECT usesysid, usename FROM pg_user\") h
--- 
--- => IO [(Maybe String, Maybe Integer)]
+-- @$(queryTuples \"SELECT usesysid, usename FROM pg_user\") h :: IO [(Maybe String, Maybe Integer)]
 -- @
 queryTuples :: String -> Q Exp
 queryTuples sql = [| \c -> pgQuery c $(makePGSimpleQuery $ querySQL sql) |]
@@ -53,9 +51,7 @@ queryTuples sql = [| \c -> pgQuery c $(makePGSimpleQuery $ querySQL sql) |]
 -- 
 -- @let sysid = 10::Integer;
 -- 
--- $(queryTuple \"SELECT usesysid, usename FROM pg_user WHERE usesysid = {sysid}\") h
--- 
--- => IO (Maybe (Maybe String, Maybe Integer))
+-- $(queryTuple \"SELECT usesysid, usename FROM pg_user WHERE usesysid = {sysid}\") h :: IO (Maybe (Maybe String, Maybe Integer))
 -- @
 queryTuple :: String -> Q Exp
 queryTuple sql = [| liftM listToMaybe . $(queryTuples sql) |]

@@ -296,7 +296,7 @@ instance PGType a => PGType (Maybe a) where
   pgLiteral = maybe "NULL" pgLiteral
 -}
 
-class PGType a => PossiblyMaybe m a {- | m -> a -} where
+class PGType a => PossiblyMaybe m a {- ideally should have fundep: | m -> a -} where
   possiblyMaybe :: m -> Maybe a
   maybePossibly :: Maybe a -> m
 

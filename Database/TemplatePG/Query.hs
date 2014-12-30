@@ -28,6 +28,7 @@ import Database.TemplatePG.Protocol
 import Database.TemplatePG.Connection
 
 class PGQuery q a | q -> a where
+  -- |Execute a query and return the number of rows affected (or -1 if not known) and a list of results.
   pgRunQuery :: PGConnection -> q -> IO (Int, [a])
 
 -- |Execute a query that does not return result.
@@ -74,7 +75,7 @@ rawPGPreparedQuery sql = idParser . PreparedQuery sql
 -- |Run a prepared query in lazy mode, where only chunk size rows are requested at a time.
 -- If you eventually retrieve all the rows this way, it will be far less efficient than using @pgQuery@, since every chunk requires an additional round-trip.
 -- Although you may safely stop consuming rows early, currently you may not interleave any other database operation while reading rows.  (This limitation could theoretically be lifted if required.)
-pgLazyQuery :: PGConnection -> PGPreparedQuery a -> Word32 -- ^ Chunk size (1 is common, 0 is all-at-once)
+pgLazyQuery :: PGConnection -> PGPreparedQuery a -> Word32 -- ^ Chunk size (1 is common, 0 is all-or-nothing)
   -> IO [a]
 pgLazyQuery c (QueryParser (PreparedQuery sql bind) p) count =
   fmap p <$> pgPreparedLazyQuery c sql bind count

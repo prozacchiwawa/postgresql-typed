@@ -1,44 +1,64 @@
 -- Copyright 2010, 2011, 2012, 2013 Chris Forno
+-- Copyright 2014 Dylan Simon
 
-module Database.TemplatePG (-- *Introduction
-                            -- $intro
+module Database.TemplatePG 
+  (
+  -- *Introduction
+  -- $intro
 
-                            -- *Usage
-                            -- $usage
+    PGError(..)
 
-                            -- **Compile-Time Parameters
-                            -- $compiletime
+  -- *Usage
+  -- $usage
 
-                            -- *Caveats
-                            -- $caveats
+  -- **Connections
+  -- $connect
 
-                            -- *Limitations and Workarounds
-                            -- **A Note About NULL
-                            -- $nulls
+  , PGConnection
+  , pgConnect
+  , pgDisconnect
+  , useTHConnection
 
-                            -- **Tips
-                            -- $tips
+  -- **Queries
+  -- $query
+  
+  -- ***Compile time
+  -- $compile
+  , makePGSimpleQuery
+  , makePGPreparedQuery
 
-                            -- **Other Workarounds
-                            -- $other
-                             PGError(..)
-                           , PGConnection
-                           , pgConnect
-                           , pgDisconnect
-                           , useTHConnection
-                           , registerPGType
+  -- ***Runtime
+  -- $run
+  , pgQuery
+  , pgExecute
 
-                           , makePGSimpleQuery
-                           , makePGPreparedQuery
-                           , pgQuery
-                           , pgExecute
+  -- **Basic queries
+  -- $basic
 
-                           , queryTuples
-                           , queryTuple
-                           , execute
-                           , withTransaction
-                           , rollback
-                           , insertIgnore ) where
+  , queryTuples
+  , queryTuple
+  , execute
+  -- *Advanced usage
+
+  -- **Types
+  -- $types
+
+  , registerPGType
+
+  -- **A Note About NULL
+  -- $nulls
+
+  -- *Caveats
+  -- $caveats
+
+  , withTransaction
+  , rollback
+  , insertIgnore
+
+  -- **Tips
+  -- $tips
+
+  ) where
 
 import Database.TemplatePG.Protocol
 import Database.TemplatePG.Connection
@@ -60,25 +80,80 @@ import Database.TemplatePG.SQL
 -- While compile-time query analysis eliminates many errors, it doesn't
 -- eliminate all of them. If you modify the database without recompilation or
 -- have an error in a trigger or function, for example, you can still trigger a
--- 'PGException'.
+-- 'PGException' or other failure (if types change).  Also, nullable result fields resulting from outer joins are not
+-- detected and need to be handled specially.
 --
--- With that in mind, TemplatePG currently does a number of unsafe things. It
--- doesn't properly close the connection with the PostgreSQL server. It doesn't
--- handle unexpected messages from the server very gracefully, and it's not
--- entirely safe when working with nullable result fields. I hope to fix all of
--- these at some point in the future. In the meantime, use the software at your
--- own risk. Note however that TemplatePG is currently powering
+-- Use the software at your own risk. Note however that TemplatePG is currently powering
 -- <http://www.vocabulink.com/> with no problems yet. (For usage examples, you
 -- can see the Vocabulink source code at <https://github.com/jekor/vocabulink>).
---
--- To improve performance, TemplatePG does not use prepared statements. In
--- theory, this saves bandwidth (and a potential round-trip) and time for the
--- extra step of binding parameters. Again in theory, this is also safe because
--- we know the types of parameters at compile time. However, it still feels
--- risky (and I would appreciate any audit of the code doing this, especially
--- 'escapeString').
 
 -- $usage
+-- Basic usage consists of calling 'pgConnect', 'makePGSimpleQuery' (Template Haskell), 'pgQuery', and 'pgDisconnect':
+--
+-- @
+-- c <- pgConnect
+-- let name = \"Joe\"
+-- people :: [Int32] <- pgQuery c $(makePGSimpleQuery "SELECT id FROM people WHERE name = ${name}")
+-- pgDisconnect c
+-- @
+
+-- $connect
+-- All database access requires a 'PGConnection' that is created at runtime using 'pgConnect', and should be explicitly be closed with 'pgDisconnect' when finished.
+-- 
+-- However, at compile time, TemplatePG needs to make its own connection to the database in order to describe queries.
+-- By default, it will use the following environment variables. You must set at least @TPG_DB@:
+-- 
+-- [@TPG_DB@] the database name to use
+-- 
+-- [@TPG_USER@] the username to connect as (default: @postgres@)
+-- 
+-- [@TPG_PASS@] the password to use (default: /empty/)
+-- 
+-- [@TPG_HOST@] the host to connect to (default: @localhost@)
+-- 
+-- [@TPG_PORT@ or @TPG_SOCK@] the port number or local socket path to connect on (default: @5432@)
+-- 
+-- If you'd like to specify what connection to use directly, use 'useTHConnection' at the top level:
+--
+-- @
+-- myConnect = pgConnect ...
+-- useTHConnection myConnect
+-- @
+--
+-- Note that due to TH limitations, @myConnect@ must be in-line or in a different module, and must be processed by the compiler before (above) any other TH calls.
+--
+-- You can set @TPG_DEBUG@ at compile or runtime to get a protocol-level trace.
+
+-- $query
+-- There are two steps to running a query: a Template Haskell function to perform type-inference at compile time and create a 'PGQuery' ('makePGSimpleQuery', 'makePGPreparedQuery'); and a run-time function to execute the query ('pgRunQuery', 'pgQuery', 'pgExecute').
+
+-- $compile
+-- Both TH functions take a single SQL string, which may contain in-line placeholders of the form @${expr}@ (where @expr@ is any valid Haskell expression that does not contain @{}@) and/or PostgreSQL placeholders of the form @$1@, @$2@, etc.
+--
+-- @let q = $(makePGSimpleQuery \"SELECT id, name, address FROM people WHERE name LIKE ${query++\\\"%\\\"} OR email LIKE $1") :: PGSimpleQuery [(Int32, String, Maybe String)]@
+--
+-- Expression placeholders are substituted by PostgreSQL ones in left-to-right order starting with 1, so must be in places that PostgreSQL allows them (e.g., not identifiers, table names, column names, operators, etc.)
+-- However, this does mean that you can repeat expressions using the corresponding PostgreSQL placeholder as above.
+-- If there are extra PostgreSQL parameters the may be passed as arguments:
+--
+-- @$(makePGSimpleQuery \"SELECT id FROM people WHERE name = $1\") :: String -> PGSimpleQuery [Int32]@
+--
+-- 'makePGPreparedQuery' works identically, but produces 'PGPreparedQuery' objects instead.
+-- You can also create queries at run-time using 'rawPGSimpleQuery' or 'rawPGPreparedQuery'.
+
+-- $run
+-- There are multiple ways to run a 'PGQuery' once it's created ('pgQuery', 'pgExecute'), and you can also write your own, but they all reduce to 'pgRunQuery'.
+-- These all take a 'PGConnection' and a 'PGQuery', and return results.
+-- How they work depends on the type of query.
+--
+-- 'PGSimpleQuery' simply substitutes the placeholder values literally into into the SQL statement.  This should be safe for all currently-supported types.
+-- 
+-- 'PGPreparedQuery' is a bit more complex: the first time any given prepared query is run on a given connection, the query is prepared.  Every subsequent time, the previously-prepared query is re-used and the new placeholder values are bound to it.
+-- Queries are identified by the text of the SQL statement with PostgreSQL placeholders in-place, so the exact parameter values do not matter (but the exact SQL statement, whitespace, etc. does).
+-- (Prepared queries are released automatically at 'pgDisconnect', but may be closed early using 'pgCloseQuery'.)
+
+-- $basic
+-- There is also an older, simpler interface that combines both the compile and runtime steps.
 -- 'queryTuples' does all the work ('queryTuple' and 'execute' are convenience
 -- functions).
 --
@@ -98,47 +173,21 @@ import Database.TemplatePG.SQL
 -- 
 -- tuples <- $(queryTuples \"SELECT * FROM pg_database WHERE datdba = {owner} LIMIT {2 * 3 :: Int32}\") h
 -- @
---
--- Note that parameters may only be used where PostgreSQL will allow them. This
--- will not work:
---
--- @tuples <- $(queryTuples \"SELECT * FROM {tableName}\") h@
---
--- The types of any parameter expressions must be fully known.  This may
--- require explicit casts in some cases.
---
--- And in general, you cannot construct queries at run-time, since they
--- wouldn't be available to be analyzed at compile time.
 
--- $compiletime
--- TemplatePG needs information about the database to connect to at compile
--- time (in the form of environment variables).
--- 
--- You must set at least @TPG_DB@:
--- 
--- [@TPG_DB@] the database name to use
--- 
--- [@TPG_USER@] the username to connect as (default: @postgres@)
--- 
--- [@TPG_PASS@] the password to use (default: /empty/)
--- 
--- [@TPG_HOST@] the host to connect to (default: @localhost@)
--- 
--- [@TPG_PORT@] the port number to connect on (default: @5432@)
--- 
--- You can set @TPG_DEBUG@ to get a rough protocol-level trace (pipe to
--- @hexdump@).
-
--- $caveats
--- TemplatePG assumes that it has a UTF-8 connection to a UTF-8 database.
+-- $types
+-- All supported types have instances of the 'PGType' class.
+-- For the most part, only exactly equivalent types are used (e.g., 'Int32' for int4).
+-- However, you can add support for your own types or replace the existing types just by making a new instance of 'PGType' and calling 'registerPGType' at the top level:
 --
--- TemplatePG does not bind parameters with prepared statements (at run-time),
--- instead it relies on its own type conversion and string escaping. The
--- technique might have a security vulnerability. You should also set
--- @standard_conforming_strings = on@ in your @postgresql.conf@.
--- 
--- I've included 'withTransaction', 'rollback', and 'insertIgnore', but they've
--- not been thoroughly tested, so use them at your own risk.
+-- @
+-- instance PGType MyType where ...
+-- registerPGType \"mytype\" ''MyType
+-- @
+--
+-- This will cause the PostgreSQL type @mytype@ to be converted to/from @MyType@.
+-- Only one 'PGType' may be registered per PostgreSQL type, but the same 'PGType' may serve multiple PostgreSQL types.
+-- This also automatically registers a handler for @_mytype@ (the PostgreSQL name for a vector or array of @mytype@) to @[Maybe MyType]@.
+-- Like 'useTHConnection', this must be evaluated before any use of the type.
 
 -- $nulls
 -- Sometimes TemplatePG cannot determine whether or not a result field can
@@ -158,10 +207,15 @@ import Database.TemplatePG.SQL
 -- placeholders can't be used in place of lists in PostgreSQL (such as @IN
 -- (?)@), it's not currently possible to use non-static @IN ()@ clauses.
 
--- $other
--- There's no support for reading time intervals yet. As a workaround, you can
--- use @extract(epoch from ...)::int@ to get the interval as a number of
--- seconds.
+-- $caveats
+-- I've included 'withTransaction', 'rollback', and 'insertIgnore', but they've
+-- not been thoroughly tested, so use them at your own risk.
+--
+-- The types of any parameter expressions must be fully known.  This may
+-- require explicit casts in some cases.
+--
+-- And in general, you cannot construct queries at run-time, since they
+-- wouldn't be available to be analyzed at compile time.
 
 -- $tips
 -- If you find yourself pattern matching on result tuples just to pass them on

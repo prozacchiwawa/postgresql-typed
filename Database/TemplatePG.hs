@@ -24,8 +24,7 @@ module Database.TemplatePG
   
   -- ***Compile time
   -- $compile
-  , makePGSimpleQuery
-  , makePGPreparedQuery
+  , pgSQL
 
   -- ***Runtime
   -- $run
@@ -88,12 +87,13 @@ import Database.TemplatePG.SQL
 -- can see the Vocabulink source code at <https://github.com/jekor/vocabulink>).
 
 -- $usage
--- Basic usage consists of calling 'pgConnect', 'makePGSimpleQuery' (Template Haskell), 'pgQuery', and 'pgDisconnect':
+-- Basic usage consists of calling 'pgConnect', 'pgSQL' (Template Haskell quasi-quotation), 'pgQuery', and 'pgDisconnect':
+-- You must enable TemplateHaskell and/or QuasiQuotes language extensions.
 --
 -- @
 -- c <- pgConnect
 -- let name = \"Joe\"
--- people :: [Int32] <- pgQuery c $(makePGSimpleQuery "SELECT id FROM people WHERE name = ${name}")
+-- people :: [Int32] <- pgQuery c [pgSQL|SELECT id FROM people WHERE name = ${name}|]
 -- pgDisconnect c
 -- @
 
@@ -125,20 +125,20 @@ import Database.TemplatePG.SQL
 -- You can set @TPG_DEBUG@ at compile or runtime to get a protocol-level trace.
 
 -- $query
--- There are two steps to running a query: a Template Haskell function to perform type-inference at compile time and create a 'PGQuery' ('makePGSimpleQuery', 'makePGPreparedQuery'); and a run-time function to execute the query ('pgRunQuery', 'pgQuery', 'pgExecute').
+-- There are two steps to running a query: a Template Haskell quasiquoter to perform type-inference at compile time and create a 'PGQuery'; and a run-time function to execute the query ('pgRunQuery', 'pgQuery', 'pgExecute').
 
 -- $compile
 -- Both TH functions take a single SQL string, which may contain in-line placeholders of the form @${expr}@ (where @expr@ is any valid Haskell expression that does not contain @{}@) and/or PostgreSQL placeholders of the form @$1@, @$2@, etc.
 --
--- @let q = $(makePGSimpleQuery \"SELECT id, name, address FROM people WHERE name LIKE ${query++\\\"%\\\"} OR email LIKE $1") :: PGSimpleQuery [(Int32, String, Maybe String)]@
+-- @let q = [pgSQL|SELECT id, name, address FROM people WHERE name LIKE ${query++\"%\"} OR email LIKE $1|] :: PGSimpleQuery [(Int32, String, Maybe String)]@
 --
 -- Expression placeholders are substituted by PostgreSQL ones in left-to-right order starting with 1, so must be in places that PostgreSQL allows them (e.g., not identifiers, table names, column names, operators, etc.)
 -- However, this does mean that you can repeat expressions using the corresponding PostgreSQL placeholder as above.
 -- If there are extra PostgreSQL parameters the may be passed as arguments:
 --
--- @$(makePGSimpleQuery \"SELECT id FROM people WHERE name = $1\") :: String -> PGSimpleQuery [Int32]@
+-- @[pgSQL|SELECT id FROM people WHERE name = $1|] :: String -> PGSimpleQuery [Int32]@
 --
--- 'makePGPreparedQuery' works identically, but produces 'PGPreparedQuery' objects instead.
+-- To produce 'PGPreparedQuery' objects instead, put a single @$@ at the beginning of the query.
 -- You can also create queries at run-time using 'rawPGSimpleQuery' or 'rawPGPreparedQuery'.
 
 -- $run
@@ -177,6 +177,7 @@ import Database.TemplatePG.SQL
 -- $types
 -- All supported types have instances of the 'PGType' class.
 -- For the most part, only exactly equivalent types are used (e.g., 'Int32' for int4).
+-- (You can also use @[pgSQL|int4|]@ to substitute the equivalent Haskell type.)
 -- However, you can add support for your own types or replace the existing types just by making a new instance of 'PGType' and calling 'registerPGType' at the top level:
 --
 -- @
@@ -200,22 +201,21 @@ import Database.TemplatePG.SQL
 --
 -- Nullability is indicated incorrectly in the case of outer joins. TemplatePG
 -- incorrectly infers that a field cannot be @NULL@ when it's able to trace the
--- result field back to a non-@NULL@ table column. As a workround, you can wrap
--- columns with @COALESCE()@ to force them to be returned as 'Maybe' values.
+-- result field back to a non-@NULL@ table column.  You can disable nullability inference by prepending your query with '?' to assume all columns are nullable.
 --
 -- Because TemplatePG has to prepare statements at compile time and
 -- placeholders can't be used in place of lists in PostgreSQL (such as @IN
--- (?)@), it's not currently possible to use non-static @IN ()@ clauses.
+-- (?)@), you must replace such cases with equivalent arrays (@= ANY (?)@).
 
 -- $caveats
 -- I've included 'withTransaction', 'rollback', and 'insertIgnore', but they've
 -- not been thoroughly tested, so use them at your own risk.
 --
 -- The types of any parameter expressions must be fully known.  This may
--- require explicit casts in some cases.
+-- require explicit casts in some cases (especially with numeric literals).
 --
--- And in general, you cannot construct queries at run-time, since they
--- wouldn't be available to be analyzed at compile time.
+-- You cannot construct queries at run-time, since they
+-- wouldn't be available to be analyzed at compile time (but you can construct them at compile time by writing your own TH functions that call 'makePGQuery').
 
 -- $tips
 -- If you find yourself pattern matching on result tuples just to pass them on

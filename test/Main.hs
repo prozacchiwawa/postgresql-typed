@@ -16,10 +16,10 @@ assert True = return ()
 useTHConnection connect
 
 simple, simpleApply, prepared, preparedApply :: PGConnection -> OID -> IO [String]
-simple        c t = pgQuery c $(makePGSimpleQuery   "SELECT typname FROM pg_catalog.pg_type WHERE oid = ${t} AND oid = $1")
-simpleApply   c = pgQuery c . $(makePGSimpleQuery   "SELECT typname FROM pg_catalog.pg_type WHERE oid = $1")
-prepared      c t = pgQuery c $(makePGPreparedQuery "SELECT typname FROM pg_catalog.pg_type WHERE oid = ${t} AND oid = $1")
-preparedApply c = pgQuery c . $(makePGPreparedQuery "SELECT typname FROM pg_catalog.pg_type WHERE oid = $1")
+simple        c t = pgQuery c [pgSQL|SELECT typname FROM pg_catalog.pg_type WHERE oid = ${t} AND oid = $1|]
+simpleApply   c = pgQuery c . [pgSQL|SELECT typname FROM pg_catalog.pg_type WHERE oid = $1|]
+prepared      c t = pgQuery c [pgSQL|$SELECT typname FROM pg_catalog.pg_type WHERE oid = ${t} AND oid = $1|]
+preparedApply c = pgQuery c . [pgSQL|$SELECT typname FROM pg_catalog.pg_type WHERE oid = $1|]
 
 main :: IO ()
 main = do

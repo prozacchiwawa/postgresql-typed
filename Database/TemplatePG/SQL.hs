@@ -40,7 +40,7 @@ querySQL "" = ""
 -- @$(queryTuples \"SELECT usesysid, usename FROM pg_user\") h :: IO [(Maybe String, Maybe Integer)]
 -- @
 queryTuples :: String -> Q Exp
-queryTuples sql = [| \c -> pgQuery c $(makePGSimpleQuery $ querySQL sql) |]
+queryTuples sql = [| \c -> pgQuery c $(makePGQuery simpleFlags $ querySQL sql) |]
 
 -- |@queryTuple :: String -> (PGConnection -> IO (Maybe (column1, column2, ...)))@
 -- 
@@ -67,7 +67,7 @@ queryTuple sql = [| liftM listToMaybe . $(queryTuples sql) |]
 -- $(execute \"CREATE ROLE {rolename}\") h
 -- @
 execute :: String -> Q Exp
-execute sql = [| \c -> void $ pgExecute c $(makePGSimpleQuery $ querySQL sql) |]
+execute sql = [| \c -> void $ pgExecute c $(makePGQuery simpleFlags $ querySQL sql) |]
 
 -- |Run a sequence of IO actions (presumably SQL statements) wrapped in a
 -- transaction. Unfortunately you're restricted to using this in the 'IO'

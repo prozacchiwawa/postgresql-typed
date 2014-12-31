@@ -59,4 +59,4 @@ test-suite test
   main-is: Main.hs
   buildable: True
   hs-source-dirs: test
-  Extensions: TemplateHaskell
+  Extensions: TemplateHaskell, QuasiQuotes

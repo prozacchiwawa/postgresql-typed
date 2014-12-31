@@ -18,6 +18,7 @@ module Database.TemplatePG.Protocol ( PGConnection
                                     , pgCloseQuery
                                     , pgAddType
                                     , getTypeOID
+                                    , getPGType
                                     ) where
 
 import Database.TemplatePG.Types
@@ -37,6 +38,7 @@ import qualified Data.ByteString.Lazy.Char8 as LC
 import qualified Data.ByteString.Lazy.UTF8 as U
 import Data.Foldable (foldMap, forM_)
 import Data.IORef (IORef, newIORef, writeIORef, readIORef, atomicModifyIORef, atomicModifyIORef', modifyIORef)
+import Data.List (find)
 import qualified Data.Map as Map
 import Data.Maybe (isJust, fromMaybe)
 import Data.Monoid (mempty, (<>))
@@ -377,12 +379,16 @@ pgAddType :: OID -> PGTypeHandler -> PGConnection -> PGConnection
 pgAddType oid th p = p{ connTypes = Map.insert oid th $ connTypes p }
 
 getTypeOID :: PGConnection -> String -> IO (Maybe (OID, OID))
-getTypeOID c t = do
-  (_, r) <- pgSimpleQuery c ("SELECT oid, typarray FROM pg_catalog.pg_type WHERE typname = " ++ pgLiteral t)
-  case r of
-    [] -> return Nothing
-    [[Just o, Just lo]] -> return (Just (pgDecodeBS o, pgDecodeBS lo))
-    _ -> fail $ "Unexpected PostgreSQL type result for " ++ t ++ ": " ++ show r
+getTypeOID c@PGConnection{ connTypes = types } t
+  | Just oid <- findType t = return $ Just (oid, fromMaybe 0 $ findType ('_':t)) -- optimization, sort of
+  | otherwise = do
+    (_, r) <- pgSimpleQuery c ("SELECT oid, typarray FROM pg_catalog.pg_type WHERE typname = " ++ pgLiteral t ++ " OR format_type(oid, -1) = " ++ pgLiteral t)
+    case r of
+      [] -> return Nothing
+      [[Just o, Just lo]] -> return (Just (pgDecodeBS o, pgDecodeBS lo))
+      _ -> fail $ "Unexpected PostgreSQL type result for " ++ t ++ ": " ++ show r
+  where
+  findType n = fmap fst $ find ((==) n . pgTypeName . snd) $ Map.toList types
 
 getPGType :: PGConnection -> OID -> IO PGTypeHandler
 getPGType c@PGConnection{ connTypes = types } oid =
@@ -398,8 +404,9 @@ getPGType c@PGConnection{ connTypes = types } oid =
 -- field descriptions (for queries) (consist of the name of the field, the
 -- type of the field, and a nullability indicator).
 pgDescribe :: PGConnection -> String -- ^ SQL string
+                  -> Bool -- ^ Guess nullability, otherwise assume everything is
                   -> IO ([PGTypeHandler], [(String, PGTypeHandler, Bool)]) -- ^ a list of parameter types, and a list of result field names, types, and nullability indicators.
-pgDescribe h sql = do
+pgDescribe h sql nulls = do
   pgSync h
   pgSend h $ Parse{ queryString = sql, statementName = "", parseTypes = [] }
   pgSend h $ Describe ""
@@ -412,25 +419,24 @@ pgDescribe h sql = do
     NoData -> return []
     RowDescription r -> mapM desc r
     _ -> fail $ "describeStatement: unexpected response: " ++ show m
- where
-   desc (ColDescription name tab col typ) = do
-     t <- getPGType h typ
-     n <- nullable tab col
-     return (name, t, n)
-   nullable oid col =
-     -- We don't get nullability indication from PostgreSQL, at least not
-     -- directly.
-     if oid == 0
-       -- Without any hints, we have to assume that the result can be null and
-       -- leave it up to the developer to figure it out.
-       then return True
-       -- In cases where the resulting field is tracable to the column of a
-       -- table, we can check there.
-       else do (_, r) <- pgSimpleQuery h ("SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = " ++ pgLiteral oid ++ " AND attnum = " ++ pgLiteral col)
-               case r of
-                 [[Just s]] -> return $ not $ pgDecodeBS s
-                 [] -> return True
-                 _ -> fail $ "Failed to determine nullability of column #" ++ show col
+  where
+  desc (ColDescription name tab col typ) = do
+    t <- getPGType h typ
+    n <- nullable tab col
+    return (name, t, n)
+  -- We don't get nullability indication from PostgreSQL, at least not directly.
+  -- Without any hints, we have to assume that the result can be null and
+  -- leave it up to the developer to figure it out.
+  nullable oid col
+    | nulls && oid /= 0 = do
+      -- In cases where the resulting field is tracable to the column of a
+      -- table, we can check there.
+      (_, r) <- pgSimpleQuery h ("SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = " ++ pgLiteral oid ++ " AND attnum = " ++ pgLiteral col)
+      case r of
+        [[Just s]] -> return $ not $ pgDecodeBS s
+        [] -> return True
+        _ -> fail $ "Failed to determine nullability of column #" ++ show col
+    | otherwise = return True
 
 rowsAffected :: L.ByteString -> Int
 rowsAffected = ra . LC.words where

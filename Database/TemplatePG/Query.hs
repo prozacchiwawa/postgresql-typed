@@ -5,10 +5,10 @@ module Database.TemplatePG.Query
   , PGPreparedQuery
   , rawPGSimpleQuery
   , rawPGPreparedQuery
-  , makePGSimpleQuery
-  , makePGSimpleQuery'
-  , makePGPreparedQuery
-  , makePGPreparedQuery'
+  , QueryFlags(..)
+  , simpleFlags
+  , makePGQuery
+  , pgSQL
   , pgExecute
   , pgQuery
   , pgLazyQuery
@@ -23,6 +23,7 @@ import Data.Maybe (fromMaybe)
 import Data.Word (Word32)
 import Language.Haskell.Meta.Parse (parseExp)
 import qualified Language.Haskell.TH as TH
+import Language.Haskell.TH.Quote (QuasiQuoter(..))
 import Numeric (readDec)
 
 import Database.TemplatePG.Types
@@ -89,12 +90,12 @@ pgLazyQuery c (QueryParser (PreparedQuery sql bind) p) count =
 
 -- |Given a result description, create a function to convert a result to a
 -- tuple.
-convertRow :: Bool -> [(String, PGTypeHandler, Bool)] -- ^ result description
+convertRow :: [(String, PGTypeHandler, Bool)] -- ^ result description
            -> TH.Q TH.Exp -- ^ A function for converting a row of the given result description
-convertRow nulls types = do
+convertRow types = do
   (pats, conv) <- mapAndUnzipM (\t@(n, _, _) -> do
     v <- TH.newName n
-    return (TH.varP v, convertColumn nulls (TH.varE v) t)) types
+    return (TH.varP v, convertColumn (TH.varE v) t)) types
   TH.lamE [TH.listP pats] $ TH.tupE conv
 
 -- |Given a raw PostgreSQL result and a result field type, convert the
@@ -104,11 +105,11 @@ convertRow nulls types = do
 -- and we can use 'fromJust' to keep the code simple. If it's 'True', then we
 -- don't know if the value is nullable and must return a 'Maybe' value in case
 -- it is.
-convertColumn :: Bool -> TH.ExpQ -- ^ the name of the variable containing the column value (of 'Maybe' 'ByteString')
+convertColumn :: TH.ExpQ -- ^ the name of the variable containing the column value (of 'Maybe' 'ByteString')
               -> (String, PGTypeHandler, Bool) -- ^ the result field type
               -> TH.ExpQ
-convertColumn False v (n, t, False) = [| $(pgTypeDecoder t) (fromMaybe (error $(TH.litE $ TH.stringL $ "Unexpected NULL value in " ++ n)) $(v)) |]
-convertColumn _ v (_, t, _) = [| fmap $(pgTypeDecoder t) $(v) |]
+convertColumn v (n, t, False) = [| $(pgTypeDecoder t) (fromMaybe (error $(TH.litE $ TH.stringL $ "Unexpected NULL value in " ++ n)) $(v)) |]
+convertColumn v (_, t, True) = [| fmap $(pgTypeDecoder t) $(v) |]
 
 -- |Given a SQL statement with placeholders of the form @${expr}@, return a (hopefully) valid SQL statement with @$N@ placeholders and the list of expressions.
 -- This does not understand strings or other SQL syntax, so any literal occurrence of the string @${@ must be escaped as @$${@.
@@ -149,41 +150,62 @@ e +$+ TH.LitE (TH.StringL "") = e
 TH.LitE (TH.StringL l) +$+ TH.LitE (TH.StringL r) = stringL (l ++ r)
 l +$+ r = TH.InfixE (Just l) (TH.VarE '(++)) (Just r)
 
-makeQuery :: Bool -> (PGTypeHandler -> TH.ExpQ) -> (String -> [TH.Exp] -> TH.Exp) -> String -> TH.ExpQ -- ^ a PGQuery
-makeQuery nulls encf pgf sqle = do
-  (pt, rt) <- TH.runIO $ withTHConnection $ \c -> pgDescribe c sqlp
+data QueryFlags = QueryFlags
+  { flagNullable :: Bool
+  , flagPrepared :: Bool
+  }
+
+simpleFlags :: QueryFlags
+simpleFlags = QueryFlags False False
+
+makePGQuery :: QueryFlags -> String -> TH.ExpQ
+makePGQuery QueryFlags{ flagNullable = nulls, flagPrepared = prep } sqle = do
+  (pt, rt) <- TH.runIO $ withTHConnection $ \c -> pgDescribe c sqlp (not nulls)
   when (length pt < length exprs) $ fail "Not all expression placeholders were recognized by PostgreSQL; literal occurances of '${' may need to be escaped with '$${'"
 
   (vars, vals) <- mapAndUnzipM (\t -> do
     v <- TH.newName "p"
     (,) (TH.VarP v) . (`TH.AppE` TH.VarE v) <$> encf t) pt
-  conv <- convertRow nulls rt
-  foldl TH.AppE (TH.LamE vars $ TH.ConE 'QueryParser `TH.AppE` pgf sqlp vals `TH.AppE` conv) <$> mapM parse exprs
+  conv <- convertRow rt
+  let pgq
+        | prep = TH.ConE 'PreparedQuery `TH.AppE` stringL sqlp `TH.AppE` TH.ListE vals
+        | otherwise = TH.ConE 'SimpleQuery `TH.AppE` sqlSubstitute sqlp vals
+  foldl TH.AppE (TH.LamE vars $ TH.ConE 'QueryParser `TH.AppE` pgq `TH.AppE` conv) <$> mapM parse exprs
   where
   (sqlp, exprs) = sqlPlaceholders sqle
   parse e = either (fail . (++) ("Failed to parse expression {" ++ e ++ "}: ")) return $ parseExp e
+  encf
+    | prep = pgTypeEncoder
+    | otherwise = pgTypeEscaper
 
-makeSimpleQuery :: Bool -> String -> TH.Q TH.Exp
-makeSimpleQuery nulls = makeQuery nulls pgTypeEscaper $ \sql ps ->
-  TH.ConE 'SimpleQuery `TH.AppE` sqlSubstitute sql ps
+qqQuery :: QueryFlags -> String -> TH.ExpQ
+qqQuery f@QueryFlags{ flagNullable = False } ('?':q) = qqQuery f{ flagNullable = True } q
+qqQuery f@QueryFlags{ flagPrepared = False } ('$':q) = qqQuery f{ flagPrepared = True } q
+qqQuery f q = makePGQuery f q
 
-makePreparedQuery :: Bool -> String -> TH.Q TH.Exp
-makePreparedQuery nulls = makeQuery nulls pgTypeEncoder $ \sql ps ->
-  TH.ConE 'PreparedQuery `TH.AppE` stringL sql `TH.AppE` TH.ListE ps
+qqType :: String -> TH.TypeQ
+qqType t = fmap pgTypeType $ TH.runIO $ withTHConnection $ \c ->
+  maybe (fail $ "Unknown PostgreSQL type: " ++ t) (getPGType c . fst) =<< getTypeOID c t
 
--- |Produce a new 'PGSimpleQuery' from a SQL query string.
--- This should be used as @$(makePGSimpleQuery \"SELECT ...\")@
-makePGSimpleQuery :: String -> TH.Q TH.Exp
-makePGSimpleQuery = makeSimpleQuery False
-
--- |Like 'makePGSimpleQuery' but treats all results as nullable ('Maybe').
-makePGSimpleQuery' :: String -> TH.Q TH.Exp
-makePGSimpleQuery' = makeSimpleQuery True
-
--- |Like 'makePGSimpleQuery' but produce a 'PGPreparedQuery' instead.
-makePGPreparedQuery :: String -> TH.Q TH.Exp
-makePGPreparedQuery = makePreparedQuery False
-
--- |Like 'makePGPreparedQuery' but treats all results as nullable ('Maybe').
-makePGPreparedQuery' :: String -> TH.Q TH.Exp
-makePGPreparedQuery' = makePreparedQuery True
+-- |A quasi-quoter for PGSQL queries.
+--
+-- Used in expression context, it may contain any SQL statement @[pgSQL|SELECT ...|]@.
+-- The statement may contain PostgreSQL-style placeholders (@$1@, @$2@, ...) or in-line placeholders (@${1+1}@) containing any valid Haskell expression (except @{}@).
+-- It will be replaced by a 'PGQuery' object that can be used to perform the SQL statement.
+-- If there are more @$N@ placeholders than expressions, it will instead be a function accepting the additional parameters and returning a 'PGQuery'.
+-- Note that all occurances of @$N@ or @${@ will be treated as placeholders, regardless of their context in the SQL (e.g., even within SQL strings or other places placeholders are disallowed by PostgreSQL), which may cause invalid SQL or other errors.
+-- If you need to pass a literal @$@ through in these contexts, you may double it to escape it as @$$N@ or @$${@.
+--
+-- The statement may start with one of more special flags affecting the interpretation:
+--
+-- [@$@] To create a 'PGPreparedQuery' rather than a 'PGSimpleQuery'
+-- [@?@] To treat all result values as nullable, thus returning 'Maybe' values regardless of inferred nullability.
+--
+-- In type context, [pgSQL|typname|] will be replaced with the Haskell type that corresponds to PostgreSQL type @typname@.
+pgSQL :: QuasiQuoter
+pgSQL = QuasiQuoter
+  { quoteExp = qqQuery simpleFlags
+  , quoteType = qqType
+  , quotePat = const $ fail "pgSQL not supported in patterns"
+  , quoteDec = const $ fail "pgSQL not supported at top level"
+  }

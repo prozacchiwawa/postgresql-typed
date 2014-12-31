@@ -67,7 +67,7 @@ queryTuple sql = [| liftM listToMaybe . $(queryTuples sql) |]
 -- $(execute \"CREATE ROLE {rolename}\") h
 -- @
 execute :: String -> Q Exp
-execute sql = [| \c -> pgExecute c $(makePGSimpleQuery $ querySQL sql) |]
+execute sql = [| \c -> void $ pgExecute c $(makePGSimpleQuery $ querySQL sql) |]
 
 -- |Run a sequence of IO actions (presumably SQL statements) wrapped in a
 -- transaction. Unfortunately you're restricted to using this in the 'IO'

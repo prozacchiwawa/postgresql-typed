@@ -5,13 +5,14 @@ module Database.TemplatePG.Connection
   ) where
 
 import Control.Applicative ((<$>), (<$))
-import Control.Concurrent.MVar (MVar, newMVar, modifyMVar, modifyMVar_)
-import Control.Monad (liftM, (>=>), when)
+import Control.Concurrent.MVar (MVar, newMVar, modifyMVar, modifyMVar_, swapMVar)
+import Control.Monad ((>=>), when, void)
 import Data.Maybe (fromMaybe)
 import qualified Language.Haskell.TH as TH
 import Network (PortID(UnixSocket, PortNumber), PortNumber)
 import System.Environment (getEnv, lookupEnv)
 import System.IO.Unsafe (unsafePerformIO)
+import System.Mem.Weak (addFinalizer)
 
 import Database.TemplatePG.Types
 import Database.TemplatePG.Protocol
@@ -33,10 +34,12 @@ thConnection = unsafePerformIO $ newMVar $ Left $ do
 -- |Run an action using the TemplatePG connection.
 -- This is meant to be used from other TH code (though it will work during normal runtime if just want a simple PGConnection based on TPG environment variables).
 withTHConnection :: (PGConnection -> IO a) -> IO a
-withTHConnection f = modifyMVar thConnection $ either id return >=> (\c -> (,) (Right c) <$> f c)
+withTHConnection f = modifyMVar thConnection $ either (final =<<) return >=> (\c -> (,) (Right c) <$> f c) where
+  -- This doesn't work in most cases because thConnection is global, but there doesn't seem to be any way to do TH "cleanup":
+  final c = c <$ addFinalizer c (pgDisconnect c)
 
 setTHConnection :: Either (IO PGConnection) PGConnection -> IO ()
-setTHConnection c = modifyMVar_ thConnection $ either (const $ return c) ((c <$) . pgDisconnect)
+setTHConnection = void . swapMVar thConnection
 
 -- |Specify an alternative connection method to use during TemplatePG compilation.
 -- This lets you override the default connection parameters that are based on TPG environment variables.
@@ -45,7 +48,7 @@ useTHConnection :: IO PGConnection -> TH.Q [TH.Dec]
 useTHConnection c = [] <$ TH.runIO (setTHConnection (Left c))
 
 modifyTHConnection :: (PGConnection -> PGConnection) -> IO ()
-modifyTHConnection f = modifyMVar_ thConnection $ return . either (Left . liftM f) (Right . f)
+modifyTHConnection f = modifyMVar_ thConnection $ return . either (Left . fmap f) (Right . f)
 
 -- |Register a new handler for PostgreSQL type and a Haskell type, which should be an instance of 'PGType'.
 -- This should be called as a top-level declaration and produces no code.

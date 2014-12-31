@@ -179,7 +179,7 @@ instance PGType Time.LocalTime where
   pgEncode = Time.formatTime defaultTimeLocale "%F %T%Q"
   pgLiteral = pgQuoteUnsafe . pgEncode
 
-instance PGType Time.ZonedTime where
+instance PGType Time.UTCTime where
   pgDecodeBS = pgDecode . LC.unpack
   pgEncodeBS = LC.pack . pgEncode
   pgDecode = Time.readTime defaultTimeLocale "%F %T%Q%z" . fixTZ
@@ -363,7 +363,7 @@ pgTypes =
   , (1082, 1182, "date",        ''Time.Day)
   , (1083, 1183, "time",        ''Time.TimeOfDay)
   , (1114, 1115, "timestamp",   ''Time.LocalTime)
-  , (1184, 1185, "timestamptz", ''Time.ZonedTime)
+  , (1184, 1185, "timestamptz", ''Time.UTCTime)
   , (1186, 1187, "interval",    ''Time.DiffTime)
 --, (1266, 1270, "timetz",      ?)
 --, (1560, 1561, "bit",         Bool?)

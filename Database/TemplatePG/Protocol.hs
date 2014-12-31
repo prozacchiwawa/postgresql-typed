@@ -382,6 +382,7 @@ pgAddType oid th p = p{ connTypes = Map.insert oid th $ connTypes p }
 -- |Lookup the OID of a database type by internal or formatted name (case sensitive).
 getTypeOID :: PGConnection -> String -> IO (Maybe (OID, OID))
 getTypeOID c@PGConnection{ connTypes = types } t
+  | Just oid <- readMaybe t = return $ Just (oid, 0)
   | Just oid <- findType t = return $ Just (oid, fromMaybe 0 $ findType ('_':t)) -- optimization, sort of
   | otherwise = do
     (_, r) <- pgSimpleQuery c ("SELECT oid, typarray FROM pg_catalog.pg_type WHERE typname = " ++ pgLiteral t ++ " OR format_type(oid, -1) = " ++ pgLiteral t)

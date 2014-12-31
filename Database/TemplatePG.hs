@@ -181,7 +181,7 @@ import Database.TemplatePG.SQL
 --
 -- @
 -- instance PGType MyType where ...
--- registerPGType \"mytype\" ''MyType
+-- registerPGType \"mytype\" (Language.Haskell.TH.ConT ''MyType)
 -- @
 --
 -- This will cause the PostgreSQL type @mytype@ to be converted to/from @MyType@.

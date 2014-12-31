@@ -126,17 +126,21 @@ sqlSubstitute sql exprl = se sql where
     | inRange bnds n = exprs ! n
     | otherwise = error $ "SQL placeholder '$" ++ show n ++ "' out of range (not recognized by PostgreSQL); literal occurances may need to be escaped with '$$'"
 
-  se = uncurry ((+$+) . lit) . ss
+  se = uncurry ((+$+) . stringL) . ss
   ss ('$':'$':d:r) | isDigit d = first (('$':) . (d:)) $ ss r
   ss ('$':s@(d:_)) | isDigit d, [(n, r)] <- readDec s = ("", expr n +$+ se r)
   ss (c:r) = first (c:) $ ss r
-  ss "" = ("", lit "")
+  ss "" = ("", stringL "")
 
-  lit = TH.LitE . TH.StringL
-  TH.LitE (TH.StringL "") +$+ e = e
-  e +$+ TH.LitE (TH.StringL "") = e
-  TH.LitE (TH.StringL l) +$+ TH.LitE (TH.StringL r) = lit (l ++ r)
-  l +$+ r = TH.InfixE (Just l) (TH.VarE '(++)) (Just r)
+stringL :: String -> TH.Exp
+stringL = TH.LitE . TH.StringL
+
+(+$+) :: TH.Exp -> TH.Exp -> TH.Exp
+infixr 5 +$+
+TH.LitE (TH.StringL "") +$+ e = e
+e +$+ TH.LitE (TH.StringL "") = e
+TH.LitE (TH.StringL l) +$+ TH.LitE (TH.StringL r) = stringL (l ++ r)
+l +$+ r = TH.InfixE (Just l) (TH.VarE '(++)) (Just r)
 
 makePGQuery :: (PGTypeHandler -> TH.ExpQ) -> (String -> [TH.Exp] -> TH.Exp) -> String -> TH.ExpQ -- ^ a PGQuery
 makePGQuery encf pgf sqle = do
@@ -160,4 +164,4 @@ makePGSimpleQuery = makePGQuery pgTypeEscaper $ \sql ps ->
 
 makePGPreparedQuery :: String -> TH.Q TH.Exp
 makePGPreparedQuery = makePGQuery pgTypeEncoder $ \sql ps ->
-  TH.ConE 'PreparedQuery `TH.AppE` TH.LitE (TH.StringL sql) `TH.AppE` TH.ListE ps
+  TH.ConE 'PreparedQuery `TH.AppE` stringL sql `TH.AppE` TH.ListE ps

@@ -15,7 +15,7 @@ module Database.TemplatePG.Protocol ( PGConnection
                                     , pgSimpleQuery
                                     , pgPreparedQuery
                                     , pgPreparedLazyQuery
-                                    , pgCloseQuery
+                                    , pgCloseStatement
                                     , pgAddType
                                     , getTypeOID
                                     , getPGType
@@ -68,7 +68,7 @@ data PGConnection = PGConnection
   , connKey :: !Word32
   , connParameters :: Map.Map String String
   , connTypes :: PGTypeMap
-  , connPreparedStatements :: IORef (Integer, Map.Map String Integer)
+  , connPreparedStatements :: IORef (Integer, Map.Map (String, [OID]) Integer)
   , connState :: IORef PGState
   }
 
@@ -380,15 +380,16 @@ pgAddType :: OID -> PGTypeHandler -> PGConnection -> PGConnection
 pgAddType oid th p = p{ connTypes = Map.insert oid th $ connTypes p }
 
 -- |Lookup the OID of a database type by internal or formatted name (case sensitive).
-getTypeOID :: PGConnection -> String -> IO (Maybe (OID, OID))
+-- Fail if not found.
+getTypeOID :: PGConnection -> String -> IO (OID, OID)
 getTypeOID c@PGConnection{ connTypes = types } t
-  | Just oid <- readMaybe t = return $ Just (oid, 0)
-  | Just oid <- findType t = return $ Just (oid, fromMaybe 0 $ findType ('_':t)) -- optimization, sort of
+  | Just oid <- readMaybe t = return (oid, 0)
+  | Just oid <- findType t = return (oid, fromMaybe 0 $ findType ('_':t)) -- optimization, sort of
   | otherwise = do
     (_, r) <- pgSimpleQuery c ("SELECT oid, typarray FROM pg_catalog.pg_type WHERE typname = " ++ pgLiteral t ++ " OR format_type(oid, -1) = " ++ pgLiteral t)
     case r of
-      [] -> return Nothing
-      [[Just o, Just lo]] -> return (Just (pgDecodeBS o, pgDecodeBS lo))
+      [] -> fail $ "Unknown PostgreSQL type: " ++ t
+      [[Just o, Just lo]] -> return (pgDecodeBS o, pgDecodeBS lo)
       _ -> fail $ "Unexpected PostgreSQL type result for " ++ t ++ ": " ++ show r
   where
   findType n = fmap fst $ find ((==) n . pgTypeName . snd) $ Map.toList types
@@ -408,11 +409,12 @@ getPGType c@PGConnection{ connTypes = types } oid =
 -- field descriptions (for queries) (consist of the name of the field, the
 -- type of the field, and a nullability indicator).
 pgDescribe :: PGConnection -> String -- ^ SQL string
+                  -> [OID] -- ^ Optional type specifications
                   -> Bool -- ^ Guess nullability, otherwise assume everything is
                   -> IO ([PGTypeHandler], [(String, PGTypeHandler, Bool)]) -- ^ a list of parameter types, and a list of result field names, types, and nullability indicators.
-pgDescribe h sql nulls = do
+pgDescribe h sql types nulls = do
   pgSync h
-  pgSend h $ Parse{ queryString = sql, statementName = "", parseTypes = [] }
+  pgSend h $ Parse{ queryString = sql, statementName = "", parseTypes = types }
   pgSend h $ Describe ""
   pgSend h $ Flush
   pgFlush h
@@ -470,32 +472,34 @@ pgSimpleQuery h sql = do
   end EmptyQueryResponse = go end
   end m = fail $ "pgSimpleQuery: unexpected message: " ++ show m
 
-pgPreparedBind :: PGConnection -> String -> PGData -> IO (IO ())
-pgPreparedBind c@PGConnection{ connPreparedStatements = psr } sql bind = do
+pgPreparedBind :: PGConnection -> String -> [OID] -> PGData -> IO (IO ())
+pgPreparedBind c@PGConnection{ connPreparedStatements = psr } sql types bind = do
   pgSync c
   (p, n) <- atomicModifyIORef' psr $ \(i, m) ->
-    maybe ((succ i, m), (False, i)) ((,) (i, m) . (,) True) $ Map.lookup sql m
+    maybe ((succ i, m), (False, i)) ((,) (i, m) . (,) True) $ Map.lookup key m
   let sn = show n
   unless p $
-    pgSend c $ Parse{ queryString = sql, statementName = sn, parseTypes = [] }
+    pgSend c $ Parse{ queryString = sql, statementName = sn, parseTypes = types }
   pgSend c $ Bind{ statementName = sn, bindParameters = bind }
   let
     go = pgHandle c start
     start ParseComplete = do
       modifyIORef psr $ \(i, m) ->
-        (i, Map.insert sql n m)
+        (i, Map.insert key n m)
       go
     start BindComplete = return ()
     start m = fail $ "pgPrepared: unexpected response: " ++ show m
   return go
+  where key = (sql, types)
 
 -- |Prepare a statement, bind it, and execute it.
 -- If the given statement has already been prepared (and not yet closed) on this connection, it will be re-used.
 pgPreparedQuery :: PGConnection -> String -- ^ SQL statement with placeholders
+  -> [OID] -- ^ Optional type specifications (only used for first call)
   -> PGData -- ^ Paremeters to bind to placeholders
   -> IO (Int, [PGData])
-pgPreparedQuery c sql bind = do
-  start <- pgPreparedBind c sql bind
+pgPreparedQuery c sql types bind = do
+  start <- pgPreparedBind c sql types bind
   pgSend c $ Execute 0
   pgSend c $ Flush
   pgFlush c
@@ -507,12 +511,12 @@ pgPreparedQuery c sql bind = do
   row (CommandComplete r) = return (rowsAffected r, [])
   row m = fail $ "pgPreparedQuery: unexpected row: " ++ show m
 
-pgPreparedLazyQuery :: PGConnection -> String -- ^ SQL statement with placeholders
-  -> PGData -- ^ Paremeters to bind to placeholders
-  -> Word32 -- ^ Chunk size (1 is common, 0 is all-at-once)
+-- |Like 'pgPreparedQuery' but requests results lazily in chunks of the given size.
+-- Does not use a named portal, so other requests may not intervene.
+pgPreparedLazyQuery :: PGConnection -> String -> [OID] -> PGData -> Word32 -- ^ Chunk size (1 is common, 0 is all-at-once)
   -> IO [PGData]
-pgPreparedLazyQuery c sql bind count = do
-  start <- pgPreparedBind c sql bind
+pgPreparedLazyQuery c sql types bind count = do
+  start <- pgPreparedBind c sql types bind
   unsafeInterleaveIO $ do
     execute
     start
@@ -529,11 +533,10 @@ pgPreparedLazyQuery c sql bind count = do
   row m = fail $ "pgPreparedLazyQuery: unexpected row: " ++ show m
 
 -- |Close a previously prepared query (if necessary).
-pgCloseQuery :: PGConnection -> String -- ^ SQL statement with placeholders
-  -> IO ()
-pgCloseQuery c@PGConnection{ connPreparedStatements = psr } sql = do
+pgCloseStatement :: PGConnection -> String -> [OID] -> IO ()
+pgCloseStatement c@PGConnection{ connPreparedStatements = psr } sql types = do
   mn <- atomicModifyIORef psr $ \(i, m) ->
-    let (n, m') = Map.updateLookupWithKey (\_ _ -> Nothing) sql m in ((i, m'), n)
+    let (n, m') = Map.updateLookupWithKey (\_ _ -> Nothing) (sql, types) m in ((i, m'), n)
   forM_ mn $ \n -> do
     pgSend c $ Close{ statementName = show n }
     pgFlush c

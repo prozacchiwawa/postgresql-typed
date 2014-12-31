@@ -313,7 +313,7 @@ instance PGType a => PossiblyMaybe (Maybe a) a where
 data PGTypeHandler = PGType
   { pgTypeName :: String -- ^ The internal PostgreSQL name of the type
   , pgTypeType :: TH.Type -- ^ The equivalent Haskell type to which it is marshalled (must be an instance of 'PGType'
-  }
+  } deriving (Show)
 
 -- |TH expression to decode a 'L.ByteString' to a value.
 pgTypeDecoder :: PGTypeHandler -> TH.ExpQ

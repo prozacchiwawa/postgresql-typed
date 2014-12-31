@@ -51,7 +51,7 @@ modifyTHConnection f = modifyMVar_ thConnection $ return . either (Left . liftM 
 -- This should be called as a top-level declaration and produces no code.
 registerPGType :: String -> TH.Type -> TH.Q [TH.Dec]
 registerPGType name typ = [] <$ TH.runIO (do
-  (oid, loid) <- maybe (fail $ "PostgreSQL type not found: " ++ name) return =<< withTHConnection (\c -> getTypeOID c name)
+  (oid, loid) <- withTHConnection (\c -> getTypeOID c name)
   modifyTHConnection (pgAddType oid (PGType name typ))
   when (loid /= 0) $
     modifyTHConnection (pgAddType loid (pgArrayType name typ)))

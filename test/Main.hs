@@ -16,11 +16,14 @@ assert True = return ()
 
 useTHConnection connect
 
-simple, simpleApply, prepared, preparedApply :: PGConnection -> OID -> IO [String]
+simple :: PGConnection -> OID -> IO [String]
 simple        c t = pgQuery c [pgSQL|SELECT typname FROM pg_catalog.pg_type WHERE oid = ${t} AND oid = $1|]
-simpleApply   c = pgQuery c . [pgSQL|SELECT typname FROM pg_catalog.pg_type WHERE oid = $1|]
-prepared      c t = pgQuery c [pgSQL|$SELECT typname FROM pg_catalog.pg_type WHERE oid = ${t} AND oid = $1|]
-preparedApply c = pgQuery c . [pgSQL|$SELECT typname FROM pg_catalog.pg_type WHERE oid = $1|]
+simpleApply :: PGConnection -> OID -> IO [Maybe String]
+simpleApply   c = pgQuery c . [pgSQL|?SELECT typname FROM pg_catalog.pg_type WHERE oid = $1|]
+prepared :: PGConnection -> OID -> IO [Maybe String]
+prepared      c t = pgQuery c [pgSQL|?$SELECT typname FROM pg_catalog.pg_type WHERE oid = ${t} AND oid = $1|]
+preparedApply :: PGConnection -> [pgSQL|int4|] -> IO [String]
+preparedApply c = pgQuery c . [pgSQL|$(integer)SELECT typname FROM pg_catalog.pg_type WHERE oid = $1|]
 
 main :: IO ()
 main = do
@@ -38,10 +41,10 @@ main = do
   assert $ i == i' && b == b' && f == f' && d == d' && t == t' && Time.zonedTimeToUTC z == Time.zonedTimeToUTC z' && p == p' && l == l'
 
   ["box"] <- simple c 603
-  ["box"] <- simpleApply c 603
-  ["box"] <- prepared c 603
+  [Just "box"] <- simpleApply c 603
+  [Just "box"] <- prepared c 603
   ["box"] <- preparedApply c 603
-  ["line"] <- prepared c 628
+  [Just "line"] <- prepared c 628
   ["line"] <- preparedApply c 628
 
   pgDisconnect c

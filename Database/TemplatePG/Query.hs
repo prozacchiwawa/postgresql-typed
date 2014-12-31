@@ -18,8 +18,9 @@ import Control.Applicative ((<$>))
 import Control.Arrow ((***), first, second)
 import Control.Monad (when, mapAndUnzipM)
 import Data.Array (listArray, (!), inRange)
-import Data.Char (isDigit)
-import Data.Maybe (fromMaybe)
+import Data.Char (isDigit, isSpace)
+import Data.List (dropWhileEnd)
+import Data.Maybe (fromMaybe, isNothing)
 import Data.Word (Word32)
 import Language.Haskell.Meta.Parse (parseExp)
 import qualified Language.Haskell.TH as TH
@@ -51,9 +52,9 @@ instance PGQuery SimpleQuery PGData where
 instance PGRawQuery SimpleQuery where
 
 
-data PreparedQuery = PreparedQuery String PGData
+data PreparedQuery = PreparedQuery String [OID] PGData
 instance PGQuery PreparedQuery PGData where
-  pgRunQuery c (PreparedQuery sql bind) = pgPreparedQuery c sql bind
+  pgRunQuery c (PreparedQuery sql types bind) = pgPreparedQuery c sql types bind
 instance PGRawQuery PreparedQuery where
 
 
@@ -78,15 +79,15 @@ rawPGSimpleQuery = rawParser . SimpleQuery
 
 -- |Make a prepared query directly from a query string and bind parameters, with no type inference
 rawPGPreparedQuery :: String -> PGData -> PGPreparedQuery PGData
-rawPGPreparedQuery sql = rawParser . PreparedQuery sql
+rawPGPreparedQuery sql = rawParser . PreparedQuery sql []
 
 -- |Run a prepared query in lazy mode, where only chunk size rows are requested at a time.
 -- If you eventually retrieve all the rows this way, it will be far less efficient than using @pgQuery@, since every chunk requires an additional round-trip.
 -- Although you may safely stop consuming rows early, currently you may not interleave any other database operation while reading rows.  (This limitation could theoretically be lifted if required.)
 pgLazyQuery :: PGConnection -> PGPreparedQuery a -> Word32 -- ^ Chunk size (1 is common, 0 is all-or-nothing)
   -> IO [a]
-pgLazyQuery c (QueryParser (PreparedQuery sql bind) p) count =
-  fmap p <$> pgPreparedLazyQuery c sql bind count
+pgLazyQuery c (QueryParser (PreparedQuery sql types bind) p) count =
+  fmap p <$> pgPreparedLazyQuery c sql types bind count
 
 -- |Given a result description, create a function to convert a result to a
 -- tuple.
@@ -150,18 +151,31 @@ e +$+ TH.LitE (TH.StringL "") = e
 TH.LitE (TH.StringL l) +$+ TH.LitE (TH.StringL r) = stringL (l ++ r)
 l +$+ r = TH.InfixE (Just l) (TH.VarE '(++)) (Just r)
 
+splitCommas :: String -> [String]
+splitCommas = spl where
+  spl [] = []
+  spl [c] = [[c]]
+  spl (',':s) = "":spl s
+  spl (c:s) = (c:h):t where h:t = spl s
+
+trim :: String -> String
+trim = dropWhileEnd isSpace . dropWhile isSpace
+
 data QueryFlags = QueryFlags
-  { flagNullable :: Bool
-  , flagPrepared :: Bool
+  { flagNullable :: Bool -- ^ Assume all results are nullable and don't try to guess
+  , flagPrepare :: Maybe [String] -- ^ Prepare and re-use query, binding parameters of the given types (inferring the rest, like PREPARE)
   }
 
 simpleFlags :: QueryFlags
-simpleFlags = QueryFlags False False
+simpleFlags = QueryFlags False Nothing
 
 -- |Construct a 'PGQuery' from a SQL string.
 makePGQuery :: QueryFlags -> String -> TH.ExpQ
-makePGQuery QueryFlags{ flagNullable = nulls, flagPrepared = prep } sqle = do
-  (pt, rt) <- TH.runIO $ withTHConnection $ \c -> pgDescribe c sqlp (not nulls)
+makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
+  (at, pt, rt) <- TH.runIO $ withTHConnection $ \c -> do
+    at <- mapM (fmap fst . getTypeOID c) $ fromMaybe [] prep
+    (pt, rt) <- pgDescribe c sqlp at (not nulls)
+    return (at, pt, rt)
   when (length pt < length exprs) $ fail "Not all expression placeholders were recognized by PostgreSQL; literal occurrences of '${' may need to be escaped with '$${'"
 
   (vars, vals) <- mapAndUnzipM (\t -> do
@@ -169,24 +183,29 @@ makePGQuery QueryFlags{ flagNullable = nulls, flagPrepared = prep } sqle = do
     (,) (TH.VarP v) . (`TH.AppE` TH.VarE v) <$> encf t) pt
   conv <- convertRow rt
   let pgq
-        | prep = TH.ConE 'PreparedQuery `TH.AppE` stringL sqlp `TH.AppE` TH.ListE vals
-        | otherwise = TH.ConE 'SimpleQuery `TH.AppE` sqlSubstitute sqlp vals
+        | isNothing prep = TH.ConE 'SimpleQuery `TH.AppE` sqlSubstitute sqlp vals
+        | otherwise = TH.ConE 'PreparedQuery `TH.AppE` stringL sqlp `TH.AppE` TH.ListE (map (TH.LitE . TH.IntegerL . toInteger) at) `TH.AppE` TH.ListE vals
   foldl TH.AppE (TH.LamE vars $ TH.ConE 'QueryParser `TH.AppE` pgq `TH.AppE` conv) <$> mapM parse exprs
   where
   (sqlp, exprs) = sqlPlaceholders sqle
   parse e = either (fail . (++) ("Failed to parse expression {" ++ e ++ "}: ")) return $ parseExp e
   encf
-    | prep = pgTypeEncoder
-    | otherwise = pgTypeEscaper
+    | isNothing prep = pgTypeEscaper
+    | otherwise = pgTypeEncoder
 
 qqQuery :: QueryFlags -> String -> TH.ExpQ
 qqQuery f@QueryFlags{ flagNullable = False } ('?':q) = qqQuery f{ flagNullable = True } q
-qqQuery f@QueryFlags{ flagPrepared = False } ('$':q) = qqQuery f{ flagPrepared = True } q
+qqQuery f@QueryFlags{ flagPrepare = Nothing } ('$':q) = qqQuery f{ flagPrepare = Just [] } q
+qqQuery f@QueryFlags{ flagPrepare = Just [] } ('(':s) = qqQuery f{ flagPrepare = Just args } =<< sql r where
+  args = map trim $ splitCommas arg
+  (arg, r) = break (')' ==) s
+  sql (')':q) = return q
+  sql _ = fail "pgSQL: unterminated argument list" 
 qqQuery f q = makePGQuery f q
 
 qqType :: String -> TH.TypeQ
 qqType t = fmap pgTypeType $ TH.runIO $ withTHConnection $ \c ->
-  maybe (fail $ "Unknown PostgreSQL type: " ++ t) (getPGType c . fst) =<< getTypeOID c t
+  getPGType c . fst =<< getTypeOID c t
 
 -- |A quasi-quoter for PGSQL queries.
 --
@@ -199,8 +218,9 @@ qqType t = fmap pgTypeType $ TH.runIO $ withTHConnection $ \c ->
 --
 -- The statement may start with one of more special flags affecting the interpretation:
 --
--- [@$@] To create a 'PGPreparedQuery' rather than a 'PGSimpleQuery'
 -- [@?@] To treat all result values as nullable, thus returning 'Maybe' values regardless of inferred nullability.
+-- [@$@] To create a 'PGPreparedQuery' rather than a 'PGSimpleQuery', by default inferring parameter types.
+-- [@$(type,...)@] To specify specific types to a prepared query (see <http://www.postgresql.org/docs/current/static/sql-prepare.html> for details).
 --
 -- In type context, [pgSQL|typname|] will be replaced with the Haskell type that corresponds to PostgreSQL type @typname@.
 pgSQL :: QuasiQuoter

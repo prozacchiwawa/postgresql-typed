@@ -34,9 +34,6 @@ module Database.TemplatePG
   -- **Basic queries
   -- $basic
 
-  , queryTuples
-  , queryTuple
-  , execute
   -- *Advanced usage
 
   -- **Types
@@ -161,7 +158,8 @@ import Database.TemplatePG.SQL
 -- with @$()@. It requires a 'PGConnection' to a PostgreSQL server, but can't be
 -- given one at compile-time, so you need to pass it after the splice:
 --
--- @h <- pgConnect ...
+-- @
+-- h <- pgConnect ...
 -- 
 -- tuples <- $(queryTuples \"SELECT * FROM pg_database\") h
 -- @
@@ -169,9 +167,10 @@ import Database.TemplatePG.SQL
 -- To pass parameters to a query, include them in the string with {}. Most
 -- Haskell expressions should work. For example:
 --
--- @let owner = 33 :: Int32
+-- @
+-- let owner = 33 :: Int32
 -- 
--- tuples <- $(queryTuples \"SELECT * FROM pg_database WHERE datdba = {owner} LIMIT {2 * 3 :: Int32}\") h
+-- tuples <- $(queryTuples \"SELECT * FROM pg_database WHERE datdba = {owner} LIMIT {2 * 3 :: Int64}\") h
 -- @
 
 -- $types
@@ -222,10 +221,10 @@ import Database.TemplatePG.SQL
 -- to functions, you can use @uncurryN@ from the tuple package. The following
 -- examples are equivalent.
 --
--- @(a, b, c) <- $(queryTuple \"SELECT a, b, c FROM {tableName} LIMIT 1\")
+-- @
+-- (a, b, c) <- $(queryTuple \"SELECT a, b, c FROM table LIMIT 1\")
 --
 -- someFunction a b c
--- @
---
--- @uncurryN someFunction \`liftM\` $(queryTuple \"SELECT a, b, c FROM {tableName} LIMIT 1\")
+-- 
+-- uncurryN someFunction \`liftM\` $(queryTuple \"SELECT a, b, c FROM table LIMIT 1\")
 -- @

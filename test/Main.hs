@@ -7,6 +7,7 @@ import System.Exit (exitSuccess, exitFailure)
 
 import Database.TemplatePG
 import Database.TemplatePG.Types (OID)
+import Database.TemplatePG.SQL
 import Connect
 
 assert :: Bool -> IO ()

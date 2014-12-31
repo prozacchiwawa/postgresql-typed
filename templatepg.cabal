@@ -32,7 +32,7 @@ Flag md5
 
 Library
   Build-Depends:
-    base >= 4.6 && < 5,
+    base >= 4.7 && < 5,
     array, binary, containers, old-locale, time,
     bytestring >= 0.10.2,
     template-haskell,

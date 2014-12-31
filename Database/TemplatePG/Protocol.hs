@@ -375,9 +375,11 @@ pgSync c@PGConnection{ connState = sr } = do
     _ <- pgReceive c `catch` \(PGError m) -> ErrorResponse m <$ connLogMessage c m
     pgSync c
     
+-- |Add a new type handler for the given type OID.
 pgAddType :: OID -> PGTypeHandler -> PGConnection -> PGConnection
 pgAddType oid th p = p{ connTypes = Map.insert oid th $ connTypes p }
 
+-- |Lookup the OID of a database type by internal or formatted name (case sensitive).
 getTypeOID :: PGConnection -> String -> IO (Maybe (OID, OID))
 getTypeOID c@PGConnection{ connTypes = types } t
   | Just oid <- findType t = return $ Just (oid, fromMaybe 0 $ findType ('_':t)) -- optimization, sort of
@@ -390,6 +392,7 @@ getTypeOID c@PGConnection{ connTypes = types } t
   where
   findType n = fmap fst $ find ((==) n . pgTypeName . snd) $ Map.toList types
 
+-- |Lookup the type handler for a given type OID.
 getPGType :: PGConnection -> OID -> IO PGTypeHandler
 getPGType c@PGConnection{ connTypes = types } oid =
   maybe notype return $ Map.lookup oid types where

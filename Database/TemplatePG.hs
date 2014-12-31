@@ -193,7 +193,7 @@ import Database.TemplatePG.SQL
 -- $nulls
 -- Sometimes TemplatePG cannot determine whether or not a result field can
 -- potentially be @NULL@. In those cases it will assume that it can. Basically,
--- any time a result field is not immediately tracable to an originating table
+-- any time a result field is not immediately traceable to an originating table
 -- and column (such as when a function is applied to a result column), it's
 -- assumed to be nullable and will be returned as a 'Maybe' value.
 --

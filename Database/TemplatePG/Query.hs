@@ -132,7 +132,7 @@ sqlSubstitute sql exprl = se sql where
   exprs = listArray bnds exprl
   expr n
     | inRange bnds n = exprs ! n
-    | otherwise = error $ "SQL placeholder '$" ++ show n ++ "' out of range (not recognized by PostgreSQL); literal occurances may need to be escaped with '$$'"
+    | otherwise = error $ "SQL placeholder '$" ++ show n ++ "' out of range (not recognized by PostgreSQL); literal occurrences may need to be escaped with '$$'"
 
   se = uncurry ((+$+) . stringL) . ss
   ss ('$':'$':d:r) | isDigit d = first (('$':) . (d:)) $ ss r
@@ -158,10 +158,11 @@ data QueryFlags = QueryFlags
 simpleFlags :: QueryFlags
 simpleFlags = QueryFlags False False
 
+-- |Construct a 'PGQuery' from a SQL string.
 makePGQuery :: QueryFlags -> String -> TH.ExpQ
 makePGQuery QueryFlags{ flagNullable = nulls, flagPrepared = prep } sqle = do
   (pt, rt) <- TH.runIO $ withTHConnection $ \c -> pgDescribe c sqlp (not nulls)
-  when (length pt < length exprs) $ fail "Not all expression placeholders were recognized by PostgreSQL; literal occurances of '${' may need to be escaped with '$${'"
+  when (length pt < length exprs) $ fail "Not all expression placeholders were recognized by PostgreSQL; literal occurrences of '${' may need to be escaped with '$${'"
 
   (vars, vals) <- mapAndUnzipM (\t -> do
     v <- TH.newName "p"
@@ -193,7 +194,7 @@ qqType t = fmap pgTypeType $ TH.runIO $ withTHConnection $ \c ->
 -- The statement may contain PostgreSQL-style placeholders (@$1@, @$2@, ...) or in-line placeholders (@${1+1}@) containing any valid Haskell expression (except @{}@).
 -- It will be replaced by a 'PGQuery' object that can be used to perform the SQL statement.
 -- If there are more @$N@ placeholders than expressions, it will instead be a function accepting the additional parameters and returning a 'PGQuery'.
--- Note that all occurances of @$N@ or @${@ will be treated as placeholders, regardless of their context in the SQL (e.g., even within SQL strings or other places placeholders are disallowed by PostgreSQL), which may cause invalid SQL or other errors.
+-- Note that all occurrences of @$N@ or @${@ will be treated as placeholders, regardless of their context in the SQL (e.g., even within SQL strings or other places placeholders are disallowed by PostgreSQL), which may cause invalid SQL or other errors.
 -- If you need to pass a literal @$@ through in these contexts, you may double it to escape it as @$$N@ or @$${@.
 --
 -- The statement may start with one of more special flags affecting the interpretation:

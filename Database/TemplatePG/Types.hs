@@ -31,7 +31,7 @@ import Data.Maybe (fromMaybe)
 import Data.Ratio ((%), numerator, denominator)
 import qualified Data.Time as Time
 import Data.Word (Word32)
-import Language.Haskell.TH
+import qualified Language.Haskell.TH as TH
 import Numeric (readFloat)
 import System.Locale (defaultTimeLocale)
 import qualified Text.Parsec as P
@@ -40,6 +40,7 @@ import Text.Parsec.Token (naturalOrFloat, makeTokenParser, GenLanguageDef(..))
 pgQuoteUnsafe :: String -> String
 pgQuoteUnsafe s = '\'' : s ++ "'"
 
+-- |Produce a SQL string literal by wrapping (and escaping) a string with single quotes.
 pgQuote :: String -> String
 pgQuote = ('\'':) . es where
   es "" = "'"
@@ -296,6 +297,8 @@ instance PGType a => PGType (Maybe a) where
   pgLiteral = maybe "NULL" pgLiteral
 -}
 
+-- |A special class inhabited only by @a@ and @Maybe a@.
+-- This is used to provide added flexibility in parameter types.
 class PGType a => PossiblyMaybe m a {- ideally should have fundep: | m -> a -} where
   possiblyMaybe :: m -> Maybe a
   maybePossibly :: Maybe a -> m
@@ -308,31 +311,34 @@ instance PGType a => PossiblyMaybe (Maybe a) a where
   maybePossibly = id
 
 data PGTypeHandler = PGType
-  { pgTypeName :: String
-  , pgTypeType :: Type
+  { pgTypeName :: String -- ^ The internal PostgreSQL name of the type
+  , pgTypeType :: TH.Type -- ^ The equivalent Haskell type to which it is marshalled (must be an instance of 'PGType'
   }
 
-pgTypeDecoder :: PGTypeHandler -> Q Exp
+-- |TH expression to decode a 'L.ByteString' to a value.
+pgTypeDecoder :: PGTypeHandler -> TH.ExpQ
 pgTypeDecoder PGType{ pgTypeType = t } =
   [| pgDecodeBS :: L.ByteString -> $(return t) |]
 
-pgTypeEncoder :: PGTypeHandler -> Q Exp
+-- |TH expression to encode a ('PossiblyMayble') value to an 'Maybe' 'L.ByteString'.
+pgTypeEncoder :: PGTypeHandler -> TH.ExpQ
 pgTypeEncoder PGType{ pgTypeType = t } =
   [| fmap (pgEncodeBS :: $(return t) -> L.ByteString) . possiblyMaybe |]
 
-pgTypeEscaper :: PGTypeHandler -> Q Exp
+-- |TH expression to escape a ('PossiblyMaybe') value to a SQL literal.
+pgTypeEscaper :: PGTypeHandler -> TH.ExpQ
 pgTypeEscaper PGType{ pgTypeType = t } =
   [| maybe "NULL" (pgLiteral :: $(return t) -> String) . possiblyMaybe |]
 
 type PGTypeMap = Map.Map OID PGTypeHandler
 
-arrayType :: Type -> Type
-arrayType = AppT ListT . AppT (ConT ''Maybe)
+arrayType :: TH.Type -> TH.Type
+arrayType = TH.AppT TH.ListT . TH.AppT (TH.ConT ''Maybe)
 
-pgArrayType :: String -> Type -> PGTypeHandler
+pgArrayType :: String -> TH.Type -> PGTypeHandler
 pgArrayType n t = PGType ('_':n) (arrayType t)
 
-pgTypes :: [(OID, OID, String, Name)]
+pgTypes :: [(OID, OID, String, TH.Name)]
 pgTypes =
   [ (  16, 1000, "bool",        ''Bool)
   , (  17, 1001, "bytea",       ''L.ByteString)
@@ -367,5 +373,5 @@ pgTypes =
   ]
 
 defaultTypeMap :: PGTypeMap
-defaultTypeMap = Map.fromAscList [(o, PGType n (ConT t)) | (o, _, n, t) <- pgTypes]
-   `Map.union` Map.fromList [(o, pgArrayType n (ConT t)) | (_, o, n, t) <- pgTypes]
+defaultTypeMap = Map.fromAscList [(o, PGType n (TH.ConT t)) | (o, _, n, t) <- pgTypes]
+   `Map.union` Map.fromList [(o, pgArrayType n (TH.ConT t)) | (_, o, n, t) <- pgTypes]

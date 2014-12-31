@@ -17,5 +17,6 @@
       \WHERE member_no = {memberNumber member} AND link_no = {linkNo}") h
 
   But easier for the programmer would be to have TemplatePG add explicit casts to all values it sends in. This is probably safer in the long run as well, although possibly less flexible.
+  Prepared placeholder type specification provides one solution to this [pgSQL|$(type,...)SQL...|]
 * Use postgresql-binary package for binary protocol with supported types
 * Consider using postgresql-libpq (worse performance but much easier maintenance)

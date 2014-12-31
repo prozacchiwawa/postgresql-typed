@@ -30,6 +30,7 @@ import Database.TemplatePG.Connection
 class PGQuery q a | q -> a where
   -- |Execute a query and return the number of rows affected (or -1 if not known) and a list of results.
   pgRunQuery :: PGConnection -> q -> IO (Int, [a])
+class PGQuery q PGData => PGRawQuery q
 
 -- |Execute a query that does not return result.
 -- Return the number of rows affected (or -1 if not known).
@@ -44,33 +45,35 @@ pgQuery c q = snd <$> pgRunQuery c q
 data SimpleQuery = SimpleQuery String
 instance PGQuery SimpleQuery PGData where
   pgRunQuery c (SimpleQuery sql) = pgSimpleQuery c sql
+instance PGRawQuery SimpleQuery where
 
 
 data PreparedQuery = PreparedQuery String PGData
 instance PGQuery PreparedQuery PGData where
   pgRunQuery c (PreparedQuery sql bind) = pgPreparedQuery c sql bind
+instance PGRawQuery PreparedQuery where
 
 
-data QueryParser q a b = QueryParser q (a -> b)
-instance PGQuery q a => PGQuery (QueryParser q a b) b where
+data QueryParser q a = QueryParser q (PGData -> a)
+instance PGRawQuery q => PGQuery (QueryParser q a) a where
   pgRunQuery c (QueryParser q p) = second (map p) <$> pgRunQuery c q
 
-instance Functor (QueryParser q a) where
+instance Functor (QueryParser q) where
   fmap f (QueryParser q p) = QueryParser q (f . p)
 
-idParser :: q -> QueryParser q a a
-idParser q = QueryParser q id
+rawParser :: q -> QueryParser q PGData
+rawParser q = QueryParser q id
 
-type PGSimpleQuery = QueryParser SimpleQuery PGData
-type PGPreparedQuery = QueryParser PreparedQuery PGData
+type PGSimpleQuery = QueryParser SimpleQuery
+type PGPreparedQuery = QueryParser PreparedQuery
 
 -- Make a simple query directly from a query string, with no type inference
 rawPGSimpleQuery :: String -> PGSimpleQuery PGData
-rawPGSimpleQuery = idParser . SimpleQuery
+rawPGSimpleQuery = rawParser . SimpleQuery
 
 -- Make a prepared query directly from a query string and bind parameters, with no type inference
 rawPGPreparedQuery :: String -> PGData -> PGPreparedQuery PGData
-rawPGPreparedQuery sql = idParser . PreparedQuery sql
+rawPGPreparedQuery sql = rawParser . PreparedQuery sql
 
 -- |Run a prepared query in lazy mode, where only chunk size rows are requested at a time.
 -- If you eventually retrieve all the rows this way, it will be far less efficient than using @pgQuery@, since every chunk requires an additional round-trip.

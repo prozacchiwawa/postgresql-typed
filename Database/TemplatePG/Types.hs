@@ -1,4 +1,4 @@
-{-# LANGUAGE ExistentialQuantification, TypeSynonymInstances, FlexibleInstances, OverlappingInstances, ScopedTypeVariables, MultiParamTypeClasses, FunctionalDependencies #-}
+{-# LANGUAGE ExistentialQuantification, TypeSynonymInstances, FlexibleInstances, OverlappingInstances, ScopedTypeVariables, MultiParamTypeClasses, FunctionalDependencies, FlexibleContexts #-}
 -- Copyright 2010, 2011, 2013 Chris Forno
 -- Copyright 2014 Dylan Simon
 
@@ -23,7 +23,7 @@ import Data.ByteString.Internal (w2c)
 import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString.Lazy.Char8 as LC
 import qualified Data.ByteString.Lazy.UTF8 as U
-import Data.Char (isDigit, digitToInt, intToDigit)
+import Data.Char (isDigit, digitToInt, intToDigit, toLower)
 import Data.Int
 import Data.List (intercalate)
 import qualified Data.Map as Map
@@ -37,6 +37,8 @@ import System.Locale (defaultTimeLocale)
 import qualified Text.Parsec as P
 import Text.Parsec.Token (naturalOrFloat, makeTokenParser, GenLanguageDef(..))
 
+import qualified Database.TemplatePG.Range as Range
+
 pgQuoteUnsafe :: String -> String
 pgQuoteUnsafe s = '\'' : s ++ "'"
 
@@ -46,6 +48,22 @@ pgQuote = ('\'':) . es where
   es "" = "'"
   es (c@'\'':r) = c:c:es r
   es (c:r) = c:es r
+
+dQuote :: String -> String -> String
+dQuote _ "" = "\"\""
+dQuote unsafe s
+  | all (`notElem` unsafe) s && map toLower s /= "null" = s
+  | otherwise = '"':es s where
+    es "" = "\""
+    es (c@'"':r) = '\\':c:es r
+    es (c@'\\':r) = '\\':c:es r
+    es (c:r) = c:es r
+
+parseDQuote :: P.Stream s m Char => String -> P.ParsecT s u m String
+parseDQuote unsafe = (q P.<|> uq) where
+  q = P.between (P.char '"') (P.char '"') $
+    P.many $ (P.char '\\' >> P.anyChar) P.<|> P.noneOf "\\\""
+  uq = P.many1 (P.noneOf unsafe)
 
 -- |Any type which can be marshalled to and from PostgreSQL.
 -- Minimal definition: 'pgDecodeBS' (or 'pgDecode') and 'pgEncode' (or 'pgEncodeBS')
@@ -260,6 +278,7 @@ showRational r = show (ri :: Integer) ++ '.' : frac (abs rf) where
   frac 0 = ""
   frac f = intToDigit i : frac f' where (i, f') = properFraction (10 * f)
 
+-- |Arrays of any type, which may always contain NULLs.
 instance PGType a => PGType [Maybe a] where
   pgDecodeBS = either (error . ("pgDecode array: " ++) . show) id . P.parse pa "array" where
     pa = do
@@ -269,17 +288,37 @@ instance PGType a => PGType [Maybe a] where
       return l
     nel = Nothing <$ nul P.<|> Just <$> el
     nul = P.oneOf "Nn" >> P.oneOf "Uu" >> P.oneOf "Ll" >> P.oneOf "Ll"
-    el = pgDecodeBS . LC.pack <$> (qel P.<|> uqel)
-    qel = P.between (P.char '"') (P.char '"') $
-      P.many $ (P.char '\\' >> P.anyChar) P.<|> P.noneOf "\\\""
-    uqel = P.many1 (P.noneOf "\",{}")
+    el = pgDecodeBS . LC.pack <$> parseDQuote "\",{}"
   pgEncode l = '{' : intercalate "," (map el l) ++ "}" where
     el Nothing = "null"
-    el (Just e) = '"' : es (pgEncode e) -- quoting may not be necessary but is always safe
-    es "" = "\""
-    es (c@'"':r) = '\\':c:es r
-    es (c@'\\':r) = '\\':c:es r
-    es (c:r) = c:es r
+    el (Just e) = dQuote "\",\\{}" $ pgEncode e
+
+instance PGType a => PGType (Range.Range a) where
+  pgDecodeBS = either (error . ("pgDecode range: " ++) . show) id . P.parse per "array" where
+    per = Range.Empty <$ pe P.<|> pr
+    pe = P.oneOf "Ee" >> P.oneOf "Mm" >> P.oneOf "Pp" >> P.oneOf "Tt" >> P.oneOf "Yy"
+    pp = pgDecodeBS . LC.pack <$> parseDQuote "\"(),[\\]"
+    pc c o = True <$ P.char c P.<|> False <$ P.char o
+    pb = P.optionMaybe pp
+    mb = maybe Range.Unbounded . Range.Bounded
+    pr = do
+      lc <- pc '[' '('
+      lb <- pb
+      _ <- P.char ','
+      ub <- pb 
+      uc <- pc ']' ')'
+      return $ Range.Range (Range.Lower (mb lc lb)) (Range.Upper (mb uc ub))
+  pgEncode Range.Empty = "empty"
+  pgEncode (Range.Range (Range.Lower l) (Range.Upper u)) =
+    pc '[' '(' l
+      : pb (Range.bound l)
+      ++ ','
+      : pb (Range.bound u)
+      ++ [pc ']' ')' u]
+    where
+    pb Nothing = ""
+    pb (Just b) = dQuote "\"(),[\\]" $ pgEncode b
+    pc c o b = if Range.boundClosed b then c else o
 
 {-
 -- Since PG values cannot contain '\0', we use it as a special flag for NULL values (which will later be encoded with length -1)
@@ -372,6 +411,24 @@ pgTypes =
 --, (2950, 2951, "uuid",        ?)
   ]
 
+rangeType :: TH.Type -> TH.Type
+rangeType = TH.AppT (TH.ConT ''Range.Range)
+
+rangeTypes :: [(OID, OID, String, TH.Name)]
+rangeTypes =
+  [ (3904, 3905, "int4range",   ''Int32)
+  , (3906, 3907, "numrange",    ''Rational)
+  , (3908, 3909, "tsrange",     ''Time.LocalTime)
+  , (3910, 3911, "tstzrange",   ''Time.UTCTime)
+  , (3912, 3913, "daterange",   ''Time.Day)
+  , (3926, 3927, "int8range",   ''Int32)
+  ]
+
 defaultTypeMap :: PGTypeMap
-defaultTypeMap = Map.fromAscList [(o, PGType n (TH.ConT t)) | (o, _, n, t) <- pgTypes]
-   `Map.union` Map.fromList [(o, pgArrayType n (TH.ConT t)) | (_, o, n, t) <- pgTypes]
+defaultTypeMap =
+  Map.fromAscList
+    ([(o, PGType n (TH.ConT t)) | (o, _, n, t) <- pgTypes]
+    ++ [(o, PGType n (rangeType (TH.ConT t))) | (o, _, n, t) <- rangeTypes])
+  `Map.union` Map.fromList
+    ([(o, pgArrayType n (TH.ConT t)) | (_, o, n, t) <- pgTypes]
+    ++ [(o, pgArrayType n (rangeType (TH.ConT t))) | (_, o, n, t) <- rangeTypes])

@@ -47,6 +47,7 @@ Library
     Database.TemplatePG.Query
     Database.TemplatePG.SQL
     Database.TemplatePG.Types
+    Database.TemplatePG.Range
   Extensions: TemplateHaskell
   GHC-Options: -Wall -fno-warn-type-defaults
   if flag(md5)

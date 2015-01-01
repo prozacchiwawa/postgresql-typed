@@ -12,7 +12,6 @@ import qualified Language.Haskell.TH as TH
 import Network (PortID(UnixSocket, PortNumber), PortNumber)
 import System.Environment (getEnv, lookupEnv)
 import System.IO.Unsafe (unsafePerformIO)
-import System.Mem.Weak (addFinalizer)
 
 import Database.TemplatePG.Types
 import Database.TemplatePG.Protocol
@@ -34,9 +33,7 @@ thConnection = unsafePerformIO $ newMVar $ Left $ do
 -- |Run an action using the TemplatePG connection.
 -- This is meant to be used from other TH code (though it will work during normal runtime if just want a simple PGConnection based on TPG environment variables).
 withTHConnection :: (PGConnection -> IO a) -> IO a
-withTHConnection f = modifyMVar thConnection $ either (final =<<) return >=> (\c -> (,) (Right c) <$> f c) where
-  -- This doesn't work in most cases because thConnection is global, but there doesn't seem to be any way to do TH "cleanup":
-  final c = c <$ addFinalizer c (pgDisconnect c)
+withTHConnection f = modifyMVar thConnection $ either id return >=> (\c -> (,) (Right c) <$> f c)
 
 setTHConnection :: Either (IO PGConnection) PGConnection -> IO ()
 setTHConnection = void . swapMVar thConnection

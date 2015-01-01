@@ -36,12 +36,13 @@ import Data.ByteString.Internal (c2w, w2c)
 import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString.Lazy.Char8 as LC
 import qualified Data.ByteString.Lazy.UTF8 as U
-import Data.Foldable (foldMap, forM_)
+import Data.Foldable (foldMap, forM_, toList)
 import Data.IORef (IORef, newIORef, writeIORef, readIORef, atomicModifyIORef, atomicModifyIORef', modifyIORef)
 import Data.List (find)
 import qualified Data.Map as Map
 import Data.Maybe (isJust, fromMaybe)
 import Data.Monoid (mempty, (<>))
+import qualified Data.Sequence as Seq
 import Data.Typeable (Typeable)
 import Data.Word (Word8, Word32)
 import Network (HostName, PortID, connectTo)
@@ -387,7 +388,7 @@ getTypeOID c@PGConnection{ connTypes = types } t
   | Just oid <- findType t = return (oid, fromMaybe 0 $ findType ('_':t)) -- optimization, sort of
   | otherwise = do
     (_, r) <- pgSimpleQuery c ("SELECT oid, typarray FROM pg_catalog.pg_type WHERE typname = " ++ pgLiteral t ++ " OR format_type(oid, -1) = " ++ pgLiteral t)
-    case r of
+    case toList r of
       [] -> fail $ "Unknown PostgreSQL type: " ++ t
       [[Just o, Just lo]] -> return (pgDecodeBS o, pgDecodeBS lo)
       _ -> fail $ "Unexpected PostgreSQL type result for " ++ t ++ ": " ++ show r
@@ -400,7 +401,7 @@ getPGType c@PGConnection{ connTypes = types } oid =
   maybe notype return $ Map.lookup oid types where
   notype = do
     (_, r) <- pgSimpleQuery c ("SELECT typname FROM pg_catalog.pg_type WHERE oid = " ++ pgLiteral oid)
-    case r of
+    case toList r of
       [[Just s]] -> fail $ "Unsupported PostgreSQL type " ++ show oid ++ ": " ++ U.toString s
       _ -> fail $ "Unknown PostgreSQL type: " ++ show oid
 
@@ -438,7 +439,7 @@ pgDescribe h sql types nulls = do
       -- In cases where the resulting field is tracable to the column of a
       -- table, we can check there.
       (_, r) <- pgSimpleQuery h ("SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = " ++ pgLiteral oid ++ " AND attnum = " ++ pgLiteral col)
-      case r of
+      case toList r of
         [[Just s]] -> return $ not $ pgDecodeBS s
         [] -> return True
         _ -> fail $ "Failed to determine nullability of column #" ++ show col
@@ -454,20 +455,20 @@ rowsAffected = ra . LC.words where
 -- cannot bind parameters. Note that queries can return 0 results (an empty
 -- list).
 pgSimpleQuery :: PGConnection -> String -- ^ SQL string
-                   -> IO (Int, [PGData]) -- ^ The number of rows affected and a list of result rows
+                   -> IO (Int, Seq.Seq PGData) -- ^ The number of rows affected and a list of result rows
 pgSimpleQuery h sql = do
   pgSync h
   pgSend h $ SimpleQuery sql
   pgFlush h
   go start where 
   go = pgHandle h
-  start (CommandComplete c) = got c
-  start (RowDescription _) = go row
+  start (CommandComplete c) = got c Seq.empty
+  start (RowDescription _) = go (row Seq.empty)
   start m = fail $ "pgSimpleQuery: unexpected response: " ++ show m
-  row (DataRow fs) = second (fs:) <$> go row
-  row (CommandComplete c) = got c
-  row m = fail $ "pgSimpleQuery: unexpected row: " ++ show m
-  got c = (,) (rowsAffected c) <$> go end
+  row s (DataRow fs) = go $ row (s Seq.|> fs)
+  row s (CommandComplete c) = got c s
+  row _ m = fail $ "pgSimpleQuery: unexpected row: " ++ show m
+  got c s = (rowsAffected c, s) <$ go end
   end (ReadyForQuery _) = return []
   end EmptyQueryResponse = go end
   end m = fail $ "pgSimpleQuery: unexpected message: " ++ show m
@@ -497,19 +498,19 @@ pgPreparedBind c@PGConnection{ connPreparedStatements = psr } sql types bind = d
 pgPreparedQuery :: PGConnection -> String -- ^ SQL statement with placeholders
   -> [OID] -- ^ Optional type specifications (only used for first call)
   -> PGData -- ^ Paremeters to bind to placeholders
-  -> IO (Int, [PGData])
+  -> IO (Int, Seq.Seq PGData)
 pgPreparedQuery c sql types bind = do
   start <- pgPreparedBind c sql types bind
   pgSend c $ Execute 0
   pgSend c $ Flush
   pgFlush c
   start
-  go
+  go Seq.empty
   where
-  go = pgHandle c row
-  row (DataRow fs) = second (fs:) <$> go
-  row (CommandComplete r) = return (rowsAffected r, [])
-  row m = fail $ "pgPreparedQuery: unexpected row: " ++ show m
+  go = pgHandle c . row
+  row s (DataRow fs) = go (s Seq.|> fs)
+  row s (CommandComplete r) = return (rowsAffected r, s)
+  row _ m = fail $ "pgPreparedQuery: unexpected row: " ++ show m
 
 -- |Like 'pgPreparedQuery' but requests results lazily in chunks of the given size.
 -- Does not use a named portal, so other requests may not intervene.
@@ -520,17 +521,17 @@ pgPreparedLazyQuery c sql types bind count = do
   unsafeInterleaveIO $ do
     execute
     start
-    go
+    go Seq.empty
   where
   execute = do
     pgSend c $ Execute count
     pgSend c $ Flush
     pgFlush c
-  go = pgHandle c row
-  row (DataRow fs) = (fs:) <$> go
-  row PortalSuspended = unsafeInterleaveIO (execute >> go)
-  row (CommandComplete _) = return []
-  row m = fail $ "pgPreparedLazyQuery: unexpected row: " ++ show m
+  go = pgHandle c . row
+  row s (DataRow fs) = go (s Seq.|> fs)
+  row s PortalSuspended = (toList s ++) <$> unsafeInterleaveIO (execute >> go Seq.empty)
+  row s (CommandComplete _) = return $ toList s
+  row _ m = fail $ "pgPreparedLazyQuery: unexpected row: " ++ show m
 
 -- |Close a previously prepared query (if necessary).
 pgCloseStatement :: PGConnection -> String -> [OID] -> IO ()

@@ -19,8 +19,10 @@ import Control.Arrow ((***), first, second)
 import Control.Monad (when, mapAndUnzipM)
 import Data.Array (listArray, (!), inRange)
 import Data.Char (isDigit, isSpace)
+import Data.Foldable (toList)
 import Data.List (dropWhileEnd)
 import Data.Maybe (fromMaybe, isNothing)
+import Data.Sequence (Seq)
 import Data.Word (Word32)
 import Language.Haskell.Meta.Parse (parseExp)
 import qualified Language.Haskell.TH as TH
@@ -33,7 +35,7 @@ import Database.TemplatePG.Connection
 
 class PGQuery q a | q -> a where
   -- |Execute a query and return the number of rows affected (or -1 if not known) and a list of results.
-  pgRunQuery :: PGConnection -> q -> IO (Int, [a])
+  pgRunQuery :: PGConnection -> q -> IO (Int, Seq a)
 class PGQuery q PGData => PGRawQuery q
 
 -- |Execute a query that does not return result.
@@ -43,7 +45,7 @@ pgExecute c q = fst <$> pgRunQuery c q
 
 -- |Run a query and return a list of row results.
 pgQuery :: PGQuery q a => PGConnection -> q -> IO [a]
-pgQuery c q = snd <$> pgRunQuery c q
+pgQuery c q = toList . snd <$> pgRunQuery c q
 
 
 data SimpleQuery = SimpleQuery String
@@ -60,7 +62,7 @@ instance PGRawQuery PreparedQuery where
 
 data QueryParser q a = QueryParser q (PGData -> a)
 instance PGRawQuery q => PGQuery (QueryParser q a) a where
-  pgRunQuery c (QueryParser q p) = second (map p) <$> pgRunQuery c q
+  pgRunQuery c (QueryParser q p) = second (fmap p) <$> pgRunQuery c q
 
 instance Functor (QueryParser q) where
   fmap f (QueryParser q p) = QueryParser q (f . p)

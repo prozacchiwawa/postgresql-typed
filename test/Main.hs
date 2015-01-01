@@ -8,6 +8,7 @@ import System.Exit (exitSuccess, exitFailure)
 import Database.TemplatePG
 import Database.TemplatePG.Types (OID)
 import Database.TemplatePG.SQL
+import qualified Database.TemplatePG.Range as Range
 import Connect
 
 assert :: Bool -> IO ()
@@ -36,9 +37,10 @@ main = do
       d = Time.localDay t
       p = -34881559
       l = [Just "a\\\"b,c", Nothing]
-  Just (Just i', Just b', Just f', Just d', Just t', Just z', Just p', Just l') <-
-    $(queryTuple "SELECT {Just i}::int, {b}::bool, {f}::float4, {Just d}::date, {t}::timestamp, {Time.zonedTimeToUTC z}::timestamptz, {p}::interval, {l}::text[]") c
-  assert $ i == i' && b == b' && f == f' && d == d' && t == t' && Time.zonedTimeToUTC z == z' && p == p' && l == l'
+      r = Range.normalRange (Just (-2)) Nothing
+  Just (Just i', Just b', Just f', Just d', Just t', Just z', Just p', Just l', Just r') <-
+    $(queryTuple "SELECT {Just i}::int, {b}::bool, {f}::float4, {Just d}::date, {t}::timestamp, {Time.zonedTimeToUTC z}::timestamptz, {p}::interval, {l}::text[], {r}::int4range") c
+  assert $ i == i' && b == b' && f == f' && d == d' && t == t' && Time.zonedTimeToUTC z == z' && p == p' && l == l' && r == r'
 
   ["box"] <- simple c 603
   [Just "box"] <- simpleApply c 603

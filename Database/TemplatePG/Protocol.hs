@@ -5,23 +5,21 @@
 --  PostgreSQL server over TCP/IP. You probably don't want to use this module
 --  directly.
 
-module Database.TemplatePG.Protocol ( PGConnection
-                                    , PGData
-                                    , PGError(..)
-                                    , messageCode
-                                    , pgConnect
-                                    , pgDisconnect
-                                    , pgDescribe
-                                    , pgSimpleQuery
-                                    , pgPreparedQuery
-                                    , pgPreparedLazyQuery
-                                    , pgCloseStatement
-                                    , pgAddType
-                                    , getTypeOID
-                                    , getPGType
-                                    ) where
-
-import Database.TemplatePG.Types
+module Database.TemplatePG.Protocol ( 
+    PGDatabase(..)
+  , defaultPGDatabase
+  , PGConnection
+  , PGData
+  , PGError(..)
+  , pgMessageCode
+  , pgConnect
+  , pgDisconnect
+  , pgDescribe
+  , pgSimpleQuery
+  , pgPreparedQuery
+  , pgPreparedLazyQuery
+  , pgCloseStatement
+  ) where
 
 import Control.Applicative ((<$>), (<$))
 import Control.Arrow (second)
@@ -38,18 +36,18 @@ import qualified Data.ByteString.Lazy.Char8 as LC
 import qualified Data.ByteString.Lazy.UTF8 as U
 import Data.Foldable (foldMap, forM_, toList)
 import Data.IORef (IORef, newIORef, writeIORef, readIORef, atomicModifyIORef, atomicModifyIORef', modifyIORef)
-import Data.List (find)
 import qualified Data.Map as Map
-import Data.Maybe (isJust, fromMaybe)
+import Data.Maybe (fromMaybe)
 import Data.Monoid (mempty, (<>))
 import qualified Data.Sequence as Seq
 import Data.Typeable (Typeable)
 import Data.Word (Word8, Word32)
-import Network (HostName, PortID, connectTo)
-import System.Environment (lookupEnv)
+import Network (HostName, PortID(..), connectTo)
 import System.IO (Handle, hFlush, hClose, stderr, hPutStrLn)
 import System.IO.Unsafe (unsafeInterleaveIO)
 import Text.Read (readMaybe)
+
+import Database.TemplatePG.Types
 
 data PGState
   = StateUnknown
@@ -59,17 +57,25 @@ data PGState
   | StateClosed
   deriving (Show, Eq)
 
+-- |Information for how to connect to a database, to be passed to 'pgConnect'.
+data PGDatabase = PGDatabase
+  { pgDBHost :: HostName -- ^ The hostname (ignored if 'pgDBPort' is 'UnixSocket')
+  , pgDBPort :: PortID -- ^ The port, likely either @PortNumber 5432@ or @UnixSocket \"/tmp/.s.PGSQL.5432\"@
+  , pgDBName :: String -- ^ The name of the database
+  , pgDBUser, pgDBPass :: String
+  , pgDBDebug :: Bool -- ^ Log all low-level server messages
+  , pgDBLogMessage :: MessageFields -> IO () -- ^ How to log server notice messages (e.g., @print . PGError@)
+  }
+
 -- |An established connection to the PostgreSQL server.
 -- These objects are not thread-safe and must only be used for a single request at a time.
 data PGConnection = PGConnection
   { connHandle :: Handle
-  , connDebug :: !Bool
-  , connLogMessage :: MessageFields -> IO ()
+  , connDatabase :: !PGDatabase
   , connPid :: !Word32 -- unused
   , connKey :: !Word32 -- unused
   , connParameters :: Map.Map String String
-  , connTypes :: PGTypeMap -- only used at TH compile time (move out?)
-  , connPreparedStatements :: IORef (Integer, Map.Map (String, [OID]) Integer) -- only use at run-time
+  , connPreparedStatements :: IORef (Integer, Map.Map (String, [OID]) Integer)
   , connState :: IORef PGState
   }
 
@@ -165,11 +171,22 @@ displayMessage m = "PG" ++ f 'S' ++ " [" ++ f 'C' ++ "]: " ++ f 'M' ++ '\n' : f 
 
 -- |Message SQLState code.
 --  See <http://www.postgresql.org/docs/current/static/errcodes-appendix.html>.
-messageCode :: MessageFields -> String
-messageCode = maybe "" LC.unpack . Map.lookup (c2w 'C')
+pgMessageCode :: MessageFields -> String
+pgMessageCode = maybe "" LC.unpack . Map.lookup (c2w 'C')
 
 defaultLogMessage :: MessageFields -> IO ()
 defaultLogMessage = hPutStrLn stderr . displayMessage
+
+-- |A database connection with sane defaults:
+-- localhost:5432:postgres
+defaultPGDatabase :: PGDatabase
+defaultPGDatabase = PGDatabase "localhost" (PortNumber 5432) "postgres" "postgres" "" False defaultLogMessage
+
+connDebug :: PGConnection -> Bool
+connDebug = pgDBDebug . connDatabase
+
+connLogMessage :: PGConnection -> MessageFields -> IO ()
+connLogMessage = pgDBLogMessage . connDatabase
 
 #ifdef USE_MD5
 md5 :: L.ByteString -> L.ByteString
@@ -216,9 +233,9 @@ messageBody Terminate = (Just 'X', mempty)
 
 -- |Send a message to PostgreSQL (low-level).
 pgSend :: PGConnection -> PGFrontendMessage -> IO ()
-pgSend PGConnection{ connHandle = h, connDebug = d, connState = sr } msg = do
+pgSend c@PGConnection{ connHandle = h, connState = sr } msg = do
   writeIORef sr StateUnknown
-  when d $ putStrLn $ "> " ++ show msg
+  when (connDebug c) $ putStrLn $ "> " ++ show msg
   B.hPutBuilder h $ foldMap B.char7 t <> B.word32BE (fromIntegral $ 4 + L.length b)
   L.hPut h b -- or B.hPutBuilder? But we've already had to convert to BS to get length
   where (t, b) = second B.toLazyByteString $ messageBody msg
@@ -291,10 +308,10 @@ runGet g s = either (\(_, _, e) -> fail e) (\(_, _, r) -> return r) $ G.runGetOr
 -- |Receive the next message from PostgreSQL (low-level). Note that this will
 -- block until it gets a message.
 pgReceive :: PGConnection -> IO PGBackendMessage
-pgReceive c@PGConnection{ connHandle = h, connDebug = d } = do
+pgReceive c@PGConnection{ connHandle = h } = do
   (typ, len) <- runGet (liftM2 (,) G.getWord8 G.getWord32be) =<< L.hGet h 5
   msg <- runGet (getMessageBody $ w2c typ) =<< L.hGet h (fromIntegral len - 4)
-  when d $ putStrLn $ "< " ++ show msg
+  when (connDebug c) $ putStrLn $ "< " ++ show msg
   case msg of
     ReadyForQuery s -> msg <$ writeIORef (connState c) s
     NoticeResponse{ messageFields = m } ->
@@ -307,31 +324,23 @@ pgHandle :: PGConnection -> (PGBackendMessage -> IO a) -> IO a
 pgHandle c = (pgReceive c >>=)
 
 -- |Connect to a PostgreSQL server.
-pgConnect :: HostName  -- ^ the host to connect to
-          -> PortID    -- ^ the port to connect on
-          -> String    -- ^ the database to connect to
-          -> String    -- ^ the username to connect as
-          -> String    -- ^ the password to connect with
-          -> IO PGConnection -- ^ a handle to communicate with the PostgreSQL server on
-pgConnect host port db user pass = do
-  debug <- isJust <$> lookupEnv "TPG_DEBUG"
+pgConnect :: PGDatabase -> IO PGConnection
+pgConnect db = do
   state <- newIORef StateUnknown
   prep <- newIORef (0, Map.empty)
-  h <- connectTo host port
+  h <- connectTo (pgDBHost db) (pgDBPort db)
   let c = PGConnection
         { connHandle = h
-        , connDebug = debug
-        , connLogMessage = defaultLogMessage
+        , connDatabase = db
         , connPid = 0
         , connKey = 0
         , connParameters = Map.empty
-        , connTypes = defaultTypeMap
         , connPreparedStatements = prep
         , connState = state
         }
   pgSend c $ StartupMessage
-    [ ("user", user)
-    , ("database", db)
+    [ ("user", pgDBUser db)
+    , ("database", pgDBName db)
     , ("client_encoding", "UTF8")
     , ("standard_conforming_strings", "on")
     , ("bytea_output", "hex")
@@ -347,12 +356,12 @@ pgConnect host port db user pass = do
   msg c (ParameterStatus k v) = conn c{ connParameters = Map.insert k v $ connParameters c }
   msg c AuthenticationOk = conn c
   msg c AuthenticationCleartextPassword = do
-    pgSend c $ PasswordMessage $ U.fromString pass
+    pgSend c $ PasswordMessage $ U.fromString $ pgDBPass db
     pgFlush c
     conn c
 #ifdef USE_MD5
   msg c (AuthenticationMD5Password salt) = do
-    pgSend c $ PasswordMessage $ LC.pack "md5" `L.append` md5 (md5 (U.fromString (pass ++ user)) `L.append` salt)
+    pgSend c $ PasswordMessage $ LC.pack "md5" `L.append` md5 (md5 (U.fromString (pgDBPass db ++ pgDBUser db)) `L.append` salt)
     pgFlush c
     conn c
 #endif
@@ -376,35 +385,6 @@ pgSync c@PGConnection{ connState = sr } = do
     _ <- pgReceive c `catch` \(PGError m) -> ErrorResponse m <$ connLogMessage c m
     pgSync c
     
--- |Add a new type handler for the given type OID.
-pgAddType :: OID -> PGTypeHandler -> PGConnection -> PGConnection
-pgAddType oid th p = p{ connTypes = Map.insert oid th $ connTypes p }
-
--- |Lookup the OID of a database type by internal or formatted name (case sensitive).
--- Fail if not found.
-getTypeOID :: PGConnection -> String -> IO (OID, OID)
-getTypeOID c@PGConnection{ connTypes = types } t
-  | Just oid <- readMaybe t = return (oid, 0)
-  | Just oid <- findType t = return (oid, fromMaybe 0 $ findType ('_':t)) -- optimization, sort of
-  | otherwise = do
-    (_, r) <- pgSimpleQuery c ("SELECT oid, typarray FROM pg_catalog.pg_type WHERE typname = " ++ pgLiteral t ++ " OR format_type(oid, -1) = " ++ pgLiteral t)
-    case toList r of
-      [] -> fail $ "Unknown PostgreSQL type: " ++ t
-      [[Just o, Just lo]] -> return (pgDecodeBS o, pgDecodeBS lo)
-      _ -> fail $ "Unexpected PostgreSQL type result for " ++ t ++ ": " ++ show r
-  where
-  findType n = fmap fst $ find ((==) n . pgTypeName . snd) $ Map.toList types
-
--- |Lookup the type handler for a given type OID.
-getPGType :: PGConnection -> OID -> IO PGTypeHandler
-getPGType c@PGConnection{ connTypes = types } oid =
-  maybe notype return $ Map.lookup oid types where
-  notype = do
-    (_, r) <- pgSimpleQuery c ("SELECT typname FROM pg_catalog.pg_type WHERE oid = " ++ pgLiteral oid)
-    case toList r of
-      [[Just s]] -> fail $ "Unsupported PostgreSQL type " ++ show oid ++ ": " ++ U.toString s
-      _ -> fail $ "Unknown PostgreSQL type: " ++ show oid
-
 -- |Describe a SQL statement/query. A statement description consists of 0 or
 -- more parameter descriptions (a PostgreSQL type) and zero or more result
 -- field descriptions (for queries) (consist of the name of the field, the
@@ -412,7 +392,7 @@ getPGType c@PGConnection{ connTypes = types } oid =
 pgDescribe :: PGConnection -> String -- ^ SQL string
                   -> [OID] -- ^ Optional type specifications
                   -> Bool -- ^ Guess nullability, otherwise assume everything is
-                  -> IO ([PGTypeHandler], [(String, PGTypeHandler, Bool)]) -- ^ a list of parameter types, and a list of result field names, types, and nullability indicators.
+                  -> IO ([OID], [(String, OID, Bool)]) -- ^ a list of parameter types, and a list of result field names, types, and nullability indicators.
 pgDescribe h sql types nulls = do
   pgSync h
   pgSend h $ Parse{ queryString = sql, statementName = "", parseTypes = types }
@@ -422,15 +402,14 @@ pgDescribe h sql types nulls = do
   ParseComplete <- pgReceive h
   ParameterDescription ps <- pgReceive h
   m <- pgReceive h
-  liftM2 (,) (mapM (getPGType h) ps) $ case m of
+  (,) ps <$> case m of
     NoData -> return []
     RowDescription r -> mapM desc r
     _ -> fail $ "describeStatement: unexpected response: " ++ show m
   where
   desc (ColDescription name tab col typ) = do
-    t <- getPGType h typ
     n <- nullable tab col
-    return (name, t, n)
+    return (name, typ, n)
   -- We don't get nullability indication from PostgreSQL, at least not directly.
   -- Without any hints, we have to assume that the result can be null and
   -- leave it up to the developer to figure it out.

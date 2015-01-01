@@ -31,7 +31,7 @@ import Numeric (readDec)
 
 import Database.TemplatePG.Types
 import Database.TemplatePG.Protocol
-import Database.TemplatePG.Connection
+import Database.TemplatePG.TH
 
 class PGQuery q a | q -> a where
   -- |Execute a query and return the number of rows affected (or -1 if not known) and a list of results.
@@ -174,10 +174,8 @@ simpleFlags = QueryFlags False Nothing
 -- |Construct a 'PGQuery' from a SQL string.
 makePGQuery :: QueryFlags -> String -> TH.ExpQ
 makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
-  (at, pt, rt) <- TH.runIO $ withTHConnection $ \c -> do
-    at <- mapM (fmap fst . getTypeOID c) $ fromMaybe [] prep
-    (pt, rt) <- pgDescribe c sqlp at (not nulls)
-    return (at, pt, rt)
+  (pt, rt) <- TH.runIO $ withTPGState $ \c ->
+    tpgDescribe c sqlp (fromMaybe [] prep) (not nulls)
   when (length pt < length exprs) $ fail "Not all expression placeholders were recognized by PostgreSQL; literal occurrences of '${' may need to be escaped with '$${'"
 
   (vars, vals) <- mapAndUnzipM (\t -> do
@@ -186,7 +184,7 @@ makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
   conv <- convertRow rt
   let pgq
         | isNothing prep = TH.ConE 'SimpleQuery `TH.AppE` sqlSubstitute sqlp vals
-        | otherwise = TH.ConE 'PreparedQuery `TH.AppE` stringL sqlp `TH.AppE` TH.ListE (map (TH.LitE . TH.IntegerL . toInteger) at) `TH.AppE` TH.ListE vals
+        | otherwise = TH.ConE 'PreparedQuery `TH.AppE` stringL sqlp `TH.AppE` TH.ListE (map (TH.LitE . TH.IntegerL . toInteger . pgTypeOID) pt) `TH.AppE` TH.ListE vals
   foldl TH.AppE (TH.LamE vars $ TH.ConE 'QueryParser `TH.AppE` pgq `TH.AppE` conv) <$> mapM parse exprs
   where
   (sqlp, exprs) = sqlPlaceholders sqle
@@ -206,8 +204,8 @@ qqQuery f@QueryFlags{ flagPrepare = Just [] } ('(':s) = qqQuery f{ flagPrepare =
 qqQuery f q = makePGQuery f q
 
 qqType :: String -> TH.TypeQ
-qqType t = fmap pgTypeType $ TH.runIO $ withTHConnection $ \c ->
-  getPGType c . fst =<< getTypeOID c t
+qqType t = fmap pgTypeType $ TH.runIO $ withTPGState $ \c ->
+  getTPGType c . fst =<< getTPGTypeOID c t
 
 -- |A quasi-quoter for PGSQL queries.
 --

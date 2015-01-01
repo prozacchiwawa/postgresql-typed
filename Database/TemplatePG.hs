@@ -14,10 +14,12 @@ module Database.TemplatePG
   -- **Connections
   -- $connect
 
+  , PGDatabase(..)
+  , defaultPGDatabase
   , PGConnection
   , pgConnect
   , pgDisconnect
-  , useTHConnection
+  , useTPGDatabase
 
   -- **Queries
   -- $query
@@ -39,7 +41,7 @@ module Database.TemplatePG
   -- **Types
   -- $types
 
-  , registerPGType
+  , registerTPGType
 
   -- **A Note About NULL
   -- $nulls
@@ -57,7 +59,7 @@ module Database.TemplatePG
   ) where
 
 import Database.TemplatePG.Protocol
-import Database.TemplatePG.Connection
+import Database.TemplatePG.TH
 import Database.TemplatePG.Query
 import Database.TemplatePG.SQL
 
@@ -98,11 +100,11 @@ import Database.TemplatePG.SQL
 -- All database access requires a 'PGConnection' that is created at runtime using 'pgConnect', and should be explicitly be closed with 'pgDisconnect' when finished.
 -- 
 -- However, at compile time, TemplatePG needs to make its own connection to the database in order to describe queries.
--- By default, it will use the following environment variables. You must set at least @TPG_DB@:
+-- By default, it will use the following environment variables:
 -- 
--- [@TPG_DB@] the database name to use
+-- [@TPG_DB@] the database name to use (default: same as user)
 -- 
--- [@TPG_USER@] the username to connect as (default: @postgres@)
+-- [@TPG_USER@] the username to connect as (default: @$USER@ or @postgres@)
 -- 
 -- [@TPG_PASS@] the password to use (default: /empty/)
 -- 

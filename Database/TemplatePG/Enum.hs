@@ -15,7 +15,7 @@ import qualified Data.Sequence as Seq
 import qualified Language.Haskell.TH as TH
 
 import Database.TemplatePG.Protocol
-import Database.TemplatePG.Connection
+import Database.TemplatePG.TH
 import Database.TemplatePG.Types
 
 -- |Create a new enum type corresponding to the given PostgreSQL enum type.
@@ -32,7 +32,7 @@ makePGEnum :: String -- ^ PostgreSQL enum type name
   -> (String -> String) -- ^ How to generate constructor names from enum values, e.g. @(\"Type_\"++)@
   -> TH.DecsQ
 makePGEnum name typs valf = do
-  (_, vals) <- TH.runIO $ withTHConnection $ \c ->
+  (_, vals) <- TH.runIO $ withTPGConnection $ \c ->
     pgSimpleQuery c $ "SELECT enumlabel FROM pg_catalog.pg_enum JOIN pg_catalog.pg_type ON pg_enum.enumtypid = pg_type.oid WHERE typtype = 'e' AND typname = " ++ pgLiteral name ++ " ORDER BY enumsortorder"
   when (Seq.null vals) $ fail $ "makePGEnum: enum " ++ name ++ " not found"
   let 
@@ -43,7 +43,7 @@ makePGEnum name typs valf = do
       [ TH.FunD 'pgDecode $ map (\(l, n) -> TH.Clause [TH.LitP l] (TH.NormalB (TH.ConE n)) []) valn
       , TH.FunD 'pgEncode $ map (\(l, n) -> TH.Clause [TH.ConP n []] (TH.NormalB (TH.LitE l)) []) valn
       ]
-    ] <$> registerPGType name typt
+    ] <$> registerTPGType name typt
   where
   typn = TH.mkName typs
   typt = TH.ConT typn

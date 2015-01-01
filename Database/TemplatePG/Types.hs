@@ -12,7 +12,7 @@ module Database.TemplatePG.Types
   , pgTypeEncoder
   , pgTypeEscaper
   , PGTypeMap
-  , defaultTypeMap
+  , defaultPGTypeMap
   , pgArrayType
   ) where
 
@@ -351,7 +351,8 @@ instance PGType a => PossiblyMaybe (Maybe a) a where
   maybePossibly = id
 
 data PGTypeHandler = PGType
-  { pgTypeName :: String -- ^ The internal PostgreSQL name of the type
+  { pgTypeOID :: OID
+  , pgTypeName :: String -- ^ The internal PostgreSQL name of the type
   , pgTypeType :: TH.Type -- ^ The equivalent Haskell type to which it is marshalled (must be an instance of 'PGType'
   } deriving (Show)
 
@@ -375,8 +376,8 @@ type PGTypeMap = Map.Map OID PGTypeHandler
 arrayType :: TH.Type -> TH.Type
 arrayType = TH.AppT TH.ListT . TH.AppT (TH.ConT ''Maybe)
 
-pgArrayType :: String -> TH.Type -> PGTypeHandler
-pgArrayType n t = PGType ('_':n) (arrayType t)
+pgArrayType :: OID -> String -> TH.Type -> PGTypeHandler
+pgArrayType o n t = PGType o ('_':n) (arrayType t)
 
 pgTypes :: [(OID, OID, String, TH.Name)]
 pgTypes =
@@ -425,11 +426,11 @@ rangeTypes =
   , (3926, 3927, "int8range",   ''Int32)
   ]
 
-defaultTypeMap :: PGTypeMap
-defaultTypeMap =
+defaultPGTypeMap :: PGTypeMap
+defaultPGTypeMap =
   Map.fromAscList
-    ([(o, PGType n (TH.ConT t)) | (o, _, n, t) <- pgTypes]
-    ++ [(o, PGType n (rangeType (TH.ConT t))) | (o, _, n, t) <- rangeTypes])
+    ([(o, PGType o n (TH.ConT t)) | (o, _, n, t) <- pgTypes]
+    ++ [(o, PGType o n (rangeType (TH.ConT t))) | (o, _, n, t) <- rangeTypes])
   `Map.union` Map.fromList
-    ([(o, pgArrayType n (TH.ConT t)) | (_, o, n, t) <- pgTypes]
-    ++ [(o, pgArrayType n (rangeType (TH.ConT t))) | (_, o, n, t) <- rangeTypes])
+    ([(o, pgArrayType o n (TH.ConT t)) | (_, o, n, t) <- pgTypes]
+    ++ [(o, pgArrayType o n (rangeType (TH.ConT t))) | (_, o, n, t) <- rangeTypes])

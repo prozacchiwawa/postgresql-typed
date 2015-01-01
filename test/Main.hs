@@ -7,13 +7,14 @@ import Database.TemplatePG
 import Database.TemplatePG.Types (OID)
 import Database.TemplatePG.SQL
 import qualified Database.TemplatePG.Range as Range
+
 import Connect
 
 assert :: Bool -> IO ()
 assert False = exitFailure
 assert True = return ()
 
-useTHConnection connect
+useTPGDatabase db
 
 simple :: PGConnection -> OID -> IO [String]
 simple        c t = pgQuery c [pgSQL|SELECT typname FROM pg_catalog.pg_type WHERE oid = ${t} AND oid = $1|]
@@ -26,7 +27,7 @@ preparedApply c = pgQuery c . [pgSQL|$(integer)SELECT typname FROM pg_catalog.pg
 
 main :: IO ()
 main = do
-  c <- connect
+  c <- pgConnect db
   z <- Time.getZonedTime
   let i = 1
       b = True

@@ -1,6 +1,12 @@
 module Connect where
 
-import Database.TemplatePG (pgConnect)
+import Database.TemplatePG (PGDatabase(..), defaultPGDatabase)
 import Network (PortID(UnixSocket))
 
-connect = pgConnect "localhost" (UnixSocket "/tmp/.s.PGSQL.5432") "templatepg" "templatepg" ""
+db :: PGDatabase
+db = defaultPGDatabase
+  { pgDBPort = UnixSocket "/tmp/.s.PGSQL.5432"
+  , pgDBName = "templatepg"
+  , pgDBUser = "templatepg"
+  }
+

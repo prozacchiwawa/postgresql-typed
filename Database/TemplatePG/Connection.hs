@@ -24,10 +24,10 @@ thConnection = unsafePerformIO $ newMVar $ Left $ do
   database <- getEnv "TPG_DB"
   hostName <- fromMaybe "localhost" <$> lookupEnv "TPG_HOST"
   socket   <- lookupEnv "TPG_SOCK"
-  portNum  <- maybe (5432 :: PortNumber) (fromIntegral . read) <$> lookupEnv "TPG_PORT"
+  portNum  <- maybe (5432 :: PortNumber) ((fromIntegral :: Int -> PortNumber) . read) <$> lookupEnv "TPG_PORT"
   username <- fromMaybe "postgres" <$> lookupEnv "TPG_USER"
   password <- fromMaybe "" <$> lookupEnv "TPG_PASS"
-  let portId = maybe (PortNumber $ fromIntegral portNum) UnixSocket socket
+  let portId = maybe (PortNumber portNum) UnixSocket socket
   pgConnect hostName portId database username password
 
 -- |Run an action using the TemplatePG connection.

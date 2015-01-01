@@ -1,8 +1,6 @@
 module Main (main) where
 
 import qualified Data.Time as Time
-import Data.Int (Int32)
-import System.Environment (setEnv)
 import System.Exit (exitSuccess, exitFailure)
 
 import Database.TemplatePG
@@ -37,7 +35,7 @@ main = do
       d = Time.localDay t
       p = -34881559
       l = [Just "a\\\"b,c", Nothing]
-      r = Range.normalRange (Just (-2)) Nothing
+      r = Range.normal (Just (-2)) Nothing
   Just (Just i', Just b', Just f', Just d', Just t', Just z', Just p', Just l', Just r') <-
     $(queryTuple "SELECT {Just i}::int, {b}::bool, {f}::float4, {Just d}::date, {t}::timestamp, {Time.zonedTimeToUTC z}::timestamptz, {p}::interval, {l}::text[], {r}::int4range") c
   assert $ i == i' && b == b' && f == f' && d == d' && t == t' && Time.zonedTimeToUTC z == z' && p == p' && l == l' && r == r'

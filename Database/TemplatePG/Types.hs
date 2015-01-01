@@ -266,7 +266,7 @@ instance PGType Rational where
   pgEncode r
     | denominator r == 0 = "NaN" -- this can't happen
     | otherwise = take 30 (showRational (r / (10 ^^ e))) ++ 'e' : show e where
-    e = floor $ logBase 10 $ fromRational $ abs r -- not great, and arbitrarily truncate somewhere
+    e = floor $ logBase (10 :: Double) $ fromRational $ abs r :: Int -- not great, and arbitrarily truncate somewhere
   pgLiteral r
     | denominator r == 0 = "'NaN'" -- this can't happen
     | otherwise = '(' : show (numerator r) ++ '/' : show (denominator r) ++ "::numeric)"
@@ -279,6 +279,7 @@ showRational r = show (ri :: Integer) ++ '.' : frac (abs rf) where
   frac f = intToDigit i : frac f' where (i, f') = properFraction (10 * f)
 
 -- |Arrays of any type, which may always contain NULLs.
+-- This will work for any type using comma as a delimiter (i.e., anything but @box@).
 instance PGType a => PGType [Maybe a] where
   pgDecodeBS = either (error . ("pgDecode array: " ++) . show) id . P.parse pa "array" where
     pa = do

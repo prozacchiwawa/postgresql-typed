@@ -47,9 +47,10 @@ Library
     Database.TemplatePG.Query
     Database.TemplatePG.SQL
     Database.TemplatePG.Types
+    Database.TemplatePG.Enum
     Database.TemplatePG.Range
   Extensions: TemplateHaskell
-  GHC-Options: -Wall -fno-warn-type-defaults
+  GHC-Options: -Wall
   if flag(md5)
     Build-Depends: cryptohash >= 0.5
     CPP-options: -DUSE_MD5
@@ -61,3 +62,4 @@ test-suite test
   buildable: True
   hs-source-dirs: test
   Extensions: TemplateHaskell, QuasiQuotes
+  GHC-Options: -Wall

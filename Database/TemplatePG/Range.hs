@@ -8,6 +8,8 @@
 
 module Database.TemplatePG.Range where
 
+import Control.Applicative ((<$))
+import Control.Monad (guard)
 import Data.Monoid ((<>))
 
 data Bound a
@@ -91,18 +93,22 @@ isFull :: Range a -> Bool
 isFull (Range (Lower Unbounded) (Upper Unbounded)) = True
 isFull _ = False
 
-point :: a -> Range a
+point :: Eq a => a -> Range a
 point a = Range (Lower (Bounded True a)) (Upper (Bounded True a))
+
+getPoint :: Eq a => Range a -> Maybe a
+getPoint (Range (Lower (Bounded True l)) (Upper (Bounded True u))) = u <$ guard (u == l)
+getPoint _ = Nothing
 
 range :: Ord a => Bound a -> Bound a -> Range a
 range l u = normalize $ Range (Lower l) (Upper u)
 
-normalRange :: Ord a => Maybe a -> Maybe a -> Range a
-normalRange l u = range (mb True l) (mb False u) where
+normal :: Ord a => Maybe a -> Maybe a -> Range a
+normal l u = range (mb True l) (mb False u) where
   mb = maybe Unbounded . Bounded
 
-boundedRange :: Ord a => a -> a -> Range a
-boundedRange l u = range (Bounded True l) (Bounded False u)
+bounded :: Ord a => a -> a -> Range a
+bounded l u = range (Bounded True l) (Bounded False u)
 
 normalize :: Ord a => Range a -> Range a
 normalize r

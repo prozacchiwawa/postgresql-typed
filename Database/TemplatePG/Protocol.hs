@@ -65,11 +65,11 @@ data PGConnection = PGConnection
   { connHandle :: Handle
   , connDebug :: !Bool
   , connLogMessage :: MessageFields -> IO ()
-  , connPid :: !Word32
-  , connKey :: !Word32
+  , connPid :: !Word32 -- unused
+  , connKey :: !Word32 -- unused
   , connParameters :: Map.Map String String
-  , connTypes :: PGTypeMap
-  , connPreparedStatements :: IORef (Integer, Map.Map (String, [OID]) Integer)
+  , connTypes :: PGTypeMap -- only used at TH compile time (move out?)
+  , connPreparedStatements :: IORef (Integer, Map.Map (String, [OID]) Integer) -- only use at run-time
   , connState :: IORef PGState
   }
 

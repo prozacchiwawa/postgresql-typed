@@ -118,7 +118,7 @@ convertColumn v (_, t, True) = [| fmap $(pgTypeDecoder t) $(v) |]
 -- This does not understand strings or other SQL syntax, so any literal occurrence of the string @${@ must be escaped as @$${@.
 -- Embedded expressions may not contain @{@ or @}@.
 sqlPlaceholders :: String -> (String, [String])
-sqlPlaceholders = sph 1 where
+sqlPlaceholders = sph (1 :: Int) where
   sph n ('$':'$':'{':s) = first (('$':) . ('{':)) $ sph n s
   sph n ('$':'{':s)
     | (e, '}':r) <- break (\c -> c == '{' || c == '}') s =

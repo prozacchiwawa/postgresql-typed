@@ -14,9 +14,11 @@ module Snap.Snaplet.TemplatePG (
   , withPG
   , liftPG
 
+  , PG.pgSQL
   , pgRunQuery
   , pgExecute
   , pgQuery
+  , PG.registerTPGType
   ) where
 
 import           Control.Applicative
@@ -101,6 +103,8 @@ getPGDatabase config = do
     , PG.pgDBDebug = debug
     , PG.pgDBLogMessage = \_ -> return () -- something better?
     }
+
+-- TODO: figure out some way to useTPGDatabase
 
 getPGConfig :: C.Config -> IO PGConfig
 getPGConfig config = do

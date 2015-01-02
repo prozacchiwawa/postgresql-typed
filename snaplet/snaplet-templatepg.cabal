@@ -14,7 +14,7 @@ homepage:       https://github.com/dylex/snaplet-templatepg
 category:       Snap
 
 data-files:
-  db.cfg
+  devel.cfg
 
 source-repository head
   type:     git

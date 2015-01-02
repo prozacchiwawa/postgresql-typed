@@ -165,7 +165,8 @@ import Database.TemplatePG.SQL
 
 -- $types
 -- Most builtin types are already supported.
--- For the most part, only exactly equivalent types are used (e.g., 'Int32' for int4).
+-- For the most part, exactly equivalent types are all supported (e.g., 'Int32' for int4) as well as other safe equivalents, but you cannot, for example, pass an 'Integer' as a @smallint@.
+-- To achieve this flexibility, the exact types of all parameters and results must be fully known (e.g., numeric literals will not work).
 --
 -- However you can add support for your own types or add flexibility to existing types by creating new instances of 'PGParameter' (for encoding) and 'PGColumn' (for decoding).
 -- If you also want to support arrays of a new type, you should also provide a 'PGArrayType' instance (or 'PGRangeType' for new ranges):
@@ -195,7 +196,7 @@ import Database.TemplatePG.SQL
 -- I've included 'withTransaction', 'rollback', and 'insertIgnore', but they've
 -- not been thoroughly tested, so use them at your own risk.
 --
--- The types of any parameter expressions must be fully known.  This may
+-- The types of all parameters and results must be fully known.  This may
 -- require explicit casts in some cases (especially with numeric literals).
 --
 -- You cannot construct queries at run-time, since they
@@ -206,10 +207,6 @@ import Database.TemplatePG.SQL
 -- to functions, you can use @uncurryN@ from the tuple package. The following
 -- examples are equivalent.
 --
--- @
--- (a, b, c) <- $(queryTuple \"SELECT a, b, c FROM table LIMIT 1\")
---
--- someFunction a b c
--- 
--- uncurryN someFunction \`liftM\` $(queryTuple \"SELECT a, b, c FROM table LIMIT 1\")
--- @
+-- > (a, b, c) <- $(queryTuple \"SELECT a, b, c FROM table LIMIT 1\")
+-- > someFunction a b c
+-- > uncurryN someFunction \`liftM\` $(queryTuple \"SELECT a, b, c FROM table LIMIT 1\")

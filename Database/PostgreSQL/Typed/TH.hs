@@ -1,12 +1,12 @@
-{-# LANGUAGE PatternGuards, ScopedTypeVariables, FlexibleContexts #-}
+{-# LANGUAGE PatternGuards, ScopedTypeVariables, FlexibleContexts, TemplateHaskell #-}
 -- |
--- Module: Database.TemplatePG.TH
+-- Module: Database.PostgreSQL.Typed.TH
 -- Copyright: 2015 Dylan Simon
 -- 
 -- Support functions for compile-time PostgreSQL connection and state management.
 -- Although this is meant to be used from other TH code, it will work during normal runtime if just want simple PGConnection management.
 
-module Database.TemplatePG.TH
+module Database.PostgreSQL.Typed.TH
   ( getTPGDatabase
   , withTPGConnection
   , useTPGDatabase
@@ -29,8 +29,8 @@ import Network (PortID(UnixSocket, PortNumber), PortNumber)
 import System.Environment (lookupEnv)
 import System.IO.Unsafe (unsafePerformIO)
 
-import Database.TemplatePG.Types
-import Database.TemplatePG.Protocol
+import Database.PostgreSQL.Typed.Types
+import Database.PostgreSQL.Typed.Protocol
 
 -- |Generate a 'PGDatabase' based on the environment variables:
 -- @TPG_HOST@ (localhost); @TPG_SOCK@ or @TPG_PORT@ (5432); @TPG_DB@ or user; @TPG_USER@ or @USER@ (postgres); @TPG_PASS@ ()
@@ -55,14 +55,14 @@ getTPGDatabase = do
 tpgConnection :: MVar (Either (IO PGConnection) PGConnection)
 tpgConnection = unsafePerformIO $ newMVar $ Left $ pgConnect =<< getTPGDatabase
 
--- |Run an action using the TemplatePG connection.
+-- |Run an action using the Template Haskell PostgreSQL connection.
 withTPGConnection :: (PGConnection -> IO a) -> IO a
 withTPGConnection f = modifyMVar tpgConnection $ either id return >=> (\c -> (,) (Right c) <$> f c)
 
 setTPGConnection :: Either (IO PGConnection) PGConnection -> IO ()
 setTPGConnection = void . swapMVar tpgConnection
 
--- |Specify an alternative database to use during TemplatePG compilation.
+-- |Specify an alternative database to use during compilation.
 -- This lets you override the default connection parameters that are based on TPG environment variables.
 -- This should be called as a top-level declaration and produces no code.
 -- It will also clear all types registered with 'registerTPGType'.

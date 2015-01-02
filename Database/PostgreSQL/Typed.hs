@@ -1,7 +1,7 @@
 -- Copyright 2010, 2011, 2012, 2013 Chris Forno
--- Copyright 2014 Dylan Simon
+-- Copyright 2014-2015 Dylan Simon
 
-module Database.TemplatePG 
+module Database.PostgreSQL.Typed
   (
   -- *Introduction
   -- $intro
@@ -33,8 +33,8 @@ module Database.TemplatePG
   , pgQuery
   , pgExecute
 
-  -- **Basic queries
-  -- $basic
+  -- **TemplatePG compatibility
+  -- $templatepg
 
   -- *Advanced usage
 
@@ -47,22 +47,17 @@ module Database.TemplatePG
   -- *Caveats
   -- $caveats
 
-  , withTransaction
-  , rollback
-  , insertIgnore
-
   -- **Tips
   -- $tips
 
   ) where
 
-import Database.TemplatePG.Protocol
-import Database.TemplatePG.TH
-import Database.TemplatePG.Query
-import Database.TemplatePG.SQL
+import Database.PostgreSQL.Typed.Protocol
+import Database.PostgreSQL.Typed.TH
+import Database.PostgreSQL.Typed.Query
 
 -- $intro
--- TemplatePG is designed with 2 goals in mind: safety and performance. The
+-- PostgreSQL-Typed is designed with 2 goals in mind: safety and performance. The
 -- primary focus is on safety.
 --
 -- To help ensure safety, it uses the PostgreSQL server to parse every query
@@ -77,11 +72,10 @@ import Database.TemplatePG.SQL
 -- eliminate all of them. If you modify the database without recompilation or
 -- have an error in a trigger or function, for example, you can still trigger a
 -- 'PGException' or other failure (if types change).  Also, nullable result fields resulting from outer joins are not
--- detected and need to be handled specially.
+-- detected and need to be handled explicitly.
 --
--- Use the software at your own risk. Note however that TemplatePG is currently powering
--- <http://www.vocabulink.com/> with no problems yet. (For usage examples, you
--- can see the Vocabulink source code at <https://github.com/jekor/vocabulink>).
+-- Based originally on Chris Forno's TemplatePG library.
+-- A compatibility interface for that library is provided by "Database.PostgreSQL.Typed.TemplatePG" which can basically function as a drop-in replacement (and also provides an alternative interface with some additional features).
 
 -- $usage
 -- Basic usage consists of calling 'pgConnect', 'pgSQL' (Template Haskell quasi-quotation), 'pgQuery', and 'pgDisconnect':
@@ -145,9 +139,9 @@ import Database.TemplatePG.SQL
 -- Queries are identified by the text of the SQL statement with PostgreSQL placeholders in-place, so the exact parameter values do not matter (but the exact SQL statement, whitespace, etc. does).
 -- (Prepared queries are released automatically at 'pgDisconnect', but may be closed early using 'pgCloseQuery'.)
 
--- $basic
--- There is also an older, simpler interface that combines both the compile and runtime steps.
--- 'queryTuples' does all the work ('queryTuple' and 'execute' are convenience
+-- $templatepg
+-- There is also an older, simpler interface based on TemplatePG that combines both the compile and runtime steps.
+-- 'Database.PostgreSQL.Typed.TemplatePG.queryTuples' does all the work ('Database.PostgreSQL.Typed.TemplatePG.queryTuple' and 'Database.PostgreSQL.Typed.TemplatePG.execute' are convenience
 -- functions).
 --
 -- It's a Template Haskell function, so you need to splice it into your program

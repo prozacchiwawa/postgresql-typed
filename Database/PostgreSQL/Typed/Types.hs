@@ -1,12 +1,12 @@
 {-# LANGUAGE FlexibleInstances, OverlappingInstances, ScopedTypeVariables, MultiParamTypeClasses, FunctionalDependencies, FlexibleContexts, DataKinds, KindSignatures, TypeFamilies, UndecidableInstances #-}
 -- |
--- Module: Database.TemplatePG.Type
+-- Module: Database.PostgreSQL.Typed.Type
 -- Copyright: 2010, 2011, 2013 Chris Forno
 -- Copyright: 2015 Dylan Simon
 -- 
 -- Classes to support type inference, value encoding/decoding, and instances to support built-in PostgreSQL types.
 
-module Database.TemplatePG.Types 
+module Database.PostgreSQL.Typed.Types 
   (
   -- * Basic types
     OID
@@ -53,7 +53,7 @@ import System.Locale (defaultTimeLocale)
 import qualified Text.Parsec as P
 import Text.Parsec.Token (naturalOrFloat, makeTokenParser, GenLanguageDef(..))
 
-import qualified Database.TemplatePG.Range as Range
+import qualified Database.PostgreSQL.Typed.Range as Range
 
 type PGValue = L.ByteString
 -- |A list of (nullable) data values, e.g. a single row or query parameters.

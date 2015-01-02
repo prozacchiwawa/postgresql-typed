@@ -1,0 +1,61 @@
+Name:          postgresql-typed
+Version:       0.3.0
+Cabal-Version: >= 1.8
+License:       BSD3
+License-File:  COPYING
+Copyright:     2010-2013 Chris Forno, 2014-2015 Dylan Simon
+Author:        Dylan Simon
+Maintainer:    dylan@dylex.net
+Stability:     alpha
+Bug-Reports:   https://github.com/dylex/postgresql-typed/issues
+Homepage:      https://github.com/dylex/postgresql-typed
+Category:      Database
+Synopsis:      A PostgreSQL access library with compile-time SQL type inference
+Description:   Automatically type-check SQL statements at compile time.
+               Uses Template Haskell and the raw PostgreSQL protocol to describe SQL statement at compile time and provide appropriate type marshalling for both parameters and results.
+               Allows not only syntax verification of your SQL but also full type safety between your SQL and Haskell.
+               Supports many built-in PostgreSQL types already, including arrays and ranges, and can be easily extended in user code to support any other types.
+               Originally based on Chris Forno's templatepg library.
+Tested-With:   GHC == 7.8.4
+Build-Type:    Simple
+
+source-repository head
+  type:     git
+  location: git://github.com/dylex/postgresql-typed
+
+Flag md5
+  Description: Enable md5 password authentication method
+  Default: True
+
+Library
+  Build-Depends:
+    base >= 4.7 && < 5,
+    array, binary, containers, old-locale, time,
+    bytestring >= 0.10.2,
+    template-haskell,
+    haskell-src-meta,
+    network,
+    parsec,
+    utf8-string
+  Exposed-Modules:
+    Database.PostgreSQL.Typed
+    Database.PostgreSQL.Typed.Protocol
+    Database.PostgreSQL.Typed.Types
+    Database.PostgreSQL.Typed.TH
+    Database.PostgreSQL.Typed.Query
+    Database.PostgreSQL.Typed.Enum
+    Database.PostgreSQL.Typed.Range
+    Database.PostgreSQL.Typed.TemplatePG
+  GHC-Options: -Wall
+  if flag(md5)
+    Build-Depends: cryptohash >= 0.5
+    CPP-options: -DUSE_MD5
+
+test-suite test
+  build-depends: base, network, time, templatepg
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  buildable: True
+  hs-source-dirs: test
+  Extensions: TemplateHaskell, QuasiQuotes
+  GHC-Options: -Wall

@@ -1,5 +1,5 @@
-{-# LANGUAGE PatternGuards, MultiParamTypeClasses, FunctionalDependencies, TypeSynonymInstances, FlexibleInstances, FlexibleContexts #-}
-module Database.TemplatePG.Query
+{-# LANGUAGE PatternGuards, MultiParamTypeClasses, FunctionalDependencies, TypeSynonymInstances, FlexibleInstances, FlexibleContexts, TemplateHaskell #-}
+module Database.PostgreSQL.Typed.Query
   ( PGQuery(..)
   , PGSimpleQuery
   , PGPreparedQuery
@@ -29,9 +29,9 @@ import qualified Language.Haskell.TH as TH
 import Language.Haskell.TH.Quote (QuasiQuoter(..))
 import Numeric (readDec)
 
-import Database.TemplatePG.Types
-import Database.TemplatePG.Protocol
-import Database.TemplatePG.TH
+import Database.PostgreSQL.Typed.Types
+import Database.PostgreSQL.Typed.Protocol
+import Database.PostgreSQL.Typed.TH
 
 class PGQuery q a | q -> a where
   -- |Execute a query and return the number of rows affected (or -1 if not known) and a list of results.

@@ -1,10 +1,11 @@
+{-# LANGUAGE TemplateHaskell #-}
 -- |
--- Module: Database.TemplatePG.Enum
+-- Module: Database.PostgreSQL.Typed.Enum
 -- Copyright: 2015 Dylan Simon
 -- 
 -- Support for PostgreSQL enums.
 
-module Database.TemplatePG.Enum 
+module Database.PostgreSQL.Typed.Enum 
   ( makePGEnum
   ) where
 
@@ -14,9 +15,9 @@ import Data.Foldable (toList)
 import qualified Data.Sequence as Seq
 import qualified Language.Haskell.TH as TH
 
-import Database.TemplatePG.Protocol
-import Database.TemplatePG.TH
-import Database.TemplatePG.Types
+import Database.PostgreSQL.Typed.Protocol
+import Database.PostgreSQL.Typed.TH
+import Database.PostgreSQL.Typed.Types
 
 -- |Create a new enum type corresponding to the given PostgreSQL enum type.
 -- For example, if you have @CREATE TYPE foo AS ENUM (\'abc\', \'DEF\');@, then

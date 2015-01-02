@@ -5,7 +5,7 @@
 --  PostgreSQL server over TCP/IP. You probably don't want to use this module
 --  directly.
 
-module Database.TemplatePG.Protocol ( 
+module Database.PostgreSQL.Typed.Protocol ( 
     PGDatabase(..)
   , defaultPGDatabase
   , PGConnection
@@ -47,7 +47,7 @@ import System.IO (Handle, hFlush, hClose, stderr, hPutStrLn)
 import System.IO.Unsafe (unsafeInterleaveIO)
 import Text.Read (readMaybe)
 
-import Database.TemplatePG.Types
+import Database.PostgreSQL.Typed.Types
 
 data PGState
   = StateUnknown

@@ -1,12 +1,12 @@
 -- |
--- Module: Database.TemplatePG.Range
+-- Module: Database.PostgreSQL.Typed.Range
 -- Copyright: 2015 Dylan Simon
 -- 
 -- Representaion of PostgreSQL's range type.
 -- There are a number of existing range data types, but PostgreSQL's is rather particular.
 -- This tries to provide a one-to-one mapping.
 
-module Database.TemplatePG.Range where
+module Database.PostgreSQL.Typed.Range where
 
 import Control.Applicative ((<$))
 import Control.Monad (guard)

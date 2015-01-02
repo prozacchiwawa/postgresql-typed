@@ -1,6 +1,6 @@
 module Connect where
 
-import Database.TemplatePG (PGDatabase(..), defaultPGDatabase)
+import Database.PostgreSQL.Typed (PGDatabase(..), defaultPGDatabase)
 import Network (PortID(UnixSocket))
 
 db :: PGDatabase

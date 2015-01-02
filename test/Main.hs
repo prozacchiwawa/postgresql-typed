@@ -4,10 +4,10 @@ import Data.Int (Int32)
 import qualified Data.Time as Time
 import System.Exit (exitSuccess, exitFailure)
 
-import Database.TemplatePG
-import Database.TemplatePG.Types (OID)
-import Database.TemplatePG.SQL
-import qualified Database.TemplatePG.Range as Range
+import Database.PostgreSQL.Typed
+import Database.PostgreSQL.Typed.Types (OID)
+import Database.PostgreSQL.Typed.TemplatePG (queryTuple)
+import qualified Database.PostgreSQL.Typed.Range as Range
 
 import Connect
 

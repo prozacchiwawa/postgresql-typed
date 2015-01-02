@@ -67,6 +67,10 @@ data PGDatabase = PGDatabase
   , pgDBLogMessage :: MessageFields -> IO () -- ^ How to log server notice messages (e.g., @print . PGError@)
   }
 
+instance Eq PGDatabase where
+  PGDatabase h1 s1 n1 u1 p1 d1 _ == PGDatabase h2 s2 n2 u2 p2 d2 _ =
+    h1 == h2 && s1 == s2 && n1 == n2 && u1 == u2 && p1 == p2 && d1 == d2
+
 -- |An established connection to the PostgreSQL server.
 -- These objects are not thread-safe and must only be used for a single request at a time.
 data PGConnection = PGConnection

@@ -1,5 +1,6 @@
 module Main (main) where
 
+import Data.Int (Int32)
 import qualified Data.Time as Time
 import System.Exit (exitSuccess, exitFailure)
 
@@ -29,14 +30,14 @@ main :: IO ()
 main = do
   c <- pgConnect db
   z <- Time.getZonedTime
-  let i = 1
+  let i = 1 :: Int32
       b = True
-      f = 3.14
+      f = 3.14 :: Float
       t = Time.zonedTimeToLocalTime z
       d = Time.localDay t
-      p = -34881559
+      p = -34881559 :: Time.DiffTime
       l = [Just "a\\\"b,c", Nothing]
-      r = Range.normal (Just (-2)) Nothing
+      r = Range.normal (Just (-2 :: Int32)) Nothing
   Just (Just i', Just b', Just f', Just d', Just t', Just z', Just p', Just l', Just r') <-
     $(queryTuple "SELECT {Just i}::int, {b}::bool, {f}::float4, {Just d}::date, {t}::timestamp, {Time.zonedTimeToUTC z}::timestamptz, {p}::interval, {l}::text[], {r}::int4range") c
   assert $ i == i' && b == b' && f == f' && d == d' && t == t' && Time.zonedTimeToUTC z == z' && p == p' && l == l' && r == r'

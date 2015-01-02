@@ -11,6 +11,7 @@ module Snap.Snaplet.TemplatePG (
 
   , getPGConfig
   , getPGDatabase
+  , loadPGDatabase
   , withPG
   , liftPG
 
@@ -104,7 +105,9 @@ getPGDatabase config = do
     , PG.pgDBLogMessage = \_ -> return () -- something better?
     }
 
--- TODO: figure out some way to useTPGDatabase
+-- |Suitable for use with 'useTPGDatabase'
+loadPGDatabase :: FilePath -> IO PG.PGDatabase
+loadPGDatabase f = getPGDatabase =<< C.load [C.Required f]
 
 getPGConfig :: C.Config -> IO PGConfig
 getPGConfig config = do
@@ -116,12 +119,10 @@ getPGConfig config = do
   return $ PGConfig db stripes idle resources
 
 pgMake :: Initializer b PG PGConfig -> SnapletInit b PG
-pgMake config = makeSnaplet "templatepg" "TemplatePG interface" datadir $ do
+pgMake config = makeSnaplet "templatepg" "TemplatePG interface" (Just getDataDir) $ do
   c <- config
   liftIO $ PGPool <$> createPool (PG.pgConnect (pgConfigDatabase c)) PG.pgDisconnect
     (pgConfigNumStripes c) (realToFrac $ pgConfigIdleTime c) (pgConfigResources c)
-  where
-  datadir = Just $ (++ "/resources/db") <$> getDataDir
 
 pgInit :: SnapletInit b PG
 pgInit = pgMake (liftIO . getPGConfig =<< getSnapletUserConfig)

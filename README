@@ -1,24 +1,3 @@
-TemplatePG is designed with 2 goals in mind: safety and performance. The
-primary focus is on safety.
-
-To help ensure safety, it uses the PostgreSQL server to parse every query and
-statement in your code to infer types at compile-time. This means that in
-theory you cannot get a syntax error at runtime. Getting proper types at
-compile time has the nice side-effect that it eliminates run-time type casting
-and usually results in less code. This approach was inspired by MetaHDBC
-(http://haskell.org/haskellwiki/MetaHDBC) and PG'OCaml
-(http://pgocaml.berlios.de/).
-
-While compile-time query analysis eliminates many errors, it doesn't eliminate
-all of them. If you modify the database without recompilation or have an error
-in a trigger or function, for example, you can still trigger a 'PGException' or
-other failure (if types change).  Also, nullable result fields resulting from
-outer joins are not detected and need to be handled specially.
-
-Use the software at your own risk. Note however that TemplatePG is currently
-powering http://www.vocabulink.com/ with no problems yet. (For usage
-examples, you can see the Vocabulink source code at
-https://github.com/jekor/vocabulink).
-
-See the Haddock documentation at http://hackage.haskell.org/package/templatepg
-for how to use TemplatePG.
+A PostgreSQL interface that provides type-safety through compile-time database
+access.  See the Haddock documentation in Database.PostgreSQL.Typed or the test
+cases for simple examples.

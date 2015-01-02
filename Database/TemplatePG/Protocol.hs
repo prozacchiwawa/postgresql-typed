@@ -9,7 +9,7 @@ module Database.TemplatePG.Protocol (
     PGDatabase(..)
   , defaultPGDatabase
   , PGConnection
-  , PGData
+  , PGValues
   , PGError(..)
   , pgMessageCode
   , pgConnect
@@ -90,9 +90,6 @@ data ColDescription = ColDescription
   , colType :: !OID
   } deriving (Show)
 
--- |A list of (nullable) data values, e.g. a single row or query parameters.
-type PGData = [Maybe L.ByteString]
-
 type MessageFields = Map.Map Word8 L.ByteString
 
 -- |PGFrontendMessage represents a PostgreSQL protocol message that we'll send.
@@ -100,7 +97,7 @@ type MessageFields = Map.Map Word8 L.ByteString
 data PGFrontendMessage
   = StartupMessage [(String, String)] -- only sent first
   | CancelRequest !Word32 !Word32 -- sent first on separate connection
-  | Bind { statementName :: String, bindParameters :: PGData }
+  | Bind { statementName :: String, bindParameters :: PGValues }
   | Close { statementName :: String }
   -- |Describe a SQL query/statement. The SQL string can contain
   --  parameters ($1, $2, etc.).
@@ -135,7 +132,7 @@ data PGBackendMessage
   --  (or just Nothing for null values, to distinguish them from
   --  emtpy strings). The ByteStrings can then be converted to
   --  the appropriate type by 'pgStringToType'.
-  | DataRow PGData
+  | DataRow PGValues
   | EmptyQueryResponse
   -- |An ErrorResponse contains the severity, "SQLSTATE", and
   --  message of an error. See
@@ -421,9 +418,9 @@ pgDescribe h sql types nulls = do
     | nulls && oid /= 0 = do
       -- In cases where the resulting field is tracable to the column of a
       -- table, we can check there.
-      (_, r) <- pgSimpleQuery h ("SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = " ++ pgLiteral oid ++ " AND attnum = " ++ pgLiteral col)
+      (_, r) <- pgSimpleQuery h ("SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = " ++ show oid ++ " AND attnum = " ++ show col)
       case toList r of
-        [[Just s]] -> return $ not $ pgDecodeBS s
+        [[Just s]] -> return $ not $ pgDecode pgBoolType s
         [] -> return True
         _ -> fail $ "Failed to determine nullability of column #" ++ show col
     | otherwise = return True
@@ -438,7 +435,7 @@ rowsAffected = ra . LC.words where
 -- cannot bind parameters. Note that queries can return 0 results (an empty
 -- list).
 pgSimpleQuery :: PGConnection -> String -- ^ SQL string
-                   -> IO (Int, Seq.Seq PGData) -- ^ The number of rows affected and a list of result rows
+                   -> IO (Int, Seq.Seq PGValues) -- ^ The number of rows affected and a list of result rows
 pgSimpleQuery h sql = do
   pgSync h
   pgSend h $ SimpleQuery sql
@@ -456,7 +453,7 @@ pgSimpleQuery h sql = do
   end EmptyQueryResponse = go end
   end m = fail $ "pgSimpleQuery: unexpected message: " ++ show m
 
-pgPreparedBind :: PGConnection -> String -> [OID] -> PGData -> IO (IO ())
+pgPreparedBind :: PGConnection -> String -> [OID] -> PGValues -> IO (IO ())
 pgPreparedBind c@PGConnection{ connPreparedStatements = psr } sql types bind = do
   pgSync c
   (p, n) <- atomicModifyIORef' psr $ \(i, m) ->
@@ -480,8 +477,8 @@ pgPreparedBind c@PGConnection{ connPreparedStatements = psr } sql types bind = d
 -- If the given statement has already been prepared (and not yet closed) on this connection, it will be re-used.
 pgPreparedQuery :: PGConnection -> String -- ^ SQL statement with placeholders
   -> [OID] -- ^ Optional type specifications (only used for first call)
-  -> PGData -- ^ Paremeters to bind to placeholders
-  -> IO (Int, Seq.Seq PGData)
+  -> PGValues -- ^ Paremeters to bind to placeholders
+  -> IO (Int, Seq.Seq PGValues)
 pgPreparedQuery c sql types bind = do
   start <- pgPreparedBind c sql types bind
   pgSend c $ Execute 0
@@ -497,8 +494,8 @@ pgPreparedQuery c sql types bind = do
 
 -- |Like 'pgPreparedQuery' but requests results lazily in chunks of the given size.
 -- Does not use a named portal, so other requests may not intervene.
-pgPreparedLazyQuery :: PGConnection -> String -> [OID] -> PGData -> Word32 -- ^ Chunk size (1 is common, 0 is all-at-once)
-  -> IO [PGData]
+pgPreparedLazyQuery :: PGConnection -> String -> [OID] -> PGValues -> Word32 -- ^ Chunk size (1 is common, 0 is all-at-once)
+  -> IO [PGValues]
 pgPreparedLazyQuery c sql types bind count = do
   start <- pgPreparedBind c sql types bind
   unsafeInterleaveIO $ do

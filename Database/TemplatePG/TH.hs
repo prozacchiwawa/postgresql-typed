@@ -1,4 +1,4 @@
-{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE PatternGuards, ScopedTypeVariables, FlexibleContexts #-}
 -- |
 -- Module: Database.TemplatePG.TH
 -- Copyright: 2015 Dylan Simon
@@ -15,6 +15,10 @@ module Database.TemplatePG.TH
   , getTPGTypeOID
   , getTPGType
   , tpgDescribe
+  , pgTypeDecoder
+  , pgTypeDecoderNotNull
+  , pgTypeEncoder
+  , pgTypeEscaper
   ) where
 
 import Control.Applicative ((<$>), (<$), (<|>))
@@ -97,20 +101,21 @@ getTPGTypeOID TPGState{ tpgConnection = c, tpgTypes = types } t
   | Just oid <- readMaybe t = return (oid, 0)
   | Just oid <- findType t = return (oid, fromMaybe 0 $ findType ('_':t)) -- optimization, sort of
   | otherwise = do
-    (_, r) <- pgSimpleQuery c ("SELECT oid, typarray FROM pg_catalog.pg_type WHERE typname = " ++ pgLiteral t ++ " OR format_type(oid, -1) = " ++ pgLiteral t)
+    (_, r) <- pgSimpleQuery c ("SELECT oid, typarray FROM pg_catalog.pg_type WHERE typname = " ++ pgQuote t ++ " OR format_type(oid, -1) = " ++ pgQuote t)
     case toList r of
       [] -> fail $ "Unknown PostgreSQL type: " ++ t
-      [[Just o, Just lo]] -> return (pgDecodeBS o, pgDecodeBS lo)
+      [[Just o, Just lo]] -> return (decodeOID o, decodeOID lo)
       _ -> fail $ "Unexpected PostgreSQL type result for " ++ t ++ ": " ++ show r
   where
-  findType n = fmap fst $ find ((==) n . pgTypeName . snd) $ Map.toList types
+  findType n = fmap fst $ find ((==) n . pgTypeName' . snd) $ Map.toList types
+  decodeOID = pgDecode pgOIDType
 
 -- |Lookup the type handler for a given type OID.
 getTPGType :: TPGState -> OID -> IO PGTypeHandler
 getTPGType TPGState{ tpgConnection = c, tpgTypes = types } oid =
   maybe notype return $ Map.lookup oid types where
   notype = do
-    (_, r) <- pgSimpleQuery c ("SELECT typname FROM pg_catalog.pg_type WHERE oid = " ++ pgLiteral oid)
+    (_, r) <- pgSimpleQuery c ("SELECT typname FROM pg_catalog.pg_type WHERE oid = " ++ pgLiteral pgOIDType oid)
     case toList r of
       [[Just s]] -> fail $ "Unsupported PostgreSQL type " ++ show oid ++ ": " ++ show s
       _ -> fail $ "Unknown PostgreSQL type: " ++ show oid
@@ -122,7 +127,7 @@ registerTPGType name typ = TH.runIO $ do
   (oid, loid) <- withTPGState (\c -> getTPGTypeOID c name)
   modifyTPGState (
     (if loid == 0 then id else tpgAddType (pgArrayType loid name typ))
-    . tpgAddType (PGType oid name typ))
+    . tpgAddType (PGTypeHandler oid name typ))
   return []
 
 -- |A type-aware wrapper to 'pgDescribe'
@@ -135,3 +140,26 @@ tpgDescribe tpg sql types nulls = do
     th <- getTPGType tpg t
     return (c, th, n)) rt
   return (pth, rth)
+
+
+typeApply :: TH.Name -> String -> TH.Exp
+typeApply f s = TH.AppE (TH.VarE f) $
+  TH.ConE 'PGTypeProxy `TH.SigE` (TH.ConT ''PGTypeName `TH.AppT` TH.LitT (TH.StrTyLit s))
+
+
+-- |TH expression to decode a 'Maybe' 'L.ByteString' to a 'Maybe' 'PGColumn' value.
+pgTypeDecoder :: String -> TH.Exp
+pgTypeDecoder = typeApply 'pgDecodeColumn
+
+-- |TH expression to decode a 'Maybe' 'L.ByteString' to a 'PGColumn' value.
+pgTypeDecoderNotNull :: String -> TH.Exp
+pgTypeDecoderNotNull = typeApply 'pgDecodeColumnNotNull
+
+-- |TH expression to encode a 'PGParameter' value to a 'Maybe' 'L.ByteString'.
+pgTypeEncoder :: String -> TH.Exp
+pgTypeEncoder = typeApply 'pgEncodeParameter
+
+-- |TH expression to escape a 'PGParameter' value to a SQL literal.
+pgTypeEscaper :: String -> TH.Exp
+pgTypeEscaper = typeApply 'pgEscapeParameter
+

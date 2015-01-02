@@ -10,6 +10,7 @@ module Database.TemplatePG.Enum
 
 import Control.Applicative ((<$>))
 import Control.Monad (when)
+import qualified Data.ByteString.Lazy.UTF8 as U
 import Data.Foldable (toList)
 import qualified Data.Sequence as Seq
 import qualified Language.Haskell.TH as TH
@@ -33,13 +34,14 @@ makePGEnum :: String -- ^ PostgreSQL enum type name
   -> TH.DecsQ
 makePGEnum name typs valf = do
   (_, vals) <- TH.runIO $ withTPGConnection $ \c ->
-    pgSimpleQuery c $ "SELECT enumlabel FROM pg_catalog.pg_enum JOIN pg_catalog.pg_type ON pg_enum.enumtypid = pg_type.oid WHERE typtype = 'e' AND typname = " ++ pgLiteral name ++ " ORDER BY enumsortorder"
+    pgSimpleQuery c $ "SELECT enumlabel FROM pg_catalog.pg_enum JOIN pg_catalog.pg_type ON pg_enum.enumtypid = pg_type.oid WHERE typtype = 'e' AND typname = " ++ pgQuote name ++ " ORDER BY enumsortorder"
   when (Seq.null vals) $ fail $ "makePGEnum: enum " ++ name ++ " not found"
   let 
-    valn = map (\[Just v] -> let s = pgDecodeBS v in (TH.StringL s, TH.mkName $ valf s)) $ toList vals
+    valn = map (\[Just v] -> let s = U.toString v in (TH.StringL s, TH.mkName $ valf s)) $ toList vals
   (++)
     [ TH.DataD [] typn [] (map (\(_, n) -> TH.NormalC n []) valn) [''Eq, ''Ord, ''Enum, ''Bounded]
-    , TH.InstanceD [] (TH.AppT (TH.ConT ''PGType) typt)
+    -- FIXME
+    , TH.InstanceD [] (TH.AppT (TH.ConT ''PGParameter) typt)
       [ TH.FunD 'pgDecode $ map (\(l, n) -> TH.Clause [TH.LitP l] (TH.NormalB (TH.ConE n)) []) valn
       , TH.FunD 'pgEncode $ map (\(l, n) -> TH.Clause [TH.ConP n []] (TH.NormalB (TH.LitE l)) []) valn
       ]

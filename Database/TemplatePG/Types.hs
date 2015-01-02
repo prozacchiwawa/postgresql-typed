@@ -8,30 +8,30 @@
 
 module Database.TemplatePG.Types 
   (
-  -- * Classes and internal TH functions
-    PGValue
+  -- * Basic types
+    OID
+  , PGValue
   , PGValues
+  , pgQuote
   , PGTypeName(..)
+
+  -- * Marshalling classes
   , PGParameter(..)
   , PGColumn(..)
   , PGStringType
-  , PGArrayType
-  , PGRangeType
+
+  -- * Marshalling utilities
   , pgEncodeParameter
   , pgEscapeParameter
   , pgDecodeColumn
   , pgDecodeColumnNotNull
 
+  -- * Specific type support
   , pgBoolType
   , pgOIDType
-
-  -- * Conversion utilities
-  , pgQuote
-  , OID
-  , PGTypeHandler(..)
-  , PGTypeMap
-  , defaultPGTypeMap
-  , pgArrayType
+  , pgNameType
+  , PGArrayType
+  , PGRangeType
   ) where
 
 import Control.Applicative ((<$>), (<$))
@@ -44,12 +44,10 @@ import qualified Data.ByteString.Lazy.UTF8 as U
 import Data.Char (isDigit, digitToInt, intToDigit, toLower)
 import Data.Int
 import Data.List (intercalate)
-import qualified Data.Map as Map
 import Data.Ratio ((%), numerator, denominator)
 import qualified Data.Time as Time
 import Data.Word (Word32)
 import GHC.TypeLits (Symbol, symbolVal, KnownSymbol)
-import qualified Language.Haskell.TH as TH
 import Numeric (readFloat)
 import System.Locale (defaultTimeLocale)
 import qualified Text.Parsec as P
@@ -197,6 +195,8 @@ instance PGStringType t => PGColumn t L.ByteString where
 instance PGStringType "text"
 instance PGStringType "varchar"
 instance PGStringType "name" -- limit 63 characters
+pgNameType :: PGTypeName "name"
+pgNameType = PGTypeProxy
 instance PGStringType "bpchar" -- blank padded
 
 
@@ -470,73 +470,3 @@ instance PGRangeType "int8range" "int8"
 --, (1562, 1563, "varbit",      ?)
 --, (2950, 2951, "uuid",        ?)
 -}
-
-data PGTypeHandler = PGTypeHandler
-  { pgTypeOID :: OID
-  , pgTypeName' :: String -- ^ The internal PostgreSQL name of the type
-  , pgTypeType :: TH.Type -- ^ The equivalent Haskell type to which it is marshalled (must be an instance of 'PGType')
-  } deriving (Show)
-
-type PGTypeMap = Map.Map OID PGTypeHandler
-
-arrayType :: TH.Type -> TH.Type
-arrayType = TH.AppT TH.ListT . TH.AppT (TH.ConT ''Maybe)
-
-pgArrayType :: OID -> String -> TH.Type -> PGTypeHandler
-pgArrayType o n t = PGTypeHandler o ('_':n) (arrayType t)
-
-pgTypes :: [(OID, OID, String, TH.Name)]
-pgTypes =
-  [ (  16, 1000, "bool",        ''Bool)
-  , (  17, 1001, "bytea",       ''L.ByteString)
-  , (  18, 1002, "char",        ''Char)
-  , (  19, 1003, "name",        ''String) -- limit 63 characters
-  , (  20, 1016, "int8",        ''Int64)
-  , (  21, 1005, "int2",        ''Int16)
-  , (  23, 1007, "int4",        ''Int32)
-  , (  25, 1009, "text",        ''String)
-  , (  26, 1028, "oid",         ''OID)
---, ( 114,  199, "json",        ?)
---, ( 142,  143, "xml",         ?)
---, ( 600, 1017, "point",       ?)
---, ( 650,  651, "cidr",        ?)
-  , ( 700, 1021, "float4",      ''Float)
-  , ( 701, 1022, "float8",      ''Double)
---, ( 790,  791, "money",       Centi? Fixed?)
---, ( 829, 1040, "macaddr",     ?)
---, ( 869, 1041, "inet",        ?)
-  , (1042, 1014, "bpchar",      ''String)
-  , (1043, 1015, "varchar",     ''String)
-  , (1082, 1182, "date",        ''Time.Day)
-  , (1083, 1183, "time",        ''Time.TimeOfDay)
-  , (1114, 1115, "timestamp",   ''Time.LocalTime)
-  , (1184, 1185, "timestamptz", ''Time.UTCTime)
-  , (1186, 1187, "interval",    ''Time.DiffTime)
---, (1266, 1270, "timetz",      ?)
---, (1560, 1561, "bit",         Bool?)
---, (1562, 1563, "varbit",      ?)
-  , (1700, 1231, "numeric",     ''Rational)
---, (2950, 2951, "uuid",        ?)
-  ]
-
-rangeType :: TH.Type -> TH.Type
-rangeType = TH.AppT (TH.ConT ''Range.Range)
-
-rangeTypes :: [(OID, OID, String, TH.Name)]
-rangeTypes =
-  [ (3904, 3905, "int4range",   ''Int32)
-  , (3906, 3907, "numrange",    ''Rational)
-  , (3908, 3909, "tsrange",     ''Time.LocalTime)
-  , (3910, 3911, "tstzrange",   ''Time.UTCTime)
-  , (3912, 3913, "daterange",   ''Time.Day)
-  , (3926, 3927, "int8range",   ''Int32)
-  ]
-
-defaultPGTypeMap :: PGTypeMap
-defaultPGTypeMap =
-  Map.fromAscList
-    ([(o, PGTypeHandler o n (TH.ConT t)) | (o, _, n, t) <- pgTypes]
-    ++ [(o, PGTypeHandler o n (rangeType (TH.ConT t))) | (o, _, n, t) <- rangeTypes])
-  `Map.union` Map.fromList
-    ([(o, pgArrayType o n (TH.ConT t)) | (_, o, n, t) <- pgTypes]
-    ++ [(o, pgArrayType o n (rangeType (TH.ConT t))) | (_, o, n, t) <- rangeTypes])

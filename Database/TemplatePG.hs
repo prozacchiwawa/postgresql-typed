@@ -41,8 +41,6 @@ module Database.TemplatePG
   -- **Types
   -- $types
 
-  , registerTPGType
-
   -- **A Note About NULL
   -- $nulls
 
@@ -89,12 +87,10 @@ import Database.TemplatePG.SQL
 -- Basic usage consists of calling 'pgConnect', 'pgSQL' (Template Haskell quasi-quotation), 'pgQuery', and 'pgDisconnect':
 -- You must enable TemplateHaskell and/or QuasiQuotes language extensions.
 --
--- @
--- c <- pgConnect
--- let name = \"Joe\"
--- people :: [Int32] <- pgQuery c [pgSQL|SELECT id FROM people WHERE name = ${name}|]
--- pgDisconnect c
--- @
+-- > c <- pgConnect
+-- > let name = "Joe"
+-- > people :: [Int32] <- pgQuery c [pgSQL|SELECT id FROM people WHERE name = ${name}|]
+-- > pgDisconnect c
 
 -- $connect
 -- All database access requires a 'PGConnection' that is created at runtime using 'pgConnect', and should be explicitly be closed with 'pgDisconnect' when finished.
@@ -114,10 +110,8 @@ import Database.TemplatePG.SQL
 -- 
 -- If you'd like to specify what connection to use directly, use 'useTHConnection' at the top level:
 --
--- @
--- myConnect = pgConnect ...
--- useTHConnection myConnect
--- @
+-- > myConnect = pgConnect ...
+-- > useTHConnection myConnect
 --
 -- Note that due to TH limitations, @myConnect@ must be in-line or in a different module, and must be processed by the compiler before (above) any other TH calls.
 --
@@ -129,13 +123,13 @@ import Database.TemplatePG.SQL
 -- $compile
 -- Both TH functions take a single SQL string, which may contain in-line placeholders of the form @${expr}@ (where @expr@ is any valid Haskell expression that does not contain @{}@) and/or PostgreSQL placeholders of the form @$1@, @$2@, etc.
 --
--- @let q = [pgSQL|SELECT id, name, address FROM people WHERE name LIKE ${query++\"%\"} OR email LIKE $1|] :: PGSimpleQuery [(Int32, String, Maybe String)]@
+-- > let q = [pgSQL|SELECT id, name, address FROM people WHERE name LIKE ${query++"%"} OR email LIKE $1|] :: PGSimpleQuery [(Int32, String, Maybe String)]
 --
 -- Expression placeholders are substituted by PostgreSQL ones in left-to-right order starting with 1, so must be in places that PostgreSQL allows them (e.g., not identifiers, table names, column names, operators, etc.)
 -- However, this does mean that you can repeat expressions using the corresponding PostgreSQL placeholder as above.
 -- If there are extra PostgreSQL parameters the may be passed as arguments:
 --
--- @[pgSQL|SELECT id FROM people WHERE name = $1|] :: String -> PGSimpleQuery [Int32]@
+-- > [pgSQL|SELECT id FROM people WHERE name = $1|] :: String -> PGSimpleQuery [Int32]
 --
 -- To produce 'PGPreparedQuery' objects instead, put a single @$@ at the beginning of the query.
 -- You can also create queries at run-time using 'rawPGSimpleQuery' or 'rawPGPreparedQuery'.
@@ -160,49 +154,38 @@ import Database.TemplatePG.SQL
 -- with @$()@. It requires a 'PGConnection' to a PostgreSQL server, but can't be
 -- given one at compile-time, so you need to pass it after the splice:
 --
--- @
--- h <- pgConnect ...
--- 
--- tuples <- $(queryTuples \"SELECT * FROM pg_database\") h
--- @
+-- > h <- pgConnect ...
+-- > tuples <- $(queryTuples \"SELECT * FROM pg_database\") h
 --
 -- To pass parameters to a query, include them in the string with {}. Most
 -- Haskell expressions should work. For example:
 --
--- @
--- let owner = 33 :: Int32
--- 
--- tuples <- $(queryTuples \"SELECT * FROM pg_database WHERE datdba = {owner} LIMIT {2 * 3 :: Int64}\") h
--- @
+-- > let owner = 33 :: Int32
+-- > tuples <- $(queryTuples "SELECT * FROM pg_database WHERE datdba = {owner} LIMIT {2 * 3 :: Int64}") h
 
 -- $types
--- All supported types have instances of the 'PGType' class.
+-- Most builtin types are already supported.
 -- For the most part, only exactly equivalent types are used (e.g., 'Int32' for int4).
--- (You can also use @[pgSQL|int4|]@ to substitute the equivalent Haskell type.)
--- However, you can add support for your own types or replace the existing types just by making a new instance of 'PGType' and calling 'registerPGType' at the top level:
 --
--- @
--- instance PGType MyType where ...
--- registerPGType \"mytype\" (Language.Haskell.TH.ConT ''MyType)
--- @
+-- However you can add support for your own types or add flexibility to existing types by creating new instances of 'PGParameter' (for encoding) and 'PGColumn' (for decoding).
+-- If you also want to support arrays of a new type, you should also provide a 'PGArrayType' instance (or 'PGRangeType' for new ranges):
+-- 
+-- > instance PGParameter "mytype" MyType where
+-- >   pgEncode _ (v :: MyType) = ... :: ByteString
+-- > instance PGColumn "mytype" MyType where
+-- >   pgDecode _ (s :: ByteString) = ... :: MyType
+-- > instance PGArrayType "_mytype" "mytype"
 --
--- This will cause the PostgreSQL type @mytype@ to be converted to/from @MyType@.
--- Only one 'PGType' may be registered per PostgreSQL type, but the same 'PGType' may serve multiple PostgreSQL types.
--- This also automatically registers a handler for @_mytype@ (the PostgreSQL name for a vector or array of @mytype@) to @[Maybe MyType]@.
--- Like 'useTHConnection', this must be evaluated before any use of the type.
+-- You must enable the DataKinds language extension.
 
 -- $nulls
 -- Sometimes TemplatePG cannot determine whether or not a result field can
 -- potentially be @NULL@. In those cases it will assume that it can. Basically,
 -- any time a result field is not immediately traceable to an originating table
 -- and column (such as when a function is applied to a result column), it's
--- assumed to be nullable and will be returned as a 'Maybe' value.
+-- assumed to be nullable and will be returned as a 'Maybe' value.  Other values may be decoded without the 'Maybe' wrapper.
 --
 -- You can use @NULL@ values in parameters as well by using 'Maybe'.
---
--- Nullability is indicated incorrectly in the case of outer joins. TemplatePG
--- incorrectly infers that a field cannot be @NULL@ when it's able to trace the
--- result field back to a non-@NULL@ table column.  You can disable nullability inference by prepending your query with '?' to assume all columns are nullable.
 --
 -- Because TemplatePG has to prepare statements at compile time and
 -- placeholders can't be used in place of lists in PostgreSQL (such as @IN

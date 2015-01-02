@@ -8,7 +8,6 @@ module Database.TemplatePG.Enum
   ( makePGEnum
   ) where
 
-import Control.Applicative ((<$>))
 import Control.Monad (when)
 import qualified Data.ByteString.Lazy.UTF8 as U
 import Data.Foldable (toList)
@@ -38,14 +37,13 @@ makePGEnum name typs valf = do
   when (Seq.null vals) $ fail $ "makePGEnum: enum " ++ name ++ " not found"
   let 
     valn = map (\[Just v] -> let s = U.toString v in (TH.StringL s, TH.mkName $ valf s)) $ toList vals
-  (++)
+  return
     [ TH.DataD [] typn [] (map (\(_, n) -> TH.NormalC n []) valn) [''Eq, ''Ord, ''Enum, ''Bounded]
-    -- FIXME
-    , TH.InstanceD [] (TH.AppT (TH.ConT ''PGParameter) typt)
-      [ TH.FunD 'pgDecode $ map (\(l, n) -> TH.Clause [TH.LitP l] (TH.NormalB (TH.ConE n)) []) valn
-      , TH.FunD 'pgEncode $ map (\(l, n) -> TH.Clause [TH.ConP n []] (TH.NormalB (TH.LitE l)) []) valn
-      ]
-    ] <$> registerTPGType name typt
+    , TH.InstanceD [] (TH.ConT ''PGParameter `TH.AppT` TH.LitT (TH.StrTyLit name) `TH.AppT` typt)
+      [ TH.FunD 'pgEncode $ map (\(l, n) -> TH.Clause [TH.WildP, TH.ConP n []] (TH.NormalB (TH.LitE l)) []) valn ]
+    , TH.InstanceD [] (TH.ConT ''PGColumn `TH.AppT` TH.LitT (TH.StrTyLit name) `TH.AppT` typt)
+      [ TH.FunD 'pgDecode $ map (\(l, n) -> TH.Clause [TH.WildP, TH.LitP l] (TH.NormalB (TH.ConE n)) []) valn ]
+    ]
   where
   typn = TH.mkName typs
   typt = TH.ConT typn

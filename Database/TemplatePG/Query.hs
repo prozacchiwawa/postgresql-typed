@@ -93,7 +93,7 @@ pgLazyQuery c (QueryParser (PreparedQuery sql types bind) p) count =
 
 -- |Given a result description, create a function to convert a result to a
 -- tuple.
-convertRow :: [(String, PGTypeHandler, Bool)] -- ^ result description
+convertRow :: [(String, PGTypeInfo, Bool)] -- ^ result description
            -> TH.ExpQ -- ^ A function for converting a row of the given result description
 convertRow types = do
   (pats, conv) <- mapAndUnzipM (\t@(n, _, _) -> do
@@ -109,11 +109,11 @@ convertRow types = do
 -- don't know if the value is nullable and must return a 'Maybe' value in case
 -- it is.
 convertColumn :: TH.Exp -- ^ the name of the variable containing the column value (of 'Maybe' 'ByteString')
-              -> (String, PGTypeHandler, Bool) -- ^ the result field type
+              -> (String, PGTypeInfo, Bool) -- ^ the result field type
               -> TH.Exp
 -- convertColumn v (n, t, False) = [| $(return $ pgTypeDecoder t) (fromMaybe (error $(TH.litE $ TH.stringL $ "Unexpected NULL value in " ++ n)) $(v)) |]
 -- convertColumn v (_, t, True) = [| fmap $(return $ pgTypeDecoder t) $(v) |]
-convertColumn v (_, t, nullable) = (if nullable then pgTypeDecoder else pgTypeDecoderNotNull) (pgTypeName' t) `TH.AppE` v
+convertColumn v (_, t, nullable) = (if nullable then pgTypeDecoder else pgTypeDecoderNotNull) t `TH.AppE` v
 
 -- |Given a SQL statement with placeholders of the form @${expr}@, return a (hopefully) valid SQL statement with @$N@ placeholders and the list of expressions.
 -- This does not understand strings or other SQL syntax, so any literal occurrence of the string @${@ must be escaped as @$${@.
@@ -175,13 +175,13 @@ simpleFlags = QueryFlags False Nothing
 -- |Construct a 'PGQuery' from a SQL string.
 makePGQuery :: QueryFlags -> String -> TH.ExpQ
 makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
-  (pt, rt) <- TH.runIO $ withTPGState $ \c ->
+  (pt, rt) <- TH.runIO $ withTPGConnection $ \c ->
     tpgDescribe c sqlp (fromMaybe [] prep) (not nulls)
   when (length pt < length exprs) $ fail "Not all expression placeholders were recognized by PostgreSQL; literal occurrences of '${' may need to be escaped with '$${'"
 
   (vars, vals) <- mapAndUnzipM (\t -> do
     v <- TH.newName "p"
-    return (TH.VarP v, encf (pgTypeName' t) `TH.AppE` TH.VarE v)) pt
+    return (TH.VarP v, encf t `TH.AppE` TH.VarE v)) pt
   conv <- convertRow rt
   let pgq
         | isNothing prep = TH.ConE 'SimpleQuery `TH.AppE` sqlSubstitute sqlp vals
@@ -204,10 +204,6 @@ qqQuery f@QueryFlags{ flagPrepare = Just [] } ('(':s) = qqQuery f{ flagPrepare =
   sql _ = fail "pgSQL: unterminated argument list" 
 qqQuery f q = makePGQuery f q
 
-qqType :: String -> TH.TypeQ
-qqType t = fmap pgTypeType $ TH.runIO $ withTPGState $ \c ->
-  getTPGType c . fst =<< getTPGTypeOID c t
-
 -- |A quasi-quoter for PGSQL queries.
 --
 -- Used in expression context, it may contain any SQL statement @[pgSQL|SELECT ...|]@.
@@ -219,15 +215,13 @@ qqType t = fmap pgTypeType $ TH.runIO $ withTPGState $ \c ->
 --
 -- The statement may start with one of more special flags affecting the interpretation:
 --
--- [@?@] To treat all result values as nullable, thus returning 'Maybe' values regardless of inferred nullability.
+-- [@?@] To disable nullability inference, treating all result values as nullable, thus returning 'Maybe' values regardless of inferred nullability.
 -- [@$@] To create a 'PGPreparedQuery' rather than a 'PGSimpleQuery', by default inferring parameter types.
 -- [@$(type,...)@] To specify specific types to a prepared query (see <http://www.postgresql.org/docs/current/static/sql-prepare.html> for details).
---
--- In type context, [pgSQL|typname|] will be replaced with the Haskell type that corresponds to PostgreSQL type @typname@.
 pgSQL :: QuasiQuoter
 pgSQL = QuasiQuoter
   { quoteExp = qqQuery simpleFlags
-  , quoteType = qqType
+  , quoteType = const $ fail "pgSQL not supported in types"
   , quotePat = const $ fail "pgSQL not supported in patterns"
   , quoteDec = const $ fail "pgSQL not supported at top level"
   }

@@ -23,7 +23,7 @@ simpleApply :: PGConnection -> OID -> IO [Maybe String]
 simpleApply   c = pgQuery c . [pgSQL|?SELECT typname FROM pg_catalog.pg_type WHERE oid = $1|]
 prepared :: PGConnection -> OID -> IO [Maybe String]
 prepared      c t = pgQuery c [pgSQL|?$SELECT typname FROM pg_catalog.pg_type WHERE oid = ${t} AND oid = $1|]
-preparedApply :: PGConnection -> [pgSQL|int4|] -> IO [String]
+preparedApply :: PGConnection -> Int32 -> IO [String]
 preparedApply c = pgQuery c . [pgSQL|$(integer)SELECT typname FROM pg_catalog.pg_type WHERE oid = $1|]
 
 main :: IO ()

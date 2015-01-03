@@ -49,7 +49,7 @@ import qualified Data.ByteString.Char8 as BSC
 import Data.ByteString.Internal (c2w)
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.UTF8 as BSU
-import Data.Char (isDigit, digitToInt, intToDigit, toLower)
+import Data.Char (isSpace, isDigit, digitToInt, intToDigit, toLower)
 import Data.Int
 import Data.List (intersperse)
 import Data.Maybe (fromMaybe)
@@ -202,19 +202,22 @@ pgQuote = ('\'':) . es where
 buildBS :: BSB.Builder -> BS.ByteString
 buildBS = BSL.toStrict . BSB.toLazyByteString
 
+-- |Double-quote a value if it's \"\", \"null\", or contains any whitespace, \'\"\', \'\\\', or the characters given in the first argument.
+-- Checking all these things may not be worth it.  We could just double-quote everything.
 dQuote :: String -> BS.ByteString -> BSB.Builder
 dQuote unsafe s
-  | not (BS.null s) && all (`BSC.notElem` s) unsafe && BSC.map toLower s /= BSC.pack "null" = BSB.byteString s
-  | otherwise = dq <> BSBP.primMapByteStringBounded ec s <> dq where
-    dq = BSB.char7 '"'
-    ec = BSBP.condB (\c -> c == c2w '"' || c == c2w '\\') bs (BSBP.liftFixedToBounded BSBP.word8)
-    bs = BSBP.liftFixedToBounded $ ((,) '\\') BSBP.>$< (BSBP.char7 BSBP.>*< BSBP.word8)
+  | BS.null s || BSC.any (\c -> isSpace c || c == '"' || c == '\\' || c `elem` unsafe) s || BSC.map toLower s == BSC.pack "null" =
+    dq <> BSBP.primMapByteStringBounded ec s <> dq
+  | otherwise = BSB.byteString s where
+  dq = BSB.char7 '"'
+  ec = BSBP.condB (\c -> c == c2w '"' || c == c2w '\\') bs (BSBP.liftFixedToBounded BSBP.word8)
+  bs = BSBP.liftFixedToBounded $ ((,) '\\') BSBP.>$< (BSBP.char7 BSBP.>*< BSBP.word8)
 
 parseDQuote :: P.Stream s m Char => String -> P.ParsecT s u m String
 parseDQuote unsafe = (q P.<|> uq) where
   q = P.between (P.char '"') (P.char '"') $
     P.many $ (P.char '\\' >> P.anyChar) P.<|> P.noneOf "\\\""
-  uq = P.many1 (P.noneOf unsafe)
+  uq = P.many1 (P.noneOf ('"':'\\':unsafe))
 
 
 class (Show a, Read a, KnownSymbol t) => PGLiteralType t a
@@ -437,7 +440,7 @@ class (KnownSymbol ta, KnownSymbol t) => PGArrayType ta t | ta -> t, t -> ta whe
 instance (PGArrayType ta t, PGParameter t a) => PGParameter ta (PGArray a) where
   pgEncode ta l = buildBS $ BSB.char7 '{' <> mconcat (intersperse (BSB.char7 $ pgArrayDelim ta) $ map el l) <> BSB.char7 '}' where
     el Nothing = BSB.string7 "null"
-    el (Just e) = dQuote (pgArrayDelim ta : "\"\\{}") $ pgEncode (pgArrayElementType ta) e
+    el (Just e) = dQuote (pgArrayDelim ta : "{}") $ pgEncode (pgArrayElementType ta) e
 instance (PGArrayType ta t, PGColumn t a) => PGColumn ta (PGArray a) where
   pgDecode ta = either (error . ("pgDecode array: " ++) . show) id . P.parse pa "array" where
     pa = do
@@ -445,9 +448,9 @@ instance (PGArrayType ta t, PGColumn t a) => PGColumn ta (PGArray a) where
         P.sepBy nel (P.char (pgArrayDelim ta))
       _ <- P.eof
       return l
-    nel = Nothing <$ nul P.<|> Just <$> el
+    nel = P.between P.spaces P.spaces $ Nothing <$ nul P.<|> Just <$> el
     nul = P.oneOf "Nn" >> P.oneOf "Uu" >> P.oneOf "Ll" >> P.oneOf "Ll"
-    el = pgDecode (pgArrayElementType ta) . BSC.pack <$> parseDQuote (pgArrayDelim ta : "\"{}")
+    el = pgDecode (pgArrayElementType ta) . BSC.pack <$> parseDQuote (pgArrayDelim ta : "{}")
 
 -- Just a dump of pg_type:
 instance PGArrayType "_bool"          "bool"
@@ -535,15 +538,15 @@ instance (PGRangeType tr t, PGParameter t a) => PGParameter tr (Range.Range a) w
       <> pc ']' ')' u
     where
     pb Nothing = mempty
-    pb (Just b) = dQuote "\"(),[\\]" $ pgEncode (pgRangeElementType tr) b
+    pb (Just b) = dQuote "(),[]" $ pgEncode (pgRangeElementType tr) b
     pc c o b = BSB.char7 $ if Range.boundClosed b then c else o
 instance (PGRangeType tr t, PGColumn t a) => PGColumn tr (Range.Range a) where
-  pgDecode tr = either (error . ("pgDecode range: " ++) . show) id . P.parse per "array" where
+  pgDecode tr = either (error . ("pgDecode range: " ++) . show) id . P.parse per "range" where
     per = Range.Empty <$ pe P.<|> pr
     pe = P.oneOf "Ee" >> P.oneOf "Mm" >> P.oneOf "Pp" >> P.oneOf "Tt" >> P.oneOf "Yy"
-    pp = pgDecode (pgRangeElementType tr) . BSC.pack <$> parseDQuote "\"(),[\\]"
+    pp = pgDecode (pgRangeElementType tr) . BSC.pack <$> parseDQuote "(),[]"
     pc c o = True <$ P.char c P.<|> False <$ P.char o
-    pb = P.optionMaybe pp
+    pb = P.optionMaybe $ P.between P.spaces P.spaces $ pp
     mb = maybe Range.Unbounded . Range.Bounded
     pr = do
       lc <- pc '[' '('

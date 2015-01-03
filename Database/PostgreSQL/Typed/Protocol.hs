@@ -88,6 +88,7 @@ data ColDescription = ColDescription
   , colTable :: !OID
   , colNumber :: !Int
   , colType :: !OID
+  , colBinary :: !Bool
   } deriving (Show)
 
 type MessageFields = Map.Map Word8 L.ByteString
@@ -97,7 +98,7 @@ type MessageFields = Map.Map Word8 L.ByteString
 data PGFrontendMessage
   = StartupMessage [(String, String)] -- only sent first
   | CancelRequest !Word32 !Word32 -- sent first on separate connection
-  | Bind { statementName :: String, bindParameters :: PGValues }
+  | Bind { statementName :: String, binaryParameters :: [Bool], bindParameters :: PGValues, binaryColumns :: [Bool] }
   | Close { statementName :: String }
   -- |Describe a SQL query/statement. The SQL string can contain
   --  parameters ($1, $2, etc.).
@@ -209,11 +210,11 @@ messageBody (StartupMessage kv) = (Nothing, B.word32BE 0x30000
   <> foldMap (\(k, v) -> pgString k <> pgString v) kv <> nul)
 messageBody (CancelRequest pid key) = (Nothing, B.word32BE 80877102
   <> B.word32BE pid <> B.word32BE key)
-messageBody Bind{ statementName = n, bindParameters = p } = (Just 'B',
+messageBody Bind{ statementName = n, binaryParameters = bp, bindParameters = p, binaryColumns = bc } = (Just 'B',
   nul <> pgString n
-    <> B.word16BE 0
+    <> B.word16BE (fromIntegral $ length bp) <> foldMap (B.word16LE . fromIntegral . fromEnum) bp
     <> B.word16BE (fromIntegral $ length p) <> foldMap (maybe (B.word32BE 0xFFFFFFFF) val) p
-    <> B.word16BE 0)
+    <> B.word16BE (fromIntegral $ length bc) <> foldMap (B.word16LE . fromIntegral . fromEnum) bc)
   where val v = B.word32BE (fromIntegral $ L.length v) <> B.lazyByteString v
 messageBody Close{ statementName = n } = (Just 'C', 
   B.char7 'S' <> pgString n)
@@ -273,12 +274,13 @@ getMessageBody 'T' = do
     typ' <- G.getWord32be -- type
     _ <- G.getWord16be -- type size
     _ <- G.getWord32be -- type modifier
-    0 <- G.getWord16be -- format code
+    fmt <- G.getWord16be -- format code
     return $ ColDescription
       { colName = name
       , colTable = oid
       , colNumber = fromIntegral col
       , colType = typ'
+      , colBinary = toEnum (fromIntegral fmt)
       }
 getMessageBody 'Z' = ReadyForQuery <$> (rs . w2c =<< G.getWord8) where
   rs 'I' = return StateIdle
@@ -408,7 +410,7 @@ pgDescribe h sql types nulls = do
     RowDescription r -> mapM desc r
     _ -> fail $ "describeStatement: unexpected response: " ++ show m
   where
-  desc (ColDescription name tab col typ) = do
+  desc (ColDescription{ colName = name, colTable = tab, colNumber = col, colType = typ}) = do
     n <- nullable tab col
     return (name, typ, n)
   -- We don't get nullability indication from PostgreSQL, at least not directly.
@@ -461,7 +463,7 @@ pgPreparedBind c@PGConnection{ connPreparedStatements = psr } sql types bind = d
   let sn = show n
   unless p $
     pgSend c $ Parse{ queryString = sql, statementName = sn, parseTypes = types }
-  pgSend c $ Bind{ statementName = sn, bindParameters = bind }
+  pgSend c $ Bind{ statementName = sn, binaryParameters = [], bindParameters = bind, binaryColumns = [] }
   let
     go = pgHandle c start
     start ParseComplete = do

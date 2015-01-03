@@ -44,12 +44,12 @@ import Control.Monad (mzero)
 import Data.Bits (shiftL, (.|.))
 import Data.ByteString.Internal (w2c)
 import qualified Data.ByteString as BS
-import qualified Data.ByteString.Builder as B
-import qualified Data.ByteString.Builder.Prim as BP
+import qualified Data.ByteString.Builder as BSB
+import qualified Data.ByteString.Builder.Prim as BSBP
+import qualified Data.ByteString.Char8 as BSC
 import Data.ByteString.Internal (c2w)
-import qualified Data.ByteString.Lazy as L
-import qualified Data.ByteString.Lazy.Char8 as LC
-import qualified Data.ByteString.Lazy.UTF8 as U
+import qualified Data.ByteString.Lazy as BSL
+import qualified Data.ByteString.UTF8 as BSU
 import Data.Char (isDigit, digitToInt, intToDigit, toLower)
 import Data.Int
 import Data.List (intersperse)
@@ -60,10 +60,10 @@ import Data.Ratio ((%), numerator, denominator)
 import Data.Scientific (Scientific)
 #endif
 #ifdef USE_TEXT
-import qualified Data.Text as Text
-import qualified Data.Text.Encoding as TextE
-import qualified Data.Text.Lazy as TextL
-import qualified Data.Text.Lazy.Encoding as TextLE
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.Lazy as TL
+import qualified Data.Text.Lazy.Encoding as TLE
 #endif
 import qualified Data.Time as Time
 #ifdef USE_UUID
@@ -83,7 +83,7 @@ import Text.Parsec.Token (naturalOrFloat, makeTokenParser, GenLanguageDef(..))
 
 import qualified Database.PostgreSQL.Typed.Range as Range
 
-type PGTextValue = L.ByteString
+type PGTextValue = BS.ByteString
 type PGBinaryValue = BS.ByteString
 data PGValue
   = PGNullValue
@@ -111,7 +111,7 @@ class KnownSymbol t => PGParameter (t :: Symbol) a where
   -- |Encode a value to a (quoted) literal value for use in SQL statements.
   -- Defaults to a quoted version of 'pgEncode'
   pgLiteral :: PGTypeName t -> a -> String
-  pgLiteral t = pgQuote . U.toString . pgEncode t
+  pgLiteral t = pgQuote . BSU.toString . pgEncode t
 class (PGParameter t a, PGBinaryType t) => PGBinaryParameter t a where
   pgEncodeBinary :: PGTypeEnv -> PGTypeName t -> a -> PGBinaryValue
 
@@ -189,13 +189,16 @@ pgQuote = ('\'':) . es where
   es (c@'\'':r) = c:c:es r
   es (c:r) = c:es r
 
-dQuote :: String -> L.ByteString -> B.Builder
+buildBS :: BSB.Builder -> BS.ByteString
+buildBS = BSL.toStrict . BSB.toLazyByteString
+
+dQuote :: String -> BS.ByteString -> BSB.Builder
 dQuote unsafe s
-  | not (L.null s) && all (`LC.notElem` s) unsafe && LC.map toLower s /= LC.pack "null" = B.lazyByteString s
-  | otherwise = dq <> BP.primMapLazyByteStringBounded ec s <> dq where
-    dq = B.char7 '"'
-    ec = BP.condB (\c -> c == c2w '"' || c == c2w '\\') bs (BP.liftFixedToBounded BP.word8)
-    bs = BP.liftFixedToBounded $ ((,) '\\') BP.>$< (BP.char7 BP.>*< BP.word8)
+  | not (BS.null s) && all (`BSC.notElem` s) unsafe && BSC.map toLower s /= BSC.pack "null" = BSB.byteString s
+  | otherwise = dq <> BSBP.primMapByteStringBounded ec s <> dq where
+    dq = BSB.char7 '"'
+    ec = BSBP.condB (\c -> c == c2w '"' || c == c2w '\\') bs (BSBP.liftFixedToBounded BSBP.word8)
+    bs = BSBP.liftFixedToBounded $ ((,) '\\') BSBP.>$< (BSBP.char7 BSBP.>*< BSBP.word8)
 
 parseDQuote :: P.Stream s m Char => String -> P.ParsecT s u m String
 parseDQuote unsafe = (q P.<|> uq) where
@@ -207,18 +210,18 @@ parseDQuote unsafe = (q P.<|> uq) where
 class (Show a, Read a, KnownSymbol t) => PGLiteralType t a
 
 instance PGLiteralType t a => PGParameter t a where
-  pgEncode _ = LC.pack . show
+  pgEncode _ = BSC.pack . show
   pgLiteral _ = show
 instance PGLiteralType t a => PGColumn t a where
-  pgDecode _ = read . LC.unpack
+  pgDecode _ = read . BSC.unpack
 
 instance PGParameter "bool" Bool where
-  pgEncode _ False = LC.singleton 'f'
-  pgEncode _ True = LC.singleton 't'
+  pgEncode _ False = BSC.singleton 'f'
+  pgEncode _ True = BSC.singleton 't'
   pgLiteral _ False = "false"
   pgLiteral _ True = "true"
 instance PGColumn "bool" Bool where
-  pgDecode _ s = case LC.head s of
+  pgDecode _ s = case BSC.head s of
     'f' -> False
     't' -> True
     c -> error $ "pgDecode bool: " ++ [c]
@@ -238,38 +241,38 @@ instance PGLiteralType "float8" Double
 
 
 instance PGParameter "char" Char where
-  pgEncode _ = LC.singleton
+  pgEncode _ = BSC.singleton
 instance PGColumn "char" Char where
-  pgDecode _ = LC.head
+  pgDecode _ = BSC.head
 
 
 class KnownSymbol t => PGStringType t
 
 instance PGStringType t => PGParameter t String where
-  pgEncode _ = U.fromString
+  pgEncode _ = BSU.fromString
 instance PGStringType t => PGColumn t String where
-  pgDecode _ = U.toString
-
-instance PGStringType t => PGParameter t L.ByteString where
-  pgEncode _ = id
-instance PGStringType t => PGColumn t L.ByteString where
-  pgDecode _ = id
+  pgDecode _ = BSU.toString
 
 instance PGStringType t => PGParameter t BS.ByteString where
-  pgEncode _ = L.fromStrict
+  pgEncode _ = id
 instance PGStringType t => PGColumn t BS.ByteString where
-  pgDecode _ = L.toStrict
+  pgDecode _ = id
+
+instance PGStringType t => PGParameter t BSL.ByteString where
+  pgEncode _ = BSL.toStrict
+instance PGStringType t => PGColumn t BSL.ByteString where
+  pgDecode _ = BSL.fromStrict
 
 #ifdef USE_TEXT
-instance PGStringType t => PGParameter t TextL.Text where
-  pgEncode _ = TextLE.encodeUtf8
-instance PGStringType t => PGColumn t TextL.Text where
-  pgDecode _ = TextLE.decodeUtf8
+instance PGStringType t => PGParameter t T.Text where
+  pgEncode _ = TE.encodeUtf8
+instance PGStringType t => PGColumn t T.Text where
+  pgDecode _ = TE.decodeUtf8
 
-instance PGStringType t => PGParameter t Text.Text where
-  pgEncode _ = L.fromStrict . TextE.encodeUtf8
-instance PGStringType t => PGColumn t Text.Text where
-  pgDecode _ = TextL.toStrict . TextLE.decodeUtf8
+instance PGStringType t => PGParameter t TL.Text where
+  pgEncode _ = BSL.toStrict . TLE.encodeUtf8
+instance PGStringType t => PGColumn t TL.Text where
+  pgDecode _ = TL.fromStrict . TE.decodeUtf8
 #endif
 
 instance PGStringType "text"
@@ -280,48 +283,48 @@ pgNameType = PGTypeProxy
 instance PGStringType "bpchar" -- blank padded
 
 
-encodeBytea :: B.Builder -> PGTextValue
-encodeBytea h = B.toLazyByteString $ B.string7 "\\x" <> h
+encodeBytea :: BSB.Builder -> PGTextValue
+encodeBytea h = buildBS $ BSB.string7 "\\x" <> h
 
 decodeBytea :: PGTextValue -> [Word8]
 decodeBytea s
   | sm /= "\\x" = error $ "pgDecode bytea: " ++ sm
-  | otherwise = pd $ L.unpack d where
-  (m, d) = L.splitAt 2 s
-  sm = LC.unpack m
+  | otherwise = pd $ BS.unpack d where
+  (m, d) = BS.splitAt 2 s
+  sm = BSC.unpack m
   pd [] = []
   pd (h:l:r) = (shiftL (unhex h) 4 .|. unhex l) : pd r
   pd [x] = error $ "pgDecode bytea: " ++ show x
   unhex = fromIntegral . digitToInt . w2c
 
-instance PGParameter "bytea" L.ByteString where
-  pgEncode _ = encodeBytea . B.lazyByteStringHex
-  pgLiteral t = pgQuoteUnsafe . LC.unpack . pgEncode t
-instance PGColumn "bytea" L.ByteString where
-  pgDecode _ = L.pack . decodeBytea
+instance PGParameter "bytea" BSL.ByteString where
+  pgEncode _ = encodeBytea . BSB.lazyByteStringHex
+  pgLiteral t = pgQuoteUnsafe . BSC.unpack . pgEncode t
+instance PGColumn "bytea" BSL.ByteString where
+  pgDecode _ = BSL.pack . decodeBytea
 instance PGParameter "bytea" BS.ByteString where
-  pgEncode _ = encodeBytea . B.byteStringHex
-  pgLiteral t = pgQuoteUnsafe . LC.unpack . pgEncode t
+  pgEncode _ = encodeBytea . BSB.byteStringHex
+  pgLiteral t = pgQuoteUnsafe . BSC.unpack . pgEncode t
 instance PGColumn "bytea" BS.ByteString where
   pgDecode _ = BS.pack . decodeBytea
 
 instance PGParameter "date" Time.Day where
-  pgEncode _ = LC.pack . Time.showGregorian
-  pgLiteral t = pgQuoteUnsafe . LC.unpack . pgEncode t
+  pgEncode _ = BSC.pack . Time.showGregorian
+  pgLiteral _ = pgQuoteUnsafe . Time.showGregorian
 instance PGColumn "date" Time.Day where
-  pgDecode _ = Time.readTime defaultTimeLocale "%F" . LC.unpack
+  pgDecode _ = Time.readTime defaultTimeLocale "%F" . BSC.unpack
 
 instance PGParameter "time" Time.TimeOfDay where
-  pgEncode _ = LC.pack . Time.formatTime defaultTimeLocale "%T%Q"
-  pgLiteral t = pgQuoteUnsafe . LC.unpack . pgEncode t
+  pgEncode _ = BSC.pack . Time.formatTime defaultTimeLocale "%T%Q"
+  pgLiteral _ = pgQuoteUnsafe . Time.formatTime defaultTimeLocale "%T%Q"
 instance PGColumn "time" Time.TimeOfDay where
-  pgDecode _ = Time.readTime defaultTimeLocale "%T%Q" . LC.unpack
+  pgDecode _ = Time.readTime defaultTimeLocale "%T%Q" . BSC.unpack
 
 instance PGParameter "timestamp" Time.LocalTime where
-  pgEncode _ = LC.pack . Time.formatTime defaultTimeLocale "%F %T%Q"
-  pgLiteral t = pgQuoteUnsafe . LC.unpack . pgEncode t
+  pgEncode _ = BSC.pack . Time.formatTime defaultTimeLocale "%F %T%Q"
+  pgLiteral _ = pgQuoteUnsafe . Time.formatTime defaultTimeLocale "%F %T%Q"
 instance PGColumn "timestamp" Time.LocalTime where
-  pgDecode _ = Time.readTime defaultTimeLocale "%F %T%Q" . LC.unpack
+  pgDecode _ = Time.readTime defaultTimeLocale "%F %T%Q" . BSC.unpack
 
 -- PostgreSQL uses "[+-]HH[:MM]" timezone offsets, while "%z" uses "+HHMM" by default.
 -- readTime can successfully parse both formats, but PostgreSQL needs the colon.
@@ -334,13 +337,13 @@ fixTZ ['-',h1,h2,m1,m2] | isDigit h1 && isDigit h2 && isDigit m1 && isDigit m2 =
 fixTZ (c:s) = c:fixTZ s
 
 instance PGParameter "timestamptz" Time.UTCTime where
-  pgEncode _ = LC.pack . fixTZ . Time.formatTime defaultTimeLocale "%F %T%Q%z"
-  -- pgLiteral t = pgQuoteUnsafe . LC.unpack . pgEncode t
+  pgEncode _ = BSC.pack . fixTZ . Time.formatTime defaultTimeLocale "%F %T%Q%z"
+  pgLiteral _ = pgQuote{-Unsafe-} . fixTZ . Time.formatTime defaultTimeLocale "%F %T%Q%z"
 instance PGColumn "timestamptz" Time.UTCTime where
-  pgDecode _ = Time.readTime defaultTimeLocale "%F %T%Q%z" . fixTZ . LC.unpack
+  pgDecode _ = Time.readTime defaultTimeLocale "%F %T%Q%z" . fixTZ . BSC.unpack
 
 instance PGParameter "interval" Time.DiffTime where
-  pgEncode _ = LC.pack . show
+  pgEncode _ = BSC.pack . show
   pgLiteral _ = pgQuoteUnsafe . show
 -- |Representation of DiffTime as interval.
 -- PostgreSQL stores months and days separately in intervals, but DiffTime does not.
@@ -379,8 +382,8 @@ instance PGColumn "interval" Time.DiffTime where
 
 instance PGParameter "numeric" Rational where
   pgEncode _ r
-    | denominator r == 0 = LC.pack "NaN" -- this can't happen
-    | otherwise = LC.pack $ take 30 (showRational (r / (10 ^^ e))) ++ 'e' : show e where
+    | denominator r == 0 = BSC.pack "NaN" -- this can't happen
+    | otherwise = BSC.pack $ take 30 (showRational (r / (10 ^^ e))) ++ 'e' : show e where
     e = floor $ logBase (10 :: Double) $ fromRational $ abs r :: Int -- not great, and arbitrarily truncate somewhere
   pgLiteral _ r
     | denominator r == 0 = "'NaN'" -- this can't happen
@@ -394,7 +397,7 @@ instance PGColumn "numeric" Rational where
     | otherwise = ur $ readFloat s where
     ur [(x,"")] = x
     ur _ = error $ "pgDecode numeric: " ++ s
-    s = LC.unpack bs
+    s = BSC.unpack bs
 
 -- This will produce infinite(-precision) strings
 showRational :: Rational -> String
@@ -421,8 +424,8 @@ class (KnownSymbol ta, KnownSymbol t) => PGArrayType ta t | ta -> t, t -> ta whe
   pgArrayDelim _ = ','
 
 instance (PGArrayType ta t, PGParameter t a) => PGParameter ta (PGArray a) where
-  pgEncode ta l = B.toLazyByteString $ B.char7 '{' <> mconcat (intersperse (B.char7 $ pgArrayDelim ta) $ map el l) <> B.char7 '}' where
-    el Nothing = B.string7 "null"
+  pgEncode ta l = buildBS $ BSB.char7 '{' <> mconcat (intersperse (BSB.char7 $ pgArrayDelim ta) $ map el l) <> BSB.char7 '}' where
+    el Nothing = BSB.string7 "null"
     el (Just e) = dQuote (pgArrayDelim ta : "\"\\{}") $ pgEncode (pgArrayElementType ta) e
 instance (PGArrayType ta t, PGColumn t a) => PGColumn ta (PGArray a) where
   pgDecode ta = either (error . ("pgDecode array: " ++) . show) id . P.parse pa "array" where
@@ -433,7 +436,7 @@ instance (PGArrayType ta t, PGColumn t a) => PGColumn ta (PGArray a) where
       return l
     nel = Nothing <$ nul P.<|> Just <$> el
     nul = P.oneOf "Nn" >> P.oneOf "Uu" >> P.oneOf "Ll" >> P.oneOf "Ll"
-    el = pgDecode (pgArrayElementType ta) . LC.pack <$> parseDQuote (pgArrayDelim ta : "\"{}")
+    el = pgDecode (pgArrayElementType ta) . BSC.pack <$> parseDQuote (pgArrayDelim ta : "\"{}")
 
 -- Just a dump of pg_type:
 instance PGArrayType "_bool"          "bool"
@@ -512,22 +515,22 @@ class (KnownSymbol tr, KnownSymbol t) => PGRangeType tr t | tr -> t where
   pgRangeElementType PGTypeProxy = PGTypeProxy
 
 instance (PGRangeType tr t, PGParameter t a) => PGParameter tr (Range.Range a) where
-  pgEncode _ Range.Empty = LC.pack "empty"
-  pgEncode tr (Range.Range (Range.Lower l) (Range.Upper u)) = B.toLazyByteString $
+  pgEncode _ Range.Empty = BSC.pack "empty"
+  pgEncode tr (Range.Range (Range.Lower l) (Range.Upper u)) = buildBS $
     pc '[' '(' l
       <> pb (Range.bound l)
-      <> B.char7 ','
+      <> BSB.char7 ','
       <> pb (Range.bound u)
       <> pc ']' ')' u
     where
     pb Nothing = mempty
     pb (Just b) = dQuote "\"(),[\\]" $ pgEncode (pgRangeElementType tr) b
-    pc c o b = B.char7 $ if Range.boundClosed b then c else o
+    pc c o b = BSB.char7 $ if Range.boundClosed b then c else o
 instance (PGRangeType tr t, PGColumn t a) => PGColumn tr (Range.Range a) where
   pgDecode tr = either (error . ("pgDecode range: " ++) . show) id . P.parse per "array" where
     per = Range.Empty <$ pe P.<|> pr
     pe = P.oneOf "Ee" >> P.oneOf "Mm" >> P.oneOf "Pp" >> P.oneOf "Tt" >> P.oneOf "Yy"
-    pp = pgDecode (pgRangeElementType tr) . LC.pack <$> parseDQuote "\"(),[\\]"
+    pp = pgDecode (pgRangeElementType tr) . BSC.pack <$> parseDQuote "\"(),[\\]"
     pc c o = True <$ P.char c P.<|> False <$ P.char o
     pb = P.optionMaybe pp
     mb = maybe Range.Unbounded . Range.Bounded
@@ -548,10 +551,10 @@ instance PGRangeType "int8range" "int8"
 
 #ifdef USE_UUID
 instance PGParameter "uuid" UUID.UUID where
-  pgEncode _ = UUID.toLazyASCIIBytes
+  pgEncode _ = UUID.toASCIIBytes
   pgLiteral _ = pgQuoteUnsafe . UUID.toString
 instance PGColumn "uuid" UUID.UUID where
-  pgDecode _ u = fromMaybe (error $ "pgDecode uuid: " ++ LC.unpack u) $ UUID.fromLazyASCIIBytes u
+  pgDecode _ u = fromMaybe (error $ "pgDecode uuid: " ++ BSC.unpack u) $ UUID.fromASCIIBytes u
 #endif
 
 #ifdef USE_BINARY
@@ -614,36 +617,36 @@ instance PGBinaryType "text"
 instance PGBinaryType "varchar"
 instance PGBinaryType "bpchar"
 instance PGBinaryType "name" -- not strictly textsend, but essentially the same
-instance (PGStringType t, PGBinaryType t) => PGBinaryParameter t Text.Text where
+instance (PGStringType t, PGBinaryType t) => PGBinaryParameter t T.Text where
   pgEncodeBinary _ _ = BinE.text . Left
-instance (PGStringType t, PGBinaryType t) => PGBinaryColumn t Text.Text where
+instance (PGStringType t, PGBinaryType t) => PGBinaryColumn t T.Text where
   pgDecodeBinary _ = binDec BinD.text
-instance (PGStringType t, PGBinaryType t) => PGBinaryParameter t TextL.Text where
+instance (PGStringType t, PGBinaryType t) => PGBinaryParameter t TL.Text where
   pgEncodeBinary _ _ = BinE.text . Right
-instance (PGStringType t, PGBinaryType t) => PGBinaryColumn t TextL.Text where
-  pgDecodeBinary _ t = TextL.fromStrict . binDec BinD.text t
+instance (PGStringType t, PGBinaryType t) => PGBinaryColumn t TL.Text where
+  pgDecodeBinary _ t = TL.fromStrict . binDec BinD.text t
 instance (PGStringType t, PGBinaryType t) => PGBinaryParameter t BS.ByteString where
-  pgEncodeBinary _ _ = BinE.text . Left . TextE.decodeUtf8
+  pgEncodeBinary _ _ = BinE.text . Left . TE.decodeUtf8
 instance (PGStringType t, PGBinaryType t) => PGBinaryColumn t BS.ByteString where
-  pgDecodeBinary _ t = TextE.encodeUtf8 . binDec BinD.text t
-instance (PGStringType t, PGBinaryType t) => PGBinaryParameter t L.ByteString where
-  pgEncodeBinary _ _ = BinE.text . Right . TextLE.decodeUtf8
-instance (PGStringType t, PGBinaryType t) => PGBinaryColumn t L.ByteString where
-  pgDecodeBinary _ t = L.fromStrict . TextE.encodeUtf8 . binDec BinD.text t
+  pgDecodeBinary _ t = TE.encodeUtf8 . binDec BinD.text t
+instance (PGStringType t, PGBinaryType t) => PGBinaryParameter t BSL.ByteString where
+  pgEncodeBinary _ _ = BinE.text . Right . TLE.decodeUtf8
+instance (PGStringType t, PGBinaryType t) => PGBinaryColumn t BSL.ByteString where
+  pgDecodeBinary _ t = BSL.fromStrict . TE.encodeUtf8 . binDec BinD.text t
 instance (PGStringType t, PGBinaryType t) => PGBinaryParameter t String where
-  pgEncodeBinary _ _ = BinE.text . Left . Text.pack
+  pgEncodeBinary _ _ = BinE.text . Left . T.pack
 instance (PGStringType t, PGBinaryType t) => PGBinaryColumn t String where
-  pgDecodeBinary _ t = Text.unpack . binDec BinD.text t
+  pgDecodeBinary _ t = T.unpack . binDec BinD.text t
 
 instance PGBinaryType "bytea"
 instance PGBinaryParameter "bytea" BS.ByteString where
   pgEncodeBinary _ _ = BinE.bytea . Left
 instance PGBinaryColumn "bytea" BS.ByteString where
   pgDecodeBinary _ = binDec BinD.bytea
-instance PGBinaryParameter "bytea" L.ByteString where
+instance PGBinaryParameter "bytea" BSL.ByteString where
   pgEncodeBinary _ _ = BinE.bytea . Right
-instance PGBinaryColumn "bytea" L.ByteString where
-  pgDecodeBinary _ t = L.fromStrict . binDec BinD.bytea t
+instance PGBinaryColumn "bytea" BSL.ByteString where
+  pgDecodeBinary _ t = BSL.fromStrict . binDec BinD.bytea t
 
 instance PGBinaryType "date"
 instance PGBinaryParameter "date" Time.Day where

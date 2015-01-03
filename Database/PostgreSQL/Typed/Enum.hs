@@ -10,8 +10,8 @@ module Database.PostgreSQL.Typed.Enum
   ) where
 
 import Control.Monad (when)
-import qualified Data.ByteString.Lazy.Char8 as BSC
-import qualified Data.ByteString.Lazy.UTF8 as U
+import qualified Data.ByteString.Char8 as BSC
+import qualified Data.ByteString.UTF8 as U
 import Data.Foldable (toList)
 import qualified Data.Sequence as Seq
 import qualified Language.Haskell.TH as TH

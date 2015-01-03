@@ -32,10 +32,11 @@ import qualified Crypto.Hash as Hash
 import qualified Data.Binary.Get as G
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Builder as B
+import qualified Data.ByteString.Char8 as BSC
 import Data.ByteString.Internal (c2w, w2c)
-import qualified Data.ByteString.Lazy as L
-import qualified Data.ByteString.Lazy.Char8 as LC
-import qualified Data.ByteString.Lazy.UTF8 as U
+import qualified Data.ByteString.Lazy as BSL
+import qualified Data.ByteString.Lazy.UTF8 as BSLU
+import qualified Data.ByteString.UTF8 as BSU
 import qualified Data.Foldable as Fold
 import Data.IORef (IORef, newIORef, writeIORef, readIORef, atomicModifyIORef, atomicModifyIORef', modifyIORef)
 import qualified Data.Map as Map
@@ -95,7 +96,7 @@ data ColDescription = ColDescription
   , colBinary :: !Bool
   } deriving (Show)
 
-type MessageFields = Map.Map Word8 L.ByteString
+type MessageFields = Map.Map Word8 BS.ByteString
 
 -- |PGFrontendMessage represents a PostgreSQL protocol message that we'll send.
 -- See <http://www.postgresql.org/docs/current/interactive/protocol-message-formats.html>.
@@ -111,7 +112,7 @@ data PGFrontendMessage
   | Flush
   -- |Parse SQL Destination (prepared statement)
   | Parse { statementName :: String, queryString :: String, parseTypes :: [OID] }
-  | PasswordMessage L.ByteString
+  | PasswordMessage BS.ByteString
   -- |SimpleQuery takes a simple SQL string. Parameters ($1, $2,
   --  etc.) aren't allowed.
   | SimpleQuery { queryString :: String }
@@ -124,7 +125,7 @@ data PGFrontendMessage
 data PGBackendMessage
   = AuthenticationOk
   | AuthenticationCleartextPassword
-  | AuthenticationMD5Password L.ByteString
+  | AuthenticationMD5Password BS.ByteString
   -- AuthenticationSCMCredential
   | BackendKeyData Word32 Word32
   | BindComplete
@@ -132,7 +133,7 @@ data PGBackendMessage
   -- |CommandComplete is bare for now, although it could be made
   --  to contain the number of rows affected by statements in a
   --  later version.
-  | CommandComplete L.ByteString
+  | CommandComplete BS.ByteString
   -- |Each DataRow (result of a query) is a list of ByteStrings
   --  (or just Nothing for null values, to distinguish them from
   --  emtpy strings). The ByteStrings can then be converted to
@@ -173,12 +174,12 @@ instance Exception PGError
 -- |Produce a human-readable string representing the message
 displayMessage :: MessageFields -> String
 displayMessage m = "PG" ++ f 'S' ++ " [" ++ f 'C' ++ "]: " ++ f 'M' ++ '\n' : f 'D'
-  where f c = maybe "" U.toString $ Map.lookup (c2w c) m
+  where f c = maybe "" BSU.toString $ Map.lookup (c2w c) m
 
 -- |Message SQLState code.
 --  See <http://www.postgresql.org/docs/current/static/errcodes-appendix.html>.
 pgMessageCode :: MessageFields -> String
-pgMessageCode = maybe "" LC.unpack . Map.lookup (c2w 'C')
+pgMessageCode = maybe "" BSC.unpack . Map.lookup (c2w 'C')
 
 defaultLogMessage :: MessageFields -> IO ()
 defaultLogMessage = hPutStrLn stderr . displayMessage
@@ -198,8 +199,8 @@ pgTypeEnv :: PGConnection -> PGTypeEnv
 pgTypeEnv = connTypeEnv
 
 #ifdef USE_MD5
-md5 :: L.ByteString -> L.ByteString
-md5 = L.fromStrict . Hash.digestToHexByteString . (Hash.hashlazy :: L.ByteString -> Hash.Digest Hash.MD5)
+md5 :: BS.ByteString -> BS.ByteString
+md5 = Hash.digestToHexByteString . (Hash.hash :: BS.ByteString -> Hash.Digest Hash.MD5)
 #endif
 
 
@@ -230,7 +231,7 @@ messageBody Bind{ statementName = n, bindParameters = p, binaryColumns = bc } = 
   fmt (PGBinaryValue _) = True
   fmt _ = False
   val PGNullValue = B.int32BE (-1)
-  val (PGTextValue v) = B.word32BE (fromIntegral $ L.length v) <> B.lazyByteString v
+  val (PGTextValue v) = B.word32BE (fromIntegral $ BS.length v) <> B.byteString v
   val (PGBinaryValue v) = B.word32BE (fromIntegral $ BS.length v) <> B.byteString v
 messageBody Close{ statementName = n } = (Just 'C', 
   B.char7 'S' <> pgString n)
@@ -243,7 +244,7 @@ messageBody Parse{ statementName = n, queryString = s, parseTypes = t } = (Just 
   pgString n <> pgString s
     <> B.word16BE (fromIntegral $ length t) <> Fold.foldMap B.word32BE t)
 messageBody (PasswordMessage s) = (Just 'p',
-  B.lazyByteString s <> nul)
+  B.byteString s <> nul)
 messageBody SimpleQuery{ queryString = s } = (Just 'Q',
   pgString s)
 messageBody Sync = (Just 'S', mempty)
@@ -254,28 +255,31 @@ pgSend :: PGConnection -> PGFrontendMessage -> IO ()
 pgSend c@PGConnection{ connHandle = h, connState = sr } msg = do
   writeIORef sr StateUnknown
   when (connDebug c) $ putStrLn $ "> " ++ show msg
-  B.hPutBuilder h $ Fold.foldMap B.char7 t <> B.word32BE (fromIntegral $ 4 + L.length b)
-  L.hPut h b -- or B.hPutBuilder? But we've already had to convert to BS to get length
-  where (t, b) = second B.toLazyByteString $ messageBody msg
+  B.hPutBuilder h $ Fold.foldMap B.char7 t <> B.word32BE (fromIntegral $ 4 + BS.length b)
+  BS.hPut h b -- or B.hPutBuilder? But we've already had to convert to BS to get length
+  where (t, b) = second (BSL.toStrict . B.toLazyByteString) $ messageBody msg
 
 pgFlush :: PGConnection -> IO ()
 pgFlush = hFlush . connHandle
 
 
 getPGString :: G.Get String
-getPGString = U.toString <$> G.getLazyByteStringNul
+getPGString = BSLU.toString <$> G.getLazyByteStringNul
+
+getByteStringNul :: G.Get BS.ByteString
+getByteStringNul = fmap BSL.toStrict G.getLazyByteStringNul
 
 getMessageFields :: G.Get MessageFields
 getMessageFields = g =<< G.getWord8 where
   g 0 = return Map.empty
-  g f = liftM2 (Map.insert f) G.getLazyByteStringNul getMessageFields
+  g f = liftM2 (Map.insert f) getByteStringNul getMessageFields
 
 -- |Parse an incoming message.
 getMessageBody :: Char -> G.Get PGBackendMessage
 getMessageBody 'R' = auth =<< G.getWord32be where
   auth 0 = return AuthenticationOk
   auth 3 = return AuthenticationCleartextPassword
-  auth 5 = AuthenticationMD5Password <$> G.getLazyByteString 4
+  auth 5 = AuthenticationMD5Password <$> G.getByteString 4
   auth op = fail $ "pgGetMessage: unsupported authentication type: " ++ show op
 getMessageBody 't' = do
   numParams <- G.getWord16be
@@ -307,13 +311,13 @@ getMessageBody 'Z' = ReadyForQuery <$> (rs . w2c =<< G.getWord8) where
 getMessageBody '1' = return ParseComplete
 getMessageBody '2' = return BindComplete
 getMessageBody '3' = return CloseComplete
-getMessageBody 'C' = CommandComplete <$> G.getLazyByteStringNul
+getMessageBody 'C' = CommandComplete <$> getByteStringNul
 getMessageBody 'S' = liftM2 ParameterStatus getPGString getPGString
 getMessageBody 'D' = do 
   numFields <- G.getWord16be
   DataRow <$> replicateM (fromIntegral numFields) (getField =<< G.getWord32be) where
   getField 0xFFFFFFFF = return PGNullValue
-  getField len = PGTextValue <$> G.getLazyByteString (fromIntegral len)
+  getField len = PGTextValue <$> G.getByteString (fromIntegral len)
   -- could be binary, too, but we don't know here, so have to choose one
 getMessageBody 'K' = liftM2 BackendKeyData G.getWord32be G.getWord32be
 getMessageBody 'E' = ErrorResponse <$> getMessageFields
@@ -323,15 +327,15 @@ getMessageBody 's' = return PortalSuspended
 getMessageBody 'N' = NoticeResponse <$> getMessageFields
 getMessageBody t = fail $ "pgGetMessage: unknown message type: " ++ show t
 
-runGet :: Monad m => G.Get a -> L.ByteString -> m a
+runGet :: Monad m => G.Get a -> BSL.ByteString -> m a
 runGet g s = either (\(_, _, e) -> fail e) (\(_, _, r) -> return r) $ G.runGetOrFail g s
 
 -- |Receive the next message from PostgreSQL (low-level). Note that this will
 -- block until it gets a message.
 pgReceive :: PGConnection -> IO PGBackendMessage
 pgReceive c@PGConnection{ connHandle = h } = do
-  (typ, len) <- runGet (liftM2 (,) G.getWord8 G.getWord32be) =<< L.hGet h 5
-  msg <- runGet (getMessageBody $ w2c typ) =<< L.hGet h (fromIntegral len - 4)
+  (typ, len) <- runGet (liftM2 (,) G.getWord8 G.getWord32be) =<< BSL.hGet h 5
+  msg <- runGet (getMessageBody $ w2c typ) =<< BSL.hGet h (fromIntegral len - 4)
   when (connDebug c) $ putStrLn $ "< " ++ show msg
   case msg of
     ReadyForQuery s -> msg <$ writeIORef (connState c) s
@@ -382,12 +386,12 @@ pgConnect db = do
   msg c (ParameterStatus k v) = conn c{ connParameters = Map.insert k v $ connParameters c }
   msg c AuthenticationOk = conn c
   msg c AuthenticationCleartextPassword = do
-    pgSend c $ PasswordMessage $ U.fromString $ pgDBPass db
+    pgSend c $ PasswordMessage $ BSU.fromString $ pgDBPass db
     pgFlush c
     conn c
 #ifdef USE_MD5
   msg c (AuthenticationMD5Password salt) = do
-    pgSend c $ PasswordMessage $ LC.pack "md5" `L.append` md5 (md5 (U.fromString (pgDBPass db ++ pgDBUser db)) `L.append` salt)
+    pgSend c $ PasswordMessage $ BSC.pack "md5" `BS.append` md5 (md5 (BSU.fromString (pgDBPass db ++ pgDBUser db)) `BS.append` salt)
     pgFlush c
     conn c
 #endif
@@ -461,15 +465,15 @@ pgDescribe h sql types nulls = do
         _ -> fail $ "Failed to determine nullability of column #" ++ show col
     | otherwise = return True
 
-rowsAffected :: L.ByteString -> Int
-rowsAffected = ra . LC.words where
+rowsAffected :: BS.ByteString -> Int
+rowsAffected = ra . BSC.words where
   ra [] = -1
-  ra l = fromMaybe (-1) $ readMaybe $ LC.unpack $ last l
+  ra l = fromMaybe (-1) $ readMaybe $ BSC.unpack $ last l
 
 -- Do we need to use the ColDescription here always, or are the request formats okay?
 fixBinary :: [Bool] -> PGValues -> PGValues
-fixBinary (False:b) (PGBinaryValue x:r) = PGTextValue (L.fromStrict x) : fixBinary b r
-fixBinary (True :b) (PGTextValue x:r) = PGBinaryValue (L.toStrict   x) : fixBinary b r
+fixBinary (False:b) (PGBinaryValue x:r) = PGTextValue x : fixBinary b r
+fixBinary (True :b) (PGTextValue x:r) = PGBinaryValue x : fixBinary b r
 fixBinary (_:b) (x:r) = x : fixBinary b r
 fixBinary _ l = l
 

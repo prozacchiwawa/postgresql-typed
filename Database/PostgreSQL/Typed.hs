@@ -199,8 +199,6 @@ import Database.PostgreSQL.Typed.Query
 -- However, some features have even stronger requirements:
 --
 --   * The @$(type, ...)@ feature stores OIDs for user types, so the resulting code can only be run the exact same database or one restored from a dump with OIDs (@pg_dump -o@).  If this is a concern, only use built-in types in this construct.
---
---   * The value of @integer_datetimes@ is determined at compile time.  If you need to run against a server with a different value of this parameter (unlikely), you must disable the package @binary@ (or not use any date/time values).
 
 -- $tips
 -- If you find yourself pattern matching on result tuples just to pass them on

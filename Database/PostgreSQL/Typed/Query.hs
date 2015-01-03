@@ -60,15 +60,15 @@ instance PGQuery PreparedQuery PGValues where
 instance PGRawQuery PreparedQuery where
 
 
-data QueryParser q a = QueryParser q (PGValues -> a)
+data QueryParser q a = QueryParser (PGTypeEnv -> q) (PGTypeEnv -> PGValues -> a)
 instance PGRawQuery q => PGQuery (QueryParser q a) a where
-  pgRunQuery c (QueryParser q p) = second (fmap p) <$> pgRunQuery c q
+  pgRunQuery c (QueryParser q p) = second (fmap $ p e) <$> pgRunQuery c (q e) where e = pgTypeEnv c
 
 instance Functor (QueryParser q) where
-  fmap f (QueryParser q p) = QueryParser q (f . p)
+  fmap f (QueryParser q p) = QueryParser q (\e -> f . p e)
 
 rawParser :: q -> QueryParser q PGValues
-rawParser q = QueryParser q id
+rawParser q = QueryParser (const q) (const id)
 
 -- |A simple one-shot query that simply substitutes literal representations of parameters for placeholders.
 type PGSimpleQuery = QueryParser SimpleQuery
@@ -88,8 +88,10 @@ rawPGPreparedQuery sql bind = rawParser $ PreparedQuery sql [] bind []
 -- Although you may safely stop consuming rows early, currently you may not interleave any other database operation while reading rows.  (This limitation could theoretically be lifted if required.)
 pgLazyQuery :: PGConnection -> PGPreparedQuery a -> Word32 -- ^ Chunk size (1 is common, 0 is all-or-nothing)
   -> IO [a]
-pgLazyQuery c (QueryParser (PreparedQuery sql types bind bc) p) count =
-  fmap p <$> pgPreparedLazyQuery c sql types bind bc count
+pgLazyQuery c (QueryParser q p) count =
+  fmap (p e) <$> pgPreparedLazyQuery c sql types bind bc count where
+  e = pgTypeEnv c
+  PreparedQuery sql types bind bc = q e
 
 -- |Given a SQL statement with placeholders of the form @${expr}@, return a (hopefully) valid SQL statement with @$N@ placeholders and the list of expressions.
 -- This does not understand strings or other SQL syntax, so any literal occurrence of the string @${@ must be escaped as @$${@.
@@ -155,18 +157,22 @@ makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
     tpgDescribe c sqlp (fromMaybe [] prep) (not nulls)
   when (length pt < length exprs) $ fail "Not all expression placeholders were recognized by PostgreSQL; literal occurrences of '${' may need to be escaped with '$${'"
 
+  e <- TH.newName "tenv"
   (vars, vals) <- mapAndUnzipM (\t -> do
     b <- pgTypeIsBinary t
     v <- TH.newName "p"
-    return (TH.VarP v, pgTypeEncoder (isNothing prep) b t `TH.AppE` TH.VarE v)) pt
+    return (TH.VarP v, pgTypeEncoder (isNothing prep) b e t v)) pt
   (pats, conv, bc) <- unzip3 <$> mapM (\(c, t, n) -> do
     v <- TH.newName c
     b <- pgTypeIsBinary t
-    return (TH.VarP v, pgTypeDecoder n b t `TH.AppE` TH.VarE v, b)) rt
+    return (TH.VarP v, pgTypeDecoder n b e t v, b)) rt
   let pgq
         | isNothing prep = TH.ConE 'SimpleQuery `TH.AppE` sqlSubstitute sqlp vals
         | otherwise = TH.ConE 'PreparedQuery `TH.AppE` stringL sqlp `TH.AppE` TH.ListE (map (TH.LitE . TH.IntegerL . toInteger . pgTypeOID) pt) `TH.AppE` TH.ListE vals `TH.AppE` TH.ListE (map boolL bc)
-  foldl TH.AppE (TH.LamE vars $ TH.ConE 'QueryParser `TH.AppE` pgq `TH.AppE` TH.LamE [TH.ListP pats] (TH.TupE conv)) <$> mapM parse exprs
+  foldl TH.AppE (TH.LamE vars $ TH.ConE 'QueryParser
+    `TH.AppE` TH.LamE [TH.VarP e] pgq
+    `TH.AppE` TH.LamE [TH.VarP e, TH.ListP pats] (TH.TupE conv))
+    <$> mapM parse exprs
   where
   (sqlp, exprs) = sqlPlaceholders sqle
   parse e = either (fail . (++) ("Failed to parse expression {" ++ e ++ "}: ")) return $ parseExp e

@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleInstances, MultiParamTypeClasses, DataKinds #-}
+-- {-# OPTIONS_GHC -ddump-splices #-}
 module Main (main) where
 
 import Data.Int (Int32)
@@ -7,7 +8,6 @@ import System.Exit (exitSuccess, exitFailure)
 
 import Database.PostgreSQL.Typed
 import Database.PostgreSQL.Typed.Types (OID)
-import Database.PostgreSQL.Typed.TemplatePG (queryTuple)
 import qualified Database.PostgreSQL.Typed.Range as Range
 
 import Connect
@@ -40,8 +40,8 @@ main = do
       s = "\"hel\\o'"
       l = [Just "a\\\"b,c", Nothing]
       r = Range.normal (Just (-2 :: Int32)) Nothing
-  Just (Just i', Just b', Just f', Just s', Just d', Just t', Just z', Just p', Just l', Just r') <-
-    $(queryTuple "SELECT {Just i}::int, {b}::bool, {f}::float4, {s}::text, {Just d}::date, {t}::timestamp, {Time.zonedTimeToUTC z}::timestamptz, {p}::interval, {l}::text[], {r}::int4range") c
+  [(Just b', Just i', Just f', Just s', Just d', Just t', Just z', Just p', Just l', Just r')] <- pgQuery c
+    [pgSQL|$SELECT ${b}::bool, ${Just i}::int, ${f}::float4, ${s}::text, ${Just d}::date, ${t}::timestamp, ${Time.zonedTimeToUTC z}::timestamptz, ${p}::interval, ${l}::text[], ${r}::int4range|]
   assert $ i == i' && b == b' && s == s' && f == f' && d == d' && t == t' && Time.zonedTimeToUTC z == z' && p == p' && l == l' && r == r'
 
   ["box"] <- simple c 603

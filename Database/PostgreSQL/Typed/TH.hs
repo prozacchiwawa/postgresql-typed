@@ -102,19 +102,21 @@ pgTypeIsBinary PGTypeInfo{ pgTypeName = t } =
   TH.isInstance ''PGBinaryType [TH.LitT (TH.StrTyLit t)]
 
 
-typeApply :: TH.Name -> PGTypeInfo -> TH.Exp
-typeApply f PGTypeInfo{ pgTypeName = n } = TH.AppE (TH.VarE f) $
-  TH.ConE 'PGTypeProxy `TH.SigE` (TH.ConT ''PGTypeName `TH.AppT` TH.LitT (TH.StrTyLit n))
+typeApply :: TH.Name -> TH.Name -> PGTypeInfo -> TH.Name -> TH.Exp
+typeApply f e PGTypeInfo{ pgTypeName = n } v =
+  TH.VarE f `TH.AppE` TH.VarE e
+    `TH.AppE` (TH.ConE 'PGTypeProxy `TH.SigE` (TH.ConT ''PGTypeName `TH.AppT` TH.LitT (TH.StrTyLit n)))
+    `TH.AppE` TH.VarE v
 
 
 -- |TH expression to encode a 'PGParameter' value to a 'Maybe' 'L.ByteString'.
-pgTypeEncoder :: Bool -> Bool -> PGTypeInfo -> TH.Exp
+pgTypeEncoder :: Bool -> Bool -> TH.Name -> PGTypeInfo -> TH.Name -> TH.Exp
 pgTypeEncoder False False = typeApply 'pgEncodeParameter
 pgTypeEncoder False True = typeApply 'pgEncodeBinaryParameter
 pgTypeEncoder True _ = typeApply 'pgEscapeParameter
 
 -- |TH expression to decode a 'Maybe' 'L.ByteString' to a ('Maybe') 'PGColumn' value.
-pgTypeDecoder :: Bool -> Bool -> PGTypeInfo -> TH.Exp
+pgTypeDecoder :: Bool -> Bool -> TH.Name -> PGTypeInfo -> TH.Name -> TH.Exp
 pgTypeDecoder True False = typeApply 'pgDecodeColumn
 pgTypeDecoder True True = typeApply 'pgDecodeBinaryColumn
 pgTypeDecoder False False = typeApply 'pgDecodeColumnNotNull

@@ -11,8 +11,10 @@ module Database.PostgreSQL.Typed.Protocol (
   , PGConnection
   , PGError(..)
   , pgMessageCode
+  , pgTypeEnv
   , pgConnect
   , pgDisconnect
+  , pgReconnect
   , pgDescribe
   , pgSimpleQuery
   , pgPreparedQuery
@@ -68,8 +70,8 @@ data PGDatabase = PGDatabase
   }
 
 instance Eq PGDatabase where
-  PGDatabase h1 s1 n1 u1 p1 d1 _ == PGDatabase h2 s2 n2 u2 p2 d2 _ =
-    h1 == h2 && s1 == s2 && n1 == n2 && u1 == u2 && p1 == p2 && d1 == d2
+  PGDatabase h1 s1 n1 u1 p1 _ _ == PGDatabase h2 s2 n2 u2 p2 _ _ =
+    h1 == h2 && s1 == s2 && n1 == n2 && u1 == u2 && p1 == p2
 
 -- |An established connection to the PostgreSQL server.
 -- These objects are not thread-safe and must only be used for a single request at a time.
@@ -79,6 +81,7 @@ data PGConnection = PGConnection
   , connPid :: !Word32 -- unused
   , connKey :: !Word32 -- unused
   , connParameters :: Map.Map String String
+  , connTypeEnv :: PGTypeEnv
   , connPreparedStatements :: IORef (Integer, Map.Map (String, [OID]) Integer)
   , connState :: IORef PGState
   }
@@ -191,6 +194,9 @@ connDebug = pgDBDebug . connDatabase
 connLogMessage :: PGConnection -> MessageFields -> IO ()
 connLogMessage = pgDBLogMessage . connDatabase
 
+pgTypeEnv :: PGConnection -> PGTypeEnv
+pgTypeEnv = connTypeEnv
+
 #ifdef USE_MD5
 md5 :: L.ByteString -> L.ByteString
 md5 = L.fromStrict . Hash.digestToHexByteString . (Hash.hashlazy :: L.ByteString -> Hash.Digest Hash.MD5)
@@ -217,7 +223,9 @@ messageBody Bind{ statementName = n, bindParameters = p, binaryColumns = bc } = 
           then B.word16BE (fromIntegral $ length p) <> Fold.foldMap (B.word16BE . fromIntegral . fromEnum . fmt) p
           else B.word16BE 0)
     <> B.word16BE (fromIntegral $ length p) <> Fold.foldMap val p
-    <> B.word16BE (fromIntegral $ length bc) <> Fold.foldMap (B.word16BE . fromIntegral . fromEnum) bc)
+    <> (if or bc
+          then B.word16BE (fromIntegral $ length bc) <> Fold.foldMap (B.word16BE . fromIntegral . fromEnum) bc
+          else B.word16BE 0))
   where
   fmt (PGBinaryValue _) = True
   fmt _ = False
@@ -350,6 +358,7 @@ pgConnect db = do
         , connParameters = Map.empty
         , connPreparedStatements = prep
         , connState = state
+        , connTypeEnv = undefined
         }
   pgSend c $ StartupMessage
     [ ("user", pgDBUser db)
@@ -365,6 +374,10 @@ pgConnect db = do
   where
   conn c = pgHandle c (msg c)
   msg c (ReadyForQuery _) = return c
+    { connTypeEnv = PGTypeEnv
+      { pgIntegerDatetimes = (connParameters c Map.! "integer_datetimes") == "on"
+      }
+    }
   msg c (BackendKeyData p k) = conn c{ connPid = p, connKey = k }
   msg c (ParameterStatus k v) = conn c{ connParameters = Map.insert k v $ connParameters c }
   msg c AuthenticationOk = conn c
@@ -387,6 +400,17 @@ pgDisconnect c@PGConnection{ connHandle = h, connState = s } = do
   pgSend c Terminate
   writeIORef s StateClosed
   hClose h
+
+-- |Possibly re-open a connection to a different database, either reusing the connection if the given database is already connected or closing it and opening a new one.
+-- Regardless, the input connection must not be used afterwards.
+pgReconnect :: PGConnection -> PGDatabase -> IO PGConnection
+pgReconnect c@PGConnection{ connDatabase = cd, connState = cs } d = do
+  s <- readIORef cs
+  if cd == d && s /= StateClosed
+    then return c{ connDatabase = d }
+    else do
+      when (s /= StateClosed) $ pgDisconnect c
+      pgConnect d
 
 pgSync :: PGConnection -> IO ()
 pgSync c@PGConnection{ connState = sr } = do

@@ -1,4 +1,4 @@
-{-# LANGUAGE FlexibleInstances, OverlappingInstances, ScopedTypeVariables, MultiParamTypeClasses, FunctionalDependencies, FlexibleContexts, DataKinds, KindSignatures, TypeFamilies, UndecidableInstances #-}
+{-# LANGUAGE CPP, FlexibleInstances, OverlappingInstances, ScopedTypeVariables, MultiParamTypeClasses, FunctionalDependencies, FlexibleContexts, DataKinds, KindSignatures, TypeFamilies, UndecidableInstances #-}
 -- |
 -- Module: Database.PostgreSQL.Typed.Type
 -- Copyright: 2010, 2011, 2013 Chris Forno
@@ -47,9 +47,16 @@ import qualified Data.ByteString.Lazy.UTF8 as U
 import Data.Char (isDigit, digitToInt, intToDigit, toLower)
 import Data.Int
 import Data.List (intersperse)
+import Data.Maybe (fromMaybe)
 import Data.Monoid ((<>), mconcat, mempty)
 import Data.Ratio ((%), numerator, denominator)
+#ifdef USE_SCIENTIFIC
+import Data.Scientific (Scientific)
+#endif
 import qualified Data.Time as Time
+#ifdef USE_UUID
+import qualified Data.UUID as UUID
+#endif
 import Data.Word (Word32)
 import GHC.TypeLits (Symbol, symbolVal, KnownSymbol)
 import Numeric (readFloat)
@@ -318,6 +325,10 @@ showRational r = show (ri :: Integer) ++ '.' : frac (abs rf) where
   frac 0 = ""
   frac f = intToDigit i : frac f' where (i, f') = properFraction (10 * f)
 
+#ifdef USE_SCIENTIFIC
+instance PGLiteralType "numeric" Scientific
+#endif
+
 -- |The cannonical representation of a PostgreSQL array of any type, which may always contain NULLs.
 type PGArray a = [Maybe a]
 
@@ -456,6 +467,14 @@ instance PGRangeType "tstzrange" "timestamptz"
 instance PGRangeType "daterange" "date"
 instance PGRangeType "int8range" "int8"
 
+#ifdef USE_UUID
+instance PGParameter "uuid" UUID.UUID where
+  pgEncode _ = UUID.toLazyASCIIBytes
+  pgLiteral _ = pgQuoteUnsafe . UUID.toString
+instance PGColumn "uuid" UUID.UUID where
+  pgDecode _ u = fromMaybe (error $ "pgDecode uuid: " ++ LC.unpack u) $ UUID.fromLazyASCIIBytes u
+#endif
+
 
 {-
 --, ( 114,  199, "json",        ?)
@@ -468,5 +487,4 @@ instance PGRangeType "int8range" "int8"
 --, (1266, 1270, "timetz",      ?)
 --, (1560, 1561, "bit",         Bool?)
 --, (1562, 1563, "varbit",      ?)
---, (2950, 2951, "uuid",        ?)
 -}

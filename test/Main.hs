@@ -8,7 +8,6 @@ import System.Exit (exitSuccess, exitFailure)
 import Database.PostgreSQL.Typed
 import Database.PostgreSQL.Typed.Types (OID)
 import Database.PostgreSQL.Typed.TemplatePG (queryTuple)
-import Database.PostgreSQL.Typed.Enum
 import qualified Database.PostgreSQL.Typed.Range as Range
 
 import Connect

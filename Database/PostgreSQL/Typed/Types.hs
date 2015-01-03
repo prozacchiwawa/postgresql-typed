@@ -19,8 +19,7 @@ module Database.PostgreSQL.Typed.Types
   , PGParameter(..)
   , PGBinaryParameter
   , PGColumn(..)
-  , PGBinaryColumn
-  , PGStringType
+  , PGBinaryType
 
   -- * Marshalling utilities
   , pgEncodeParameter
@@ -41,7 +40,7 @@ module Database.PostgreSQL.Typed.Types
 
 import Control.Applicative ((<$>), (<$))
 import Control.Monad (mzero)
-import Data.Bits (shiftL, shiftR, (.|.), (.&.))
+import Data.Bits (shiftL, (.|.))
 import Data.ByteString.Internal (w2c)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Builder as B
@@ -69,10 +68,11 @@ import qualified Data.Time as Time
 #ifdef USE_UUID
 import qualified Data.UUID as UUID
 #endif
-import Data.Word (Word32)
+import Data.Word (Word8, Word32)
 import GHC.TypeLits (Symbol, symbolVal, KnownSymbol)
 import Numeric (readFloat)
 #ifdef USE_BINARY
+-- import qualified PostgreSQLBinary.Array as BinA
 import qualified PostgreSQLBinary.Decoder as BinD
 import qualified PostgreSQLBinary.Encoder as BinE
 #endif
@@ -95,6 +95,8 @@ type PGValues = [PGValue]
 -- |A proxy type for PostgreSQL types.  The type argument should be an (internal) name of a database type (see @\\dT+@).
 data PGTypeName (t :: Symbol) = PGTypeProxy
 
+class KnownSymbol t => PGBinaryType t
+
 pgTypeName :: KnownSymbol t => PGTypeName (t :: Symbol) -> String
 pgTypeName = symbolVal
 
@@ -106,14 +108,14 @@ class KnownSymbol t => PGParameter (t :: Symbol) a where
   -- Defaults to a quoted version of 'pgEncode'
   pgLiteral :: PGTypeName t -> a -> String
   pgLiteral t = pgQuote . U.toString . pgEncode t
-class PGParameter t a => PGBinaryParameter t a where
+class (PGParameter t a, PGBinaryType t) => PGBinaryParameter t a where
   pgEncodeBinary :: PGTypeName t -> a -> PGBinaryValue
 
 -- |A @PGColumn t a@ instance describes how te decode a PostgreSQL type @t@ to @a@.
 class KnownSymbol t => PGColumn (t :: Symbol) a where
   -- |Decode the PostgreSQL text representation into a value.
   pgDecode :: PGTypeName t -> PGTextValue -> a
-class PGColumn t a => PGBinaryColumn t a where
+class (PGColumn t a, PGBinaryType t) => PGBinaryColumn t a where
   pgDecodeBinary :: PGTypeName t -> PGBinaryValue -> a
 
 -- |Support encoding of 'Maybe' values into NULL.
@@ -274,23 +276,30 @@ pgNameType = PGTypeProxy
 instance PGStringType "bpchar" -- blank padded
 
 
-type Bytea = L.ByteString
-instance PGParameter "bytea" Bytea where
-  pgEncode _ s = B.toLazyByteString $ B.string7 "\\x" <> B.lazyByteStringHex s
+encodeBytea :: B.Builder -> PGTextValue
+encodeBytea h = B.toLazyByteString $ B.string7 "\\x" <> h
+
+decodeBytea :: PGTextValue -> [Word8]
+decodeBytea s
+  | sm /= "\\x" = error $ "pgDecode bytea: " ++ sm
+  | otherwise = pd $ L.unpack d where
+  (m, d) = L.splitAt 2 s
+  sm = LC.unpack m
+  pd [] = []
+  pd (h:l:r) = (shiftL (unhex h) 4 .|. unhex l) : pd r
+  pd [x] = error $ "pgDecode bytea: " ++ show x
+  unhex = fromIntegral . digitToInt . w2c
+
+instance PGParameter "bytea" L.ByteString where
+  pgEncode _ = encodeBytea . B.lazyByteStringHex
   pgLiteral t = pgQuoteUnsafe . LC.unpack . pgEncode t
+instance PGColumn "bytea" L.ByteString where
+  pgDecode _ = L.pack . decodeBytea
 instance PGParameter "bytea" BS.ByteString where
-  pgEncode _ s = B.toLazyByteString $ B.string7 "\\x" <> B.byteStringHex s
+  pgEncode _ = encodeBytea . B.byteStringHex
   pgLiteral t = pgQuoteUnsafe . LC.unpack . pgEncode t
-instance PGColumn "bytea" Bytea where
-  pgDecode _ s
-    | sm /= "\\x" = error $ "pgDecode bytea: " ++ sm
-    | otherwise = L.pack $ pd $ L.unpack d where
-    (m, d) = L.splitAt 2 s
-    sm = LC.unpack m
-    pd [] = []
-    pd (h:l:r) = (shiftL (unhex h) 4 .|. unhex l) : pd r
-    pd [x] = error $ "pgDecode bytea: " ++ show x
-    unhex = fromIntegral . digitToInt . w2c
+instance PGColumn "bytea" BS.ByteString where
+  pgDecode _ = BS.pack . decodeBytea
 
 instance PGParameter "date" Time.Day where
   pgEncode _ = LC.pack . Time.showGregorian
@@ -399,6 +408,7 @@ type PGArray a = [Maybe a]
 
 -- |Class indicating that the first PostgreSQL type is an array of the second.
 -- This implies 'PGParameter' and 'PGColumn" instances that will work for any type using comma as a delimiter (i.e., anything but @box@).
+-- This will only work with 1-dimensional arrays!
 class (KnownSymbol ta, KnownSymbol t) => PGArrayType ta t | ta -> t, t -> ta where
   pgArrayElementType :: PGTypeName ta -> PGTypeName t
   pgArrayElementType PGTypeProxy = PGTypeProxy
@@ -544,57 +554,134 @@ instance PGColumn "uuid" UUID.UUID where
 binDec :: KnownSymbol t => BinD.D a -> PGTypeName t -> PGBinaryValue -> a
 binDec d t = either (\e -> error $ "pgDecodeBinary " ++ pgTypeName t ++ ": " ++ show e) id . d
 
+instance PGBinaryType "oid"
 instance PGBinaryParameter "oid" OID where
   pgEncodeBinary _ = BinE.int4 . Right
+instance PGBinaryColumn "oid" OID where
+  pgDecodeBinary = binDec BinD.int
+
+instance PGBinaryType "int2"
 instance PGBinaryParameter "int2" Int16 where
   pgEncodeBinary _ = BinE.int2 . Left
+instance PGBinaryColumn "int2" Int16 where
+  pgDecodeBinary = binDec BinD.int
+
+instance PGBinaryType "int4"
 instance PGBinaryParameter "int4" Int32 where
   pgEncodeBinary _ = BinE.int4 . Left
+instance PGBinaryColumn "int4" Int32 where
+  pgDecodeBinary = binDec BinD.int
+
+instance PGBinaryType "int8"
 instance PGBinaryParameter "int8" Int64 where
   pgEncodeBinary _ = BinE.int8 . Left
+instance PGBinaryColumn "int8" Int64 where
+  pgDecodeBinary = binDec BinD.int
+
+instance PGBinaryType "float4"
 instance PGBinaryParameter "float4" Float where
   pgEncodeBinary _ = BinE.float4
+instance PGBinaryColumn "float4" Float where
+  pgDecodeBinary = binDec BinD.float4
+
+instance PGBinaryType "float8"
 instance PGBinaryParameter "float8" Double where
   pgEncodeBinary _ = BinE.float8
-#ifdef USE_SCIENTIFIC
+instance PGBinaryColumn "float8" Double where
+  pgDecodeBinary = binDec BinD.float8
+
+instance PGBinaryType "numeric"
 instance PGBinaryParameter "numeric" Scientific where
   pgEncodeBinary _ = BinE.numeric
+instance PGBinaryColumn "numeric" Scientific where
+  pgDecodeBinary = binDec BinD.numeric
 instance PGBinaryParameter "numeric" Rational where
   pgEncodeBinary _ = BinE.numeric . realToFrac
-#endif
+instance PGBinaryColumn "numeric" Rational where
+  pgDecodeBinary t = realToFrac . binDec BinD.numeric t
+
+instance PGBinaryType "char"
 instance PGBinaryParameter "char" Char where
   pgEncodeBinary _ = BinE.char
--- These aren't working because of how isBinaryParameter works:
-instance PGStringType t => PGBinaryParameter t Text.Text where
+instance PGBinaryColumn "char" Char where
+  pgDecodeBinary = binDec BinD.char
+
+instance PGBinaryType "text"
+instance PGBinaryType "varchar"
+instance PGBinaryType "bpchar"
+instance PGBinaryType "name" -- not strictly textsend, but essentially the same
+instance (PGStringType t, PGBinaryType t) => PGBinaryParameter t Text.Text where
   pgEncodeBinary _ = BinE.text . Left
-instance PGStringType t => PGBinaryParameter t TextL.Text where
+instance (PGStringType t, PGBinaryType t) => PGBinaryColumn t Text.Text where
+  pgDecodeBinary = binDec BinD.text
+instance (PGStringType t, PGBinaryType t) => PGBinaryParameter t TextL.Text where
   pgEncodeBinary _ = BinE.text . Right
-instance PGStringType t => PGBinaryParameter t BS.ByteString where
+instance (PGStringType t, PGBinaryType t) => PGBinaryColumn t TextL.Text where
+  pgDecodeBinary t = TextL.fromStrict . binDec BinD.text t
+instance (PGStringType t, PGBinaryType t) => PGBinaryParameter t BS.ByteString where
   pgEncodeBinary _ = BinE.text . Left . TextE.decodeUtf8
-instance PGStringType t => PGBinaryParameter t L.ByteString where
+instance (PGStringType t, PGBinaryType t) => PGBinaryColumn t BS.ByteString where
+  pgDecodeBinary t = TextE.encodeUtf8 . binDec BinD.text t
+instance (PGStringType t, PGBinaryType t) => PGBinaryParameter t L.ByteString where
   pgEncodeBinary _ = BinE.text . Right . TextLE.decodeUtf8
+instance (PGStringType t, PGBinaryType t) => PGBinaryColumn t L.ByteString where
+  pgDecodeBinary t = L.fromStrict . TextE.encodeUtf8 . binDec BinD.text t
+instance (PGStringType t, PGBinaryType t) => PGBinaryParameter t String where
+  pgEncodeBinary _ = BinE.text . Left . Text.pack
+instance (PGStringType t, PGBinaryType t) => PGBinaryColumn t String where
+  pgDecodeBinary t = Text.unpack . binDec BinD.text t
+
+instance PGBinaryType "bytea"
 instance PGBinaryParameter "bytea" BS.ByteString where
   pgEncodeBinary _ = BinE.bytea . Left
+instance PGBinaryColumn "bytea" BS.ByteString where
+  pgDecodeBinary = binDec BinD.bytea
 instance PGBinaryParameter "bytea" L.ByteString where
   pgEncodeBinary _ = BinE.bytea . Right
+instance PGBinaryColumn "bytea" L.ByteString where
+  pgDecodeBinary t = L.fromStrict . binDec BinD.bytea t
+
+instance PGBinaryType "date"
 instance PGBinaryParameter "date" Time.Day where
   pgEncodeBinary _ = BinE.date
+instance PGBinaryColumn "date" Time.Day where
+  pgDecodeBinary = binDec BinD.date
 {- Need to know PGConnection parameter "integer_datetimes" for these:
+instance PGBinaryType "time"
 instance PGBinaryParameter "time" Time.TimeOfDay where
   pgEncodeBinary _ = BinE.time
+instance PGBinaryColumn "time" Time.TimeOfDay where
+  pgDecodeBinary = binDec BinD.time
+instance PGBinaryType "timestamp"
 instance PGBinaryParameter "timestamp" Time.LocalTime where
   pgEncodeBinary _ = BinE.timestamp
+instance PGBinaryColumn "timestamp" Time.LocalTime where
+  pgDecodeBinary = binDec BinD.timestamp
+instance PGBinaryType "timestamptz"
 instance PGBinaryParameter "timestamptz" Time.UTCTime where
   pgEncodeBinary _ = BinE.timestamptz
+instance PGBinaryColumn "timestamptz" Time.UTCTime where
+  pgDecodeBinary = binDec BinD.timestamptz
+instance PGBinaryType "interval"
 instance PGBinaryParameter "interval" Time.DiffTime where
   pgEncodeBinary _ = BinE.interval
+instance PGBinaryColumn "interval" Time.DiffTime where
+  pgDecodeBinary = binDec BinD.interval
 -}
+
+instance PGBinaryType "bool"
 instance PGBinaryParameter "bool" Bool where
   pgEncodeBinary _ = BinE.bool
-#ifdef USE_UUID
+instance PGBinaryColumn "bool" Bool where
+  pgDecodeBinary = binDec BinD.bool
+
+instance PGBinaryType "uuid"
 instance PGBinaryParameter "uuid" UUID.UUID where
   pgEncodeBinary _ = BinE.uuid
-#endif
+instance PGBinaryColumn "uuid" UUID.UUID where
+  pgDecodeBinary = binDec BinD.uuid
+
+-- TODO: arrays
 #endif
 
 {-

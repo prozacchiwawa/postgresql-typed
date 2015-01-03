@@ -88,6 +88,7 @@ data ColDescription = ColDescription
   , colTable :: !OID
   , colNumber :: !Int
   , colType :: !OID
+  , colModifier :: !Word32
   , colBinary :: !Bool
   } deriving (Show)
 
@@ -280,13 +281,14 @@ getMessageBody 'T' = do
     col <- G.getWord16be -- column number
     typ' <- G.getWord32be -- type
     _ <- G.getWord16be -- type size
-    _ <- G.getWord32be -- type modifier
+    tmod <- G.getWord32be -- type modifier
     fmt <- G.getWord16be -- format code
     return $ ColDescription
       { colName = name
       , colTable = oid
       , colNumber = fromIntegral col
       , colType = typ'
+      , colModifier = tmod
       , colBinary = toEnum (fromIntegral fmt)
       }
 getMessageBody 'Z' = ReadyForQuery <$> (rs . w2c =<< G.getWord8) where

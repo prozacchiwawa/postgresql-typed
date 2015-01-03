@@ -24,23 +24,23 @@ source-repository head
   location: git://github.com/dylex/postgresql-typed
 
 Flag md5
-  Description: Enable md5 password authentication method
+  Description: Enable md5 password authentication method.
   Default: True
 
 Flag binary
-  Description: Use binary protocol encoding via postgresql-binary
+  Description: Use binary protocol encoding via postgresql-binary. This may put additional restrictions on supported PostgreSQL server versions.
   Default: True
 
 Flag text
-  Description: Support Text string values via text (implied by binary)
+  Description: Support Text string values via text (implied by binary).
   Default: True
 
 Flag uuid
-  Description: Support the UUID type via uuid (implied by binary)
+  Description: Support the UUID type via uuid (implied by binary).
   Default: True
 
 Flag scientific
-  Description: Support decoding numeric via scientific (implied by binary)
+  Description: Support decoding numeric via scientific (implied by binary).
   Default: True
 
 Library

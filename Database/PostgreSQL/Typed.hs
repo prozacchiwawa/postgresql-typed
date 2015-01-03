@@ -89,7 +89,7 @@ import Database.PostgreSQL.Typed.Query
 -- $connect
 -- All database access requires a 'PGConnection' that is created at runtime using 'pgConnect', and should be explicitly be closed with 'pgDisconnect' when finished.
 -- 
--- However, at compile time, TemplatePG needs to make its own connection to the database in order to describe queries.
+-- However, at compile time, PostgreSQL-Typed needs to make its own connection to the database in order to describe queries.
 -- By default, it will use the following environment variables:
 -- 
 -- [@TPG_DB@] the database name to use (default: same as user)
@@ -156,11 +156,15 @@ import Database.PostgreSQL.Typed.Query
 --
 -- > let owner = 33 :: Int32
 -- > tuples <- $(queryTuples "SELECT * FROM pg_database WHERE datdba = {owner} LIMIT {2 * 3 :: Int64}") h
+-- 
+-- TemplatePG provides 'withTransaction', 'rollback', and 'insertIgnore', but they've
+-- not been thoroughly tested, so use them at your own risk.
 
 -- $types
 -- Most builtin types are already supported.
 -- For the most part, exactly equivalent types are all supported (e.g., 'Int32' for int4) as well as other safe equivalents, but you cannot, for example, pass an 'Integer' as a @smallint@.
 -- To achieve this flexibility, the exact types of all parameters and results must be fully known (e.g., numeric literals will not work).
+-- Currenly only 1-dimentional arrays are supported.
 --
 -- However you can add support for your own types or add flexibility to existing types by creating new instances of 'PGParameter' (for encoding) and 'PGColumn' (for decoding).
 -- If you also want to support arrays of a new type, you should also provide a 'PGArrayType' instance (or 'PGRangeType' for new ranges):
@@ -171,30 +175,32 @@ import Database.PostgreSQL.Typed.Query
 -- >   pgDecode _ (s :: ByteString) = ... :: MyType
 -- > instance PGArrayType "_mytype" "mytype"
 --
--- You must enable the DataKinds language extension.
+-- Required language extensions: FlexibleInstances, MultiParamTypeClasses, DataKinds
 
 -- $nulls
--- Sometimes TemplatePG cannot determine whether or not a result field can
+-- Sometimes PostgreSQL cannot automatically determine whether or not a result field can
 -- potentially be @NULL@. In those cases it will assume that it can. Basically,
 -- any time a result field is not immediately traceable to an originating table
 -- and column (such as when a function is applied to a result column), it's
 -- assumed to be nullable and will be returned as a 'Maybe' value.  Other values may be decoded without the 'Maybe' wrapper.
 --
 -- You can use @NULL@ values in parameters as well by using 'Maybe'.
---
--- Because TemplatePG has to prepare statements at compile time and
--- placeholders can't be used in place of lists in PostgreSQL (such as @IN
--- (?)@), you must replace such cases with equivalent arrays (@= ANY (?)@).
 
 -- $caveats
--- I've included 'withTransaction', 'rollback', and 'insertIgnore', but they've
--- not been thoroughly tested, so use them at your own risk.
---
 -- The types of all parameters and results must be fully known.  This may
 -- require explicit casts in some cases (especially with numeric literals).
 --
 -- You cannot construct queries at run-time, since they
--- wouldn't be available to be analyzed at compile time (but you can construct them at compile time by writing your own TH functions that call 'makePGQuery').
+-- wouldn't be available to be analyzed at compile time (but you can construct them at compile time by writing your own TH functions).
+--
+-- Because of how PostgreSQL handles placeholders, they cannot be used in place of lists (such as @IN (?)@), you must replace such cases with equivalent arrays (@= ANY (?)@).
+--
+-- For the most part, any code must be compiled and run against databases that are at least structurally identical.
+-- However, some features have even stronger requirements:
+--
+--   * The @$(type, ...)@ feature stores OIDs for user types, so the resulting code can only be run the exact same database or one restored from a dump with OIDs (@pg_dump -o@).  If this is a concern, only use built-in types in this construct.
+--
+--   * The value of @integer_datetimes@ is determined at compile time.  If you need to run against a server with a different value of this parameter (unlikely), you must disable the package @binary@ (or not use any date/time values).
 
 -- $tips
 -- If you find yourself pattern matching on result tuples just to pass them on

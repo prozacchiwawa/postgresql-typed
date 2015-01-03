@@ -13,8 +13,7 @@ module Database.PostgreSQL.Typed.TH
   , PGTypeInfo(..)
   , getPGTypeInfo
   , tpgDescribe
-  , pgParameterIsBinary
-  , pgColumnIsBinary
+  , pgTypeIsBinary
   , pgTypeEncoder
   , pgTypeDecoder
   ) where
@@ -98,19 +97,10 @@ tpgDescribe conn sql types nulls = do
     return (c, th, n)) rt
   return (pth, rth)
 
-pgTypeInstanceExists :: TH.Name -> String -> TH.Q Bool
-pgTypeInstanceExists cls t = do
-  TH.ClassI _ il <- TH.reify cls
-  return $ any match il
-  where
-  match (TH.InstanceD _ (TH.AppT (TH.AppT (TH.ConT ci) (TH.LitT (TH.StrTyLit ti))) _) _) = ci == cls && ti == t
-  match _ = False
+pgTypeIsBinary :: PGTypeInfo -> TH.Q Bool
+pgTypeIsBinary PGTypeInfo{ pgTypeName = t } =
+  TH.isInstance ''PGBinaryType [TH.LitT (TH.StrTyLit t)]
 
-pgParameterIsBinary :: PGTypeInfo -> TH.Q Bool
-pgParameterIsBinary = pgTypeInstanceExists ''PGBinaryParameter . pgTypeName
-
-pgColumnIsBinary :: PGTypeInfo -> TH.Q Bool
-pgColumnIsBinary = pgTypeInstanceExists ''PGBinaryColumn . pgTypeName
 
 typeApply :: TH.Name -> PGTypeInfo -> TH.Exp
 typeApply f PGTypeInfo{ pgTypeName = n } = TH.AppE (TH.VarE f) $

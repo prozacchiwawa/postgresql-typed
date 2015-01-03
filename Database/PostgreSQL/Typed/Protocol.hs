@@ -1,5 +1,6 @@
 {-# LANGUAGE CPP, DeriveDataTypeable, PatternGuards #-}
 -- Copyright 2010, 2011, 2012, 2013 Chris Forno
+-- Copyright 2014-2015 Dylan Simon
 
 -- |The Protocol module allows for direct, low-level communication with a
 --  PostgreSQL server over TCP/IP. You probably don't want to use this module

@@ -1,7 +1,6 @@
 {-# LANGUAGE CPP, FlexibleInstances, OverlappingInstances, ScopedTypeVariables, MultiParamTypeClasses, FunctionalDependencies, FlexibleContexts, DataKinds, KindSignatures, TypeFamilies, UndecidableInstances #-}
 -- |
--- Module: Database.PostgreSQL.Typed.Type
--- Copyright: 2010, 2011, 2013 Chris Forno
+-- Module: Database.PostgreSQL.Typed.Types
 -- Copyright: 2015 Dylan Simon
 -- 
 -- Classes to support type inference, value encoding/decoding, and instances to support built-in PostgreSQL types.
@@ -85,10 +84,11 @@ import qualified Database.PostgreSQL.Typed.Range as Range
 
 type PGTextValue = BS.ByteString
 type PGBinaryValue = BS.ByteString
+-- |A value passed to or from PostgreSQL in raw format.
 data PGValue
   = PGNullValue
-  | PGTextValue PGTextValue
-  | PGBinaryValue PGBinaryValue
+  | PGTextValue PGTextValue -- ^ The standard text encoding format (also used for unknown formats)
+  | PGBinaryValue PGBinaryValue -- ^ Special binary-encoded data.  Not supported in all cases.
   deriving (Show, Eq)
 -- |A list of (nullable) data values, e.g. a single row or query parameters.
 type PGValues = [PGValue]
@@ -101,8 +101,11 @@ class KnownSymbol t => PGBinaryType t
 pgTypeName :: KnownSymbol t => PGTypeName (t :: Symbol) -> String
 pgTypeName = symbolVal
 
+-- |Parameters that affect how marshalling happens.
+-- Currenly we force all other relevant parameters at connect time.
 data PGTypeEnv = PGTypeEnv
-  { pgIntegerDatetimes :: Bool }
+  { pgIntegerDatetimes :: Bool -- ^ If @integer_datetimes@ is @on@; only relevant for binary encoding.
+  }
 
 -- |A @PGParameter t a@ instance describes how to encode a PostgreSQL type @t@ from @a@.
 class KnownSymbol t => PGParameter (t :: Symbol) a where
@@ -155,25 +158,32 @@ instance PGColumn t a => PGColumnNotNull t (Maybe a) where
   pgDecodeNotNull t (PGBinaryValue _) = error $ "pgDecode: unexpected binary value in " ++ pgTypeName t
 
 
+-- |Final parameter encoding function used when a (nullable) parameter is passed to a prepared query.
 pgEncodeParameter :: PGParameterNull t a => PGTypeEnv -> PGTypeName t -> a -> PGValue
 pgEncodeParameter _ = pgEncodeNull
 
+-- |Final parameter encoding function used when a (nullable) parameter is passed to a prepared query accepting binary-encoded data.
 pgEncodeBinaryParameter :: PGBinaryParameterNull t a => PGTypeEnv -> PGTypeName t -> a -> PGValue
 pgEncodeBinaryParameter = pgEncodeBinaryNull
 
+-- |Final parameter escaping function used when a (nullable) parameter is passed to be substituted into a simple query.
 pgEscapeParameter :: PGParameterNull t a => PGTypeEnv -> PGTypeName t -> a -> String
 pgEscapeParameter _ = pgLiteralNull
 
+-- |Final column decoding function used for a nullable result value.
 pgDecodeColumn :: PGColumnNotNull t (Maybe a) => PGTypeEnv -> PGTypeName t -> PGValue -> Maybe a
 pgDecodeColumn _ = pgDecodeNotNull
 
+-- |Final column decoding function used for a non-nullable result value.
 pgDecodeColumnNotNull :: PGColumnNotNull t a => PGTypeEnv -> PGTypeName t -> PGValue -> a
 pgDecodeColumnNotNull _ = pgDecodeNotNull
 
+-- |Final column decoding function used for a nullable binary-encoded result value.
 pgDecodeBinaryColumn :: PGBinaryColumn t a => PGTypeEnv -> PGTypeName t -> PGValue -> Maybe a
 pgDecodeBinaryColumn e t (PGBinaryValue v) = Just $ pgDecodeBinary e t v
 pgDecodeBinaryColumn e t v = pgDecodeColumn e t v
 
+-- |Final column decoding function used for a non-nullable binary-encoded result value.
 pgDecodeBinaryColumnNotNull :: (PGColumnNotNull t a, PGBinaryColumn t a) => PGTypeEnv -> PGTypeName t -> PGValue -> a
 pgDecodeBinaryColumnNotNull e t (PGBinaryValue v) = pgDecodeBinary e t v
 pgDecodeBinaryColumnNotNull _ t v = pgDecodeNotNull t v
@@ -411,11 +421,12 @@ instance PGLiteralType "numeric" Scientific
 #endif
 
 -- |The cannonical representation of a PostgreSQL array of any type, which may always contain NULLs.
+-- Currenly only one-dimetional arrays are supported, although in PostgreSQL, any array may be of any dimentionality.
 type PGArray a = [Maybe a]
 
 -- |Class indicating that the first PostgreSQL type is an array of the second.
--- This implies 'PGParameter' and 'PGColumn" instances that will work for any type using comma as a delimiter (i.e., anything but @box@).
--- This will only work with 1-dimensional arrays!
+-- This implies 'PGParameter' and 'PGColumn' instances that will work for any type using comma as a delimiter (i.e., anything but @box@).
+-- This will only work with 1-dimensional arrays.
 class (KnownSymbol ta, KnownSymbol t) => PGArrayType ta t | ta -> t, t -> ta where
   pgArrayElementType :: PGTypeName ta -> PGTypeName t
   pgArrayElementType PGTypeProxy = PGTypeProxy
@@ -509,7 +520,7 @@ instance PGArrayType "_int8range"     "int8range"
 
 
 -- |Class indicating that the first PostgreSQL type is a range of the second.
--- This implies 'PGParameter' and 'PGColumn" instances that will work for any type.
+-- This implies 'PGParameter' and 'PGColumn' instances that will work for any type.
 class (KnownSymbol tr, KnownSymbol t) => PGRangeType tr t | tr -> t where
   pgRangeElementType :: PGTypeName tr -> PGTypeName t
   pgRangeElementType PGTypeProxy = PGTypeProxy

@@ -142,11 +142,13 @@ splitCommas = spl where
 trim :: String -> String
 trim = dropWhileEnd isSpace . dropWhile isSpace
 
+-- |Flags affecting how and what type of query to build with 'makeQuery'.
 data QueryFlags = QueryFlags
   { flagNullable :: Bool -- ^ Assume all results are nullable and don't try to guess.
   , flagPrepare :: Maybe [String] -- ^ Prepare and re-use query, binding parameters of the given types (inferring the rest, like PREPARE).
   }
 
+-- |'QueryFlags' for a default (simple) query.
 simpleFlags :: QueryFlags
 simpleFlags = QueryFlags False Nothing
 

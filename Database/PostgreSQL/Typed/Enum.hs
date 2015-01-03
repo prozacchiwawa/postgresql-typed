@@ -40,7 +40,7 @@ makePGEnum name typs valnf = do
     pgSimpleQuery c $ "SELECT enumlabel FROM pg_catalog.pg_enum JOIN pg_catalog.pg_type ON pg_enum.enumtypid = pg_type.oid WHERE typtype = 'e' AND typname = " ++ pgQuote name ++ " ORDER BY enumsortorder"
   when (Seq.null vals) $ fail $ "makePGEnum: enum " ++ name ++ " not found"
   let 
-    valn = map (\[Just v] -> (TH.StringL (BSC.unpack v), TH.mkName $ valnf (U.toString v))) $ toList vals
+    valn = map (\[PGTextValue v] -> (TH.StringL (BSC.unpack v), TH.mkName $ valnf (U.toString v))) $ toList vals
   dv <- TH.newName "x"
   ds <- TH.newName "s"
   return

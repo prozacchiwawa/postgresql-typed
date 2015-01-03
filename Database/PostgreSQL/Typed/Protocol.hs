@@ -9,7 +9,6 @@ module Database.PostgreSQL.Typed.Protocol (
     PGDatabase(..)
   , defaultPGDatabase
   , PGConnection
-  , PGValues
   , PGError(..)
   , pgMessageCode
   , pgConnect
@@ -29,12 +28,13 @@ import Control.Monad (liftM2, replicateM, when, unless)
 import qualified Crypto.Hash as Hash
 #endif
 import qualified Data.Binary.Get as G
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Builder as B
 import Data.ByteString.Internal (c2w, w2c)
 import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString.Lazy.Char8 as LC
 import qualified Data.ByteString.Lazy.UTF8 as U
-import Data.Foldable (foldMap, forM_, toList)
+import qualified Data.Foldable as Fold
 import Data.IORef (IORef, newIORef, writeIORef, readIORef, atomicModifyIORef, atomicModifyIORef', modifyIORef)
 import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
@@ -98,7 +98,7 @@ type MessageFields = Map.Map Word8 L.ByteString
 data PGFrontendMessage
   = StartupMessage [(String, String)] -- only sent first
   | CancelRequest !Word32 !Word32 -- sent first on separate connection
-  | Bind { statementName :: String, binaryParameters :: [Bool], bindParameters :: PGValues, binaryColumns :: [Bool] }
+  | Bind { statementName :: String, bindParameters :: PGValues, binaryColumns :: [Bool] }
   | Close { statementName :: String }
   -- |Describe a SQL query/statement. The SQL string can contain
   --  parameters ($1, $2, etc.).
@@ -207,15 +207,22 @@ pgString s = B.stringUtf8 s <> nul
 -- |Given a message, determinal the (optional) type ID and the body
 messageBody :: PGFrontendMessage -> (Maybe Char, B.Builder)
 messageBody (StartupMessage kv) = (Nothing, B.word32BE 0x30000
-  <> foldMap (\(k, v) -> pgString k <> pgString v) kv <> nul)
+  <> Fold.foldMap (\(k, v) -> pgString k <> pgString v) kv <> nul)
 messageBody (CancelRequest pid key) = (Nothing, B.word32BE 80877102
   <> B.word32BE pid <> B.word32BE key)
-messageBody Bind{ statementName = n, binaryParameters = bp, bindParameters = p, binaryColumns = bc } = (Just 'B',
+messageBody Bind{ statementName = n, bindParameters = p, binaryColumns = bc } = (Just 'B',
   nul <> pgString n
-    <> B.word16BE (fromIntegral $ length bp) <> foldMap (B.word16LE . fromIntegral . fromEnum) bp
-    <> B.word16BE (fromIntegral $ length p) <> foldMap (maybe (B.word32BE 0xFFFFFFFF) val) p
-    <> B.word16BE (fromIntegral $ length bc) <> foldMap (B.word16LE . fromIntegral . fromEnum) bc)
-  where val v = B.word32BE (fromIntegral $ L.length v) <> B.lazyByteString v
+    <> (if any fmt p
+          then B.word16BE (fromIntegral $ length p) <> Fold.foldMap (B.word16LE . fromIntegral . fromEnum . fmt) p
+          else B.word16BE 0)
+    <> B.word16BE (fromIntegral $ length p) <> Fold.foldMap val p
+    <> B.word16BE (fromIntegral $ length bc) <> Fold.foldMap (B.word16LE . fromIntegral . fromEnum) bc)
+  where
+  fmt (PGBinaryValue _) = True
+  fmt _ = False
+  val PGNullValue = B.int32BE (-1)
+  val (PGTextValue v) = B.word32BE (fromIntegral $ L.length v) <> B.lazyByteString v
+  val (PGBinaryValue v) = B.word32BE (fromIntegral $ BS.length v) <> B.byteString v
 messageBody Close{ statementName = n } = (Just 'C', 
   B.char7 'S' <> pgString n)
 messageBody Describe{ statementName = n } = (Just 'D',
@@ -225,7 +232,7 @@ messageBody (Execute r) = (Just 'E',
 messageBody Flush = (Just 'H', mempty)
 messageBody Parse{ statementName = n, queryString = s, parseTypes = t } = (Just 'P',
   pgString n <> pgString s
-    <> B.word16BE (fromIntegral $ length t) <> foldMap B.word32BE t)
+    <> B.word16BE (fromIntegral $ length t) <> Fold.foldMap B.word32BE t)
 messageBody (PasswordMessage s) = (Just 'p',
   B.lazyByteString s <> nul)
 messageBody SimpleQuery{ queryString = s } = (Just 'Q',
@@ -238,7 +245,7 @@ pgSend :: PGConnection -> PGFrontendMessage -> IO ()
 pgSend c@PGConnection{ connHandle = h, connState = sr } msg = do
   writeIORef sr StateUnknown
   when (connDebug c) $ putStrLn $ "> " ++ show msg
-  B.hPutBuilder h $ foldMap B.char7 t <> B.word32BE (fromIntegral $ 4 + L.length b)
+  B.hPutBuilder h $ Fold.foldMap B.char7 t <> B.word32BE (fromIntegral $ 4 + L.length b)
   L.hPut h b -- or B.hPutBuilder? But we've already had to convert to BS to get length
   where (t, b) = second B.toLazyByteString $ messageBody msg
 
@@ -295,8 +302,9 @@ getMessageBody 'S' = liftM2 ParameterStatus getPGString getPGString
 getMessageBody 'D' = do 
   numFields <- G.getWord16be
   DataRow <$> replicateM (fromIntegral numFields) (getField =<< G.getWord32be) where
-  getField 0xFFFFFFFF = return Nothing
-  getField len = Just <$> G.getLazyByteString (fromIntegral len)
+  getField 0xFFFFFFFF = return PGNullValue
+  getField len = PGTextValue <$> G.getLazyByteString (fromIntegral len)
+  -- could be binary, too, but we don't know here, so have to choose one
 getMessageBody 'K' = liftM2 BackendKeyData G.getWord32be G.getWord32be
 getMessageBody 'E' = ErrorResponse <$> getMessageFields
 getMessageBody 'I' = return EmptyQueryResponse
@@ -421,8 +429,8 @@ pgDescribe h sql types nulls = do
       -- In cases where the resulting field is tracable to the column of a
       -- table, we can check there.
       (_, r) <- pgSimpleQuery h ("SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = " ++ show oid ++ " AND attnum = " ++ show col)
-      case toList r of
-        [[Just s]] -> return $ not $ pgDecode pgBoolType s
+      case Fold.toList r of
+        [[PGTextValue s]] -> return $ not $ pgDecode pgBoolType s
         [] -> return True
         _ -> fail $ "Failed to determine nullability of column #" ++ show col
     | otherwise = return True
@@ -431,6 +439,13 @@ rowsAffected :: L.ByteString -> Int
 rowsAffected = ra . LC.words where
   ra [] = -1
   ra l = fromMaybe (-1) $ readMaybe $ LC.unpack $ last l
+
+-- Do we need to use the ColDescription here always, or are the request formats okay?
+fixBinary :: [Bool] -> PGValues -> PGValues
+fixBinary (False:b) (PGBinaryValue x:r) = PGTextValue (L.fromStrict x) : fixBinary b r
+fixBinary (True :b) (PGTextValue x:r) = PGBinaryValue (L.toStrict   x) : fixBinary b r
+fixBinary (_:b) (x:r) = x : fixBinary b r
+fixBinary _ l = l
 
 -- |A simple query is one which requires sending only a single 'SimpleQuery'
 -- message to the PostgreSQL server. The query is sent as a single string; you
@@ -445,25 +460,25 @@ pgSimpleQuery h sql = do
   go start where 
   go = pgHandle h
   start (CommandComplete c) = got c Seq.empty
-  start (RowDescription _) = go (row Seq.empty)
+  start (RowDescription rd) = go $ row (map colBinary rd) Seq.empty
   start m = fail $ "pgSimpleQuery: unexpected response: " ++ show m
-  row s (DataRow fs) = go $ row (s Seq.|> fs)
-  row s (CommandComplete c) = got c s
-  row _ m = fail $ "pgSimpleQuery: unexpected row: " ++ show m
+  row bc s (DataRow fs) = go $ row bc (s Seq.|> fixBinary bc fs)
+  row _ s (CommandComplete c) = got c s
+  row _ _ m = fail $ "pgSimpleQuery: unexpected row: " ++ show m
   got c s = (rowsAffected c, s) <$ go end
   end (ReadyForQuery _) = return []
   end EmptyQueryResponse = go end
   end m = fail $ "pgSimpleQuery: unexpected message: " ++ show m
 
-pgPreparedBind :: PGConnection -> String -> [OID] -> PGValues -> IO (IO ())
-pgPreparedBind c@PGConnection{ connPreparedStatements = psr } sql types bind = do
+pgPreparedBind :: PGConnection -> String -> [OID] -> PGValues -> [Bool] -> IO (IO ())
+pgPreparedBind c@PGConnection{ connPreparedStatements = psr } sql types bind bc = do
   pgSync c
   (p, n) <- atomicModifyIORef' psr $ \(i, m) ->
     maybe ((succ i, m), (False, i)) ((,) (i, m) . (,) True) $ Map.lookup key m
   let sn = show n
   unless p $
     pgSend c $ Parse{ queryString = sql, statementName = sn, parseTypes = types }
-  pgSend c $ Bind{ statementName = sn, binaryParameters = [], bindParameters = bind, binaryColumns = [] }
+  pgSend c $ Bind{ statementName = sn, bindParameters = bind, binaryColumns = bc }
   let
     go = pgHandle c start
     start ParseComplete = do
@@ -480,9 +495,10 @@ pgPreparedBind c@PGConnection{ connPreparedStatements = psr } sql types bind = d
 pgPreparedQuery :: PGConnection -> String -- ^ SQL statement with placeholders
   -> [OID] -- ^ Optional type specifications (only used for first call)
   -> PGValues -- ^ Paremeters to bind to placeholders
+  -> [Bool] -- ^ Requested binary format for result columns
   -> IO (Int, Seq.Seq PGValues)
-pgPreparedQuery c sql types bind = do
-  start <- pgPreparedBind c sql types bind
+pgPreparedQuery c sql types bind bc = do
+  start <- pgPreparedBind c sql types bind bc
   pgSend c $ Execute 0
   pgSend c $ Flush
   pgFlush c
@@ -490,16 +506,16 @@ pgPreparedQuery c sql types bind = do
   go Seq.empty
   where
   go = pgHandle c . row
-  row s (DataRow fs) = go (s Seq.|> fs)
+  row s (DataRow fs) = go (s Seq.|> fixBinary bc fs)
   row s (CommandComplete r) = return (rowsAffected r, s)
   row _ m = fail $ "pgPreparedQuery: unexpected row: " ++ show m
 
 -- |Like 'pgPreparedQuery' but requests results lazily in chunks of the given size.
 -- Does not use a named portal, so other requests may not intervene.
-pgPreparedLazyQuery :: PGConnection -> String -> [OID] -> PGValues -> Word32 -- ^ Chunk size (1 is common, 0 is all-at-once)
+pgPreparedLazyQuery :: PGConnection -> String -> [OID] -> PGValues -> [Bool] -> Word32 -- ^ Chunk size (1 is common, 0 is all-at-once)
   -> IO [PGValues]
-pgPreparedLazyQuery c sql types bind count = do
-  start <- pgPreparedBind c sql types bind
+pgPreparedLazyQuery c sql types bind bc count = do
+  start <- pgPreparedBind c sql types bind bc
   unsafeInterleaveIO $ do
     execute
     start
@@ -510,9 +526,9 @@ pgPreparedLazyQuery c sql types bind count = do
     pgSend c $ Flush
     pgFlush c
   go = pgHandle c . row
-  row s (DataRow fs) = go (s Seq.|> fs)
-  row s PortalSuspended = (toList s ++) <$> unsafeInterleaveIO (execute >> go Seq.empty)
-  row s (CommandComplete _) = return $ toList s
+  row s (DataRow fs) = go (s Seq.|> fixBinary bc fs)
+  row s PortalSuspended = (Fold.toList s ++) <$> unsafeInterleaveIO (execute >> go Seq.empty)
+  row s (CommandComplete _) = return $ Fold.toList s
   row _ m = fail $ "pgPreparedLazyQuery: unexpected row: " ++ show m
 
 -- |Close a previously prepared query (if necessary).
@@ -520,7 +536,7 @@ pgCloseStatement :: PGConnection -> String -> [OID] -> IO ()
 pgCloseStatement c@PGConnection{ connPreparedStatements = psr } sql types = do
   mn <- atomicModifyIORef psr $ \(i, m) ->
     let (n, m') = Map.updateLookupWithKey (\_ _ -> Nothing) (sql, types) m in ((i, m'), n)
-  forM_ mn $ \n -> do
+  Fold.forM_ mn $ \n -> do
     pgSend c $ Close{ statementName = show n }
     pgFlush c
     CloseComplete <- pgReceive c

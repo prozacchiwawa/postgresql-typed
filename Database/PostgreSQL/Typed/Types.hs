@@ -10,21 +10,26 @@ module Database.PostgreSQL.Typed.Types
   (
   -- * Basic types
     OID
-  , PGValue
+  , PGValue(..)
   , PGValues
   , pgQuote
   , PGTypeName(..)
 
   -- * Marshalling classes
   , PGParameter(..)
+  , PGBinaryParameter
   , PGColumn(..)
+  , PGBinaryColumn
   , PGStringType
 
   -- * Marshalling utilities
   , pgEncodeParameter
+  , pgEncodeBinaryParameter
   , pgEscapeParameter
   , pgDecodeColumn
   , pgDecodeColumnNotNull
+  , pgDecodeBinaryColumn
+  , pgDecodeBinaryColumnNotNull
 
   -- * Specific type support
   , pgBoolType
@@ -38,6 +43,7 @@ import Control.Applicative ((<$>), (<$))
 import Control.Monad (mzero)
 import Data.Bits (shiftL, shiftR, (.|.), (.&.))
 import Data.ByteString.Internal (w2c)
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Builder as B
 import qualified Data.ByteString.Builder.Prim as BP
 import Data.ByteString.Internal (c2w)
@@ -66,9 +72,15 @@ import Text.Parsec.Token (naturalOrFloat, makeTokenParser, GenLanguageDef(..))
 
 import qualified Database.PostgreSQL.Typed.Range as Range
 
-type PGValue = L.ByteString
+type PGTextValue = L.ByteString
+type PGBinaryValue = BS.ByteString
+data PGValue
+  = PGNullValue
+  | PGTextValue PGTextValue
+  | PGBinaryValue PGBinaryValue
+  deriving (Show, Eq)
 -- |A list of (nullable) data values, e.g. a single row or query parameters.
-type PGValues = [Maybe PGValue]
+type PGValues = [PGValue]
 
 -- |A proxy type for PostgreSQL types.  The type argument should be an (internal) name of a database type (see @\\dT+@).
 data PGTypeName (t :: Symbol) = PGTypeProxy
@@ -79,50 +91,76 @@ pgTypeName = symbolVal
 -- |A @PGParameter t a@ instance describes how to encode a PostgreSQL type @t@ from @a@.
 class KnownSymbol t => PGParameter (t :: Symbol) a where
   -- |Encode a value to a PostgreSQL text representation.
-  pgEncode :: PGTypeName t -> a -> PGValue
+  pgEncode :: PGTypeName t -> a -> PGTextValue
   -- |Encode a value to a (quoted) literal value for use in SQL statements.
   -- Defaults to a quoted version of 'pgEncode'
   pgLiteral :: PGTypeName t -> a -> String
   pgLiteral t = pgQuote . U.toString . pgEncode t
+class PGParameter t a => PGBinaryParameter t a where
+  pgEncodeBinary :: PGTypeName t -> a -> PGBinaryValue
 
 -- |A @PGColumn t a@ instance describes how te decode a PostgreSQL type @t@ to @a@.
 class KnownSymbol t => PGColumn (t :: Symbol) a where
   -- |Decode the PostgreSQL text representation into a value.
-  pgDecode :: PGTypeName t -> PGValue -> a
+  pgDecode :: PGTypeName t -> PGTextValue -> a
+class PGColumn t a => PGBinaryColumn t a where
+  pgDecodeBinary :: PGTypeName t -> PGBinaryValue -> a
 
 -- |Support encoding of 'Maybe' values into NULL.
 class PGParameterNull t a where
-  pgEncodeNull :: PGTypeName t -> a -> Maybe PGValue
+  pgEncodeNull :: PGTypeName t -> a -> PGValue
   pgLiteralNull :: PGTypeName t -> a -> String
+class PGParameterNull t a => PGBinaryParameterNull t a where
+  pgEncodeBinaryNull :: PGTypeName t -> a -> PGValue
 
 -- |Support decoding of assumed non-null columns but also still allow decoding into 'Maybe'.
 class PGColumnNotNull t a where
-  pgDecodeNotNull :: PGTypeName t -> Maybe PGValue -> a
+  pgDecodeNotNull :: PGTypeName t -> PGValue -> a
 
 
 instance PGParameter t a => PGParameterNull t a where
-  pgEncodeNull t = Just . pgEncode t
+  pgEncodeNull t = PGTextValue . pgEncode t
   pgLiteralNull = pgLiteral
 instance PGParameter t a => PGParameterNull t (Maybe a) where
-  pgEncodeNull = fmap . pgEncode
+  pgEncodeNull t = maybe PGNullValue (PGTextValue . pgEncode t)
   pgLiteralNull = maybe "NULL" . pgLiteral
+instance PGBinaryParameter t a => PGBinaryParameterNull t a where
+  pgEncodeBinaryNull t = PGBinaryValue . pgEncodeBinary t
+instance PGBinaryParameter t a => PGBinaryParameterNull t (Maybe a) where
+  pgEncodeBinaryNull t = maybe PGNullValue (PGBinaryValue . pgEncodeBinary t)
 
 instance PGColumn t a => PGColumnNotNull t a where
-  pgDecodeNotNull t = maybe (error $ "Unexpected NULL in " ++ pgTypeName t ++ " column") (pgDecode t)
+  pgDecodeNotNull t PGNullValue = error $ "NULL in " ++ pgTypeName t ++ " column (use Maybe or COALESCE)"
+  pgDecodeNotNull t (PGTextValue v) = pgDecode t v
+  pgDecodeNotNull t (PGBinaryValue _) = error $ "pgDecode: unexpected binary value in " ++ pgTypeName t
 instance PGColumn t a => PGColumnNotNull t (Maybe a) where
-  pgDecodeNotNull = fmap . pgDecode
+  pgDecodeNotNull _ PGNullValue = Nothing
+  pgDecodeNotNull t (PGTextValue v) = Just $ pgDecode t v
+  pgDecodeNotNull t (PGBinaryValue _) = error $ "pgDecode: unexpected binary value in " ++ pgTypeName t
 
-pgEncodeParameter :: PGParameterNull t a => PGTypeName t -> a -> Maybe PGValue
+
+pgEncodeParameter :: PGParameterNull t a => PGTypeName t -> a -> PGValue
 pgEncodeParameter = pgEncodeNull
+
+pgEncodeBinaryParameter :: PGBinaryParameterNull t a => PGTypeName t -> a -> PGValue
+pgEncodeBinaryParameter = pgEncodeBinaryNull
 
 pgEscapeParameter :: PGParameterNull t a => PGTypeName t -> a -> String
 pgEscapeParameter = pgLiteralNull
 
-pgDecodeColumn :: PGColumn t a => PGTypeName t -> Maybe PGValue -> Maybe a
-pgDecodeColumn = fmap . pgDecode
+pgDecodeColumn :: PGColumnNotNull t (Maybe a) => PGTypeName t -> PGValue -> Maybe a
+pgDecodeColumn = pgDecodeNotNull
 
-pgDecodeColumnNotNull :: PGColumnNotNull t a => PGTypeName t -> Maybe PGValue -> a
+pgDecodeColumnNotNull :: PGColumnNotNull t a => PGTypeName t -> PGValue -> a
 pgDecodeColumnNotNull = pgDecodeNotNull
+
+pgDecodeBinaryColumn :: PGBinaryColumn t a => PGTypeName t -> PGValue -> Maybe a
+pgDecodeBinaryColumn t (PGBinaryValue v) = Just $ pgDecodeBinary t v
+pgDecodeBinaryColumn t v = pgDecodeColumn t v
+
+pgDecodeBinaryColumnNotNull :: (PGColumnNotNull t a, PGBinaryColumn t a) => PGTypeName t -> PGValue -> a
+pgDecodeBinaryColumnNotNull t (PGBinaryValue v) = pgDecodeBinary t v
+pgDecodeBinaryColumnNotNull t v = pgDecodeNotNull t v
 
 
 pgQuoteUnsafe :: String -> String

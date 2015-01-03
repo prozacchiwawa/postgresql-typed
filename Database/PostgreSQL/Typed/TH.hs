@@ -13,10 +13,10 @@ module Database.PostgreSQL.Typed.TH
   , PGTypeInfo(..)
   , getPGTypeInfo
   , tpgDescribe
-  , pgTypeDecoder
-  , pgTypeDecoderNotNull
+  , pgParameterIsBinary
+  , pgColumnIsBinary
   , pgTypeEncoder
-  , pgTypeEscaper
+  , pgTypeDecoder
   ) where
 
 import Control.Applicative ((<$>), (<$), (<|>))
@@ -66,7 +66,7 @@ setTPGConnection = void . swapMVar tpgConnection
 -- This lets you override the default connection parameters that are based on TPG environment variables.
 -- This should be called as a top-level declaration and produces no code.
 -- It will also clear all types registered with 'registerTPGType'.
-useTPGDatabase :: PGDatabase -> TH.Q [TH.Dec]
+useTPGDatabase :: PGDatabase -> TH.DecsQ
 useTPGDatabase db = [] <$ TH.runIO (setTPGConnection $ Left $ pgConnect db)
 
 data PGTypeInfo = PGTypeInfo
@@ -83,8 +83,9 @@ getPGTypeInfo c t = do
     (\n -> "typname = " ++ pgQuote n ++ " OR format_type(oid, -1) = " ++ pgQuote n)
     t
   case toList r of
-    [[Just o, Just n]] -> return $ PGTypeInfo (pgDecode pgOIDType o) (pgDecode pgNameType n)
+    [[PGTextValue o, PGTextValue n]] -> return $ PGTypeInfo (pgDecode pgOIDType o) (pgDecode pgNameType n)
     _ -> fail $ "Unknown PostgreSQL type: " ++ either show id t
+
 
 -- |A type-aware wrapper to 'pgDescribe'
 tpgDescribe :: PGConnection -> String -> [String] -> Bool -> IO ([PGTypeInfo], [(String, PGTypeInfo, Bool)])
@@ -97,25 +98,34 @@ tpgDescribe conn sql types nulls = do
     return (c, th, n)) rt
   return (pth, rth)
 
+pgTypeInstanceExists :: TH.Name -> String -> TH.Q Bool
+pgTypeInstanceExists cls t = do
+  TH.ClassI _ il <- TH.reify cls
+  return $ any match il
+  where
+  match (TH.InstanceD _ (TH.AppT (TH.AppT (TH.ConT ci) (TH.LitT (TH.StrTyLit ti))) _) _) = ci == cls && ti == t
+  match _ = False
+
+pgParameterIsBinary :: PGTypeInfo -> TH.Q Bool
+pgParameterIsBinary = pgTypeInstanceExists ''PGBinaryParameter . pgTypeName
+
+pgColumnIsBinary :: PGTypeInfo -> TH.Q Bool
+pgColumnIsBinary = pgTypeInstanceExists ''PGBinaryColumn . pgTypeName
 
 typeApply :: TH.Name -> PGTypeInfo -> TH.Exp
 typeApply f PGTypeInfo{ pgTypeName = n } = TH.AppE (TH.VarE f) $
   TH.ConE 'PGTypeProxy `TH.SigE` (TH.ConT ''PGTypeName `TH.AppT` TH.LitT (TH.StrTyLit n))
 
 
--- |TH expression to decode a 'Maybe' 'L.ByteString' to a 'Maybe' 'PGColumn' value.
-pgTypeDecoder :: PGTypeInfo -> TH.Exp
-pgTypeDecoder = typeApply 'pgDecodeColumn
-
--- |TH expression to decode a 'Maybe' 'L.ByteString' to a 'PGColumn' value.
-pgTypeDecoderNotNull :: PGTypeInfo -> TH.Exp
-pgTypeDecoderNotNull = typeApply 'pgDecodeColumnNotNull
-
 -- |TH expression to encode a 'PGParameter' value to a 'Maybe' 'L.ByteString'.
-pgTypeEncoder :: PGTypeInfo -> TH.Exp
-pgTypeEncoder = typeApply 'pgEncodeParameter
+pgTypeEncoder :: Bool -> Bool -> PGTypeInfo -> TH.Exp
+pgTypeEncoder False False = typeApply 'pgEncodeParameter
+pgTypeEncoder False True = typeApply 'pgEncodeBinaryParameter
+pgTypeEncoder True _ = typeApply 'pgEscapeParameter
 
--- |TH expression to escape a 'PGParameter' value to a SQL literal.
-pgTypeEscaper :: PGTypeInfo -> TH.Exp
-pgTypeEscaper = typeApply 'pgEscapeParameter
-
+-- |TH expression to decode a 'Maybe' 'L.ByteString' to a ('Maybe') 'PGColumn' value.
+pgTypeDecoder :: Bool -> Bool -> PGTypeInfo -> TH.Exp
+pgTypeDecoder True False = typeApply 'pgDecodeColumn
+pgTypeDecoder True True = typeApply 'pgDecodeBinaryColumn
+pgTypeDecoder False False = typeApply 'pgDecodeColumnNotNull
+pgTypeDecoder False True = typeApply 'pgDecodeBinaryColumnNotNull

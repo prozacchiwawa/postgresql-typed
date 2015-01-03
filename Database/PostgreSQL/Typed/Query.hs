@@ -54,9 +54,9 @@ instance PGQuery SimpleQuery PGValues where
 instance PGRawQuery SimpleQuery where
 
 
-data PreparedQuery = PreparedQuery String [OID] PGValues
+data PreparedQuery = PreparedQuery String [OID] PGValues [Bool]
 instance PGQuery PreparedQuery PGValues where
-  pgRunQuery c (PreparedQuery sql types bind) = pgPreparedQuery c sql types bind
+  pgRunQuery c (PreparedQuery sql types bind bc) = pgPreparedQuery c sql types bind bc
 instance PGRawQuery PreparedQuery where
 
 
@@ -81,39 +81,31 @@ rawPGSimpleQuery = rawParser . SimpleQuery
 
 -- |Make a prepared query directly from a query string and bind parameters, with no type inference
 rawPGPreparedQuery :: String -> PGValues -> PGPreparedQuery PGValues
-rawPGPreparedQuery sql = rawParser . PreparedQuery sql []
+rawPGPreparedQuery sql bind = rawParser $ PreparedQuery sql [] bind []
 
 -- |Run a prepared query in lazy mode, where only chunk size rows are requested at a time.
 -- If you eventually retrieve all the rows this way, it will be far less efficient than using @pgQuery@, since every chunk requires an additional round-trip.
 -- Although you may safely stop consuming rows early, currently you may not interleave any other database operation while reading rows.  (This limitation could theoretically be lifted if required.)
 pgLazyQuery :: PGConnection -> PGPreparedQuery a -> Word32 -- ^ Chunk size (1 is common, 0 is all-or-nothing)
   -> IO [a]
-pgLazyQuery c (QueryParser (PreparedQuery sql types bind) p) count =
-  fmap p <$> pgPreparedLazyQuery c sql types bind count
+pgLazyQuery c (QueryParser (PreparedQuery sql types bind bc) p) count =
+  fmap p <$> pgPreparedLazyQuery c sql types bind bc count
 
 -- |Given a result description, create a function to convert a result to a
 -- tuple.
-convertRow :: [(String, PGTypeInfo, Bool)] -- ^ result description
-           -> TH.ExpQ -- ^ A function for converting a row of the given result description
-convertRow types = do
-  (pats, conv) <- mapAndUnzipM (\t@(n, _, _) -> do
-    v <- TH.newName n
-    return (TH.VarP v, convertColumn (TH.VarE v) t)) types
-  return $ TH.LamE [TH.ListP pats] $ TH.TupE conv
-
--- |Given a raw PostgreSQL result and a result field type, convert the
--- field to a Haskell value.
 -- If the boolean
 -- argument is 'False', that means that we know that the value is not nullable
 -- and we can use 'fromJust' to keep the code simple. If it's 'True', then we
 -- don't know if the value is nullable and must return a 'Maybe' value in case
 -- it is.
-convertColumn :: TH.Exp -- ^ the name of the variable containing the column value (of 'Maybe' 'ByteString')
-              -> (String, PGTypeInfo, Bool) -- ^ the result field type
-              -> TH.Exp
--- convertColumn v (n, t, False) = [| $(return $ pgTypeDecoder t) (fromMaybe (error $(TH.litE $ TH.stringL $ "Unexpected NULL value in " ++ n)) $(v)) |]
--- convertColumn v (_, t, True) = [| fmap $(return $ pgTypeDecoder t) $(v) |]
-convertColumn v (_, t, nullable) = (if nullable then pgTypeDecoder else pgTypeDecoderNotNull) t `TH.AppE` v
+convertRow :: [(String, PGTypeInfo, Bool)] -- ^ result description
+           -> TH.ExpQ -- ^ A function for converting a row of the given result description
+convertRow types = do
+  (pats, conv) <- mapAndUnzipM (\(c, t, n) -> do
+    v <- TH.newName c
+    b <- pgColumnIsBinary t
+    return (TH.VarP v, pgTypeDecoder n b t `TH.AppE` TH.VarE v)) types
+  return $ TH.LamE [TH.ListP pats] $ TH.TupE conv
 
 -- |Given a SQL statement with placeholders of the form @${expr}@, return a (hopefully) valid SQL statement with @$N@ placeholders and the list of expressions.
 -- This does not understand strings or other SQL syntax, so any literal occurrence of the string @${@ must be escaped as @$${@.
@@ -180,19 +172,20 @@ makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
   when (length pt < length exprs) $ fail "Not all expression placeholders were recognized by PostgreSQL; literal occurrences of '${' may need to be escaped with '$${'"
 
   (vars, vals) <- mapAndUnzipM (\t -> do
+    b <- pgParameterIsBinary t
     v <- TH.newName "p"
-    return (TH.VarP v, encf t `TH.AppE` TH.VarE v)) pt
+    return (TH.VarP v, pgTypeEncoder (isNothing prep) b t `TH.AppE` TH.VarE v)) pt
   conv <- convertRow rt
+  bc <- mapM (\(_, t, _) -> pgColumnIsBinary t) rt
   let pgq
         | isNothing prep = TH.ConE 'SimpleQuery `TH.AppE` sqlSubstitute sqlp vals
-        | otherwise = TH.ConE 'PreparedQuery `TH.AppE` stringL sqlp `TH.AppE` TH.ListE (map (TH.LitE . TH.IntegerL . toInteger . pgTypeOID) pt) `TH.AppE` TH.ListE vals
+        | otherwise = TH.ConE 'PreparedQuery `TH.AppE` stringL sqlp `TH.AppE` TH.ListE (map (TH.LitE . TH.IntegerL . toInteger . pgTypeOID) pt) `TH.AppE` TH.ListE vals `TH.AppE` TH.ListE (map boolL bc)
   foldl TH.AppE (TH.LamE vars $ TH.ConE 'QueryParser `TH.AppE` pgq `TH.AppE` conv) <$> mapM parse exprs
   where
   (sqlp, exprs) = sqlPlaceholders sqle
   parse e = either (fail . (++) ("Failed to parse expression {" ++ e ++ "}: ")) return $ parseExp e
-  encf
-    | isNothing prep = pgTypeEscaper
-    | otherwise      = pgTypeEncoder
+  boolL False = TH.ConE 'False
+  boolL True = TH.ConE 'True
 
 qqQuery :: QueryFlags -> String -> TH.ExpQ
 qqQuery f@QueryFlags{ flagNullable = False } ('?':q) = qqQuery f{ flagNullable = True } q

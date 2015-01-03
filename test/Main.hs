@@ -41,7 +41,7 @@ main = do
       l = [Just "a\\\"b,c", Nothing]
       r = Range.normal (Just (-2 :: Int32)) Nothing
   [(Just b', Just i', Just f', Just s', Just d', Just t', Just z', Just p', Just l', Just r')] <- pgQuery c
-    [pgSQL|$SELECT ${b}::bool, ${Just i}::int, ${f}::float4, ${s}::text, ${Just d}::date, ${t}::timestamp, ${Time.zonedTimeToUTC z}::timestamptz, ${p}::interval, ${l}::text[], ${r}::int4range|]
+    [pgSQL|$SELECT ${b}::bool, ${Just i}::int, ${f}::float4, ${s}::varchar(10), ${Just d}::date, ${t}::timestamp, ${Time.zonedTimeToUTC z}::timestamptz, ${p}::interval, ${l}::text[], ${r}::int4range|]
   assert $ i == i' && b == b' && s == s' && f == f' && d == d' && t == t' && Time.zonedTimeToUTC z == z' && p == p' && l == l' && r == r'
 
   ["box"] <- simple c 603

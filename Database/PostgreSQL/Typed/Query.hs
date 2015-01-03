@@ -189,6 +189,13 @@ qqQuery f@QueryFlags{ flagPrepare = Just [] } ('(':s) = qqQuery f{ flagPrepare =
   sql _ = fail "pgSQL: unterminated argument list" 
 qqQuery f q = makePGQuery f q
 
+{-
+qqTop :: String -> TH.DecsQ
+qqTop sql =
+  TH.runIO $ withTPGConnection $ \c ->
+    _ <- pgSimpleQuery c sql
+-}
+
 -- |A quasi-quoter for PGSQL queries.
 --
 -- Used in expression context, it may contain any SQL statement @[pgSQL|SELECT ...|]@.

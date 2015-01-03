@@ -448,7 +448,7 @@ pgDescribe h sql types nulls = do
     RowDescription r -> mapM desc r
     _ -> fail $ "describeStatement: unexpected response: " ++ show m
   where
-  desc (ColDescription{ colName = name, colTable = tab, colNumber = col, colType = typ}) = do
+  desc (ColDescription{ colName = name, colTable = tab, colNumber = col, colType = typ }) = do
     n <- nullable tab col
     return (name, typ, n)
   -- We don't get nullability indication from PostgreSQL, at least not directly.

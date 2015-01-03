@@ -18,9 +18,9 @@ module Database.PostgreSQL.Typed.TH
   , pgTypeDecoder
   ) where
 
-import Control.Applicative ((<$>), (<$), (<|>))
-import Control.Concurrent.MVar (MVar, newMVar, modifyMVar, swapMVar)
-import Control.Monad ((>=>), void, liftM2)
+import Control.Applicative ((<$>), (<|>))
+import Control.Concurrent.MVar (MVar, newMVar, modifyMVar, modifyMVar_)
+import Control.Monad ((>=>), liftM2)
 import Data.Foldable (toList)
 import Data.Maybe (isJust, fromMaybe)
 import qualified Language.Haskell.TH as TH
@@ -58,15 +58,16 @@ tpgConnection = unsafePerformIO $ newMVar $ Left $ pgConnect =<< getTPGDatabase
 withTPGConnection :: (PGConnection -> IO a) -> IO a
 withTPGConnection f = modifyMVar tpgConnection $ either id return >=> (\c -> (,) (Right c) <$> f c)
 
-setTPGConnection :: Either (IO PGConnection) PGConnection -> IO ()
-setTPGConnection = void . swapMVar tpgConnection
-
 -- |Specify an alternative database to use during compilation.
 -- This lets you override the default connection parameters that are based on TPG environment variables.
 -- This should be called as a top-level declaration and produces no code.
--- It will also clear all types registered with 'registerTPGType'.
+-- It uses 'pgReconnect' so is a no-op to call multiple times with the same database.
 useTPGDatabase :: PGDatabase -> TH.DecsQ
-useTPGDatabase db = [] <$ TH.runIO (setTPGConnection $ Left $ pgConnect db)
+useTPGDatabase db = do
+  TH.runIO $ modifyMVar_ tpgConnection $ either
+    (const $ return $ Left $ pgConnect db)
+    (\c -> Right <$> pgReconnect c db)
+  return []
 
 data PGTypeInfo = PGTypeInfo
   { pgTypeOID :: OID

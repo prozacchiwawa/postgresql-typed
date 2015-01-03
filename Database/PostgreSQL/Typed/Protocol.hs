@@ -213,10 +213,10 @@ messageBody (CancelRequest pid key) = (Nothing, B.word32BE 80877102
 messageBody Bind{ statementName = n, bindParameters = p, binaryColumns = bc } = (Just 'B',
   nul <> pgString n
     <> (if any fmt p
-          then B.word16BE (fromIntegral $ length p) <> Fold.foldMap (B.word16LE . fromIntegral . fromEnum . fmt) p
+          then B.word16BE (fromIntegral $ length p) <> Fold.foldMap (B.word16BE . fromIntegral . fromEnum . fmt) p
           else B.word16BE 0)
     <> B.word16BE (fromIntegral $ length p) <> Fold.foldMap val p
-    <> B.word16BE (fromIntegral $ length bc) <> Fold.foldMap (B.word16LE . fromIntegral . fromEnum) bc)
+    <> B.word16BE (fromIntegral $ length bc) <> Fold.foldMap (B.word16BE . fromIntegral . fromEnum) bc)
   where
   fmt (PGBinaryValue _) = True
   fmt _ = False

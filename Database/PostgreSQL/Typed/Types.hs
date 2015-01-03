@@ -59,6 +59,12 @@ import Data.Ratio ((%), numerator, denominator)
 #ifdef USE_SCIENTIFIC
 import Data.Scientific (Scientific)
 #endif
+#ifdef USE_TEXT
+import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextE
+import qualified Data.Text.Lazy as TextL
+import qualified Data.Text.Lazy.Encoding as TextLE
+#endif
 import qualified Data.Time as Time
 #ifdef USE_UUID
 import qualified Data.UUID as UUID
@@ -66,6 +72,10 @@ import qualified Data.UUID as UUID
 import Data.Word (Word32)
 import GHC.TypeLits (Symbol, symbolVal, KnownSymbol)
 import Numeric (readFloat)
+#ifdef USE_BINARY
+import qualified PostgreSQLBinary.Decoder as BinD
+import qualified PostgreSQLBinary.Encoder as BinE
+#endif
 import System.Locale (defaultTimeLocale)
 import qualified Text.Parsec as P
 import Text.Parsec.Token (naturalOrFloat, makeTokenParser, GenLanguageDef(..))
@@ -239,6 +249,23 @@ instance PGStringType t => PGParameter t L.ByteString where
 instance PGStringType t => PGColumn t L.ByteString where
   pgDecode _ = id
 
+instance PGStringType t => PGParameter t BS.ByteString where
+  pgEncode _ = L.fromStrict
+instance PGStringType t => PGColumn t BS.ByteString where
+  pgDecode _ = L.toStrict
+
+#ifdef USE_TEXT
+instance PGStringType t => PGParameter t TextL.Text where
+  pgEncode _ = TextLE.encodeUtf8
+instance PGStringType t => PGColumn t TextL.Text where
+  pgDecode _ = TextLE.decodeUtf8
+
+instance PGStringType t => PGParameter t Text.Text where
+  pgEncode _ = L.fromStrict . TextE.encodeUtf8
+instance PGStringType t => PGColumn t Text.Text where
+  pgDecode _ = TextL.toStrict . TextLE.decodeUtf8
+#endif
+
 instance PGStringType "text"
 instance PGStringType "varchar"
 instance PGStringType "name" -- limit 63 characters
@@ -249,10 +276,10 @@ instance PGStringType "bpchar" -- blank padded
 
 type Bytea = L.ByteString
 instance PGParameter "bytea" Bytea where
-  pgEncode _ = LC.pack . (++) "'\\x" . ed . L.unpack where
-    ed [] = "\'"
-    ed (x:d) = hex (shiftR x 4) : hex (x .&. 0xF) : ed d
-    hex = intToDigit . fromIntegral
+  pgEncode _ s = B.toLazyByteString $ B.string7 "\\x" <> B.lazyByteStringHex s
+  pgLiteral t = pgQuoteUnsafe . LC.unpack . pgEncode t
+instance PGParameter "bytea" BS.ByteString where
+  pgEncode _ s = B.toLazyByteString $ B.string7 "\\x" <> B.byteStringHex s
   pgLiteral t = pgQuoteUnsafe . LC.unpack . pgEncode t
 instance PGColumn "bytea" Bytea where
   pgDecode _ s
@@ -513,6 +540,62 @@ instance PGColumn "uuid" UUID.UUID where
   pgDecode _ u = fromMaybe (error $ "pgDecode uuid: " ++ LC.unpack u) $ UUID.fromLazyASCIIBytes u
 #endif
 
+#ifdef USE_BINARY
+binDec :: KnownSymbol t => BinD.D a -> PGTypeName t -> PGBinaryValue -> a
+binDec d t = either (\e -> error $ "pgDecodeBinary " ++ pgTypeName t ++ ": " ++ show e) id . d
+
+instance PGBinaryParameter "oid" OID where
+  pgEncodeBinary _ = BinE.int4 . Right
+instance PGBinaryParameter "int2" Int16 where
+  pgEncodeBinary _ = BinE.int2 . Left
+instance PGBinaryParameter "int4" Int32 where
+  pgEncodeBinary _ = BinE.int4 . Left
+instance PGBinaryParameter "int8" Int64 where
+  pgEncodeBinary _ = BinE.int8 . Left
+instance PGBinaryParameter "float4" Float where
+  pgEncodeBinary _ = BinE.float4
+instance PGBinaryParameter "float8" Double where
+  pgEncodeBinary _ = BinE.float8
+#ifdef USE_SCIENTIFIC
+instance PGBinaryParameter "numeric" Scientific where
+  pgEncodeBinary _ = BinE.numeric
+instance PGBinaryParameter "numeric" Rational where
+  pgEncodeBinary _ = BinE.numeric . realToFrac
+#endif
+instance PGBinaryParameter "char" Char where
+  pgEncodeBinary _ = BinE.char
+-- These aren't working because of how isBinaryParameter works:
+instance PGStringType t => PGBinaryParameter t Text.Text where
+  pgEncodeBinary _ = BinE.text . Left
+instance PGStringType t => PGBinaryParameter t TextL.Text where
+  pgEncodeBinary _ = BinE.text . Right
+instance PGStringType t => PGBinaryParameter t BS.ByteString where
+  pgEncodeBinary _ = BinE.text . Left . TextE.decodeUtf8
+instance PGStringType t => PGBinaryParameter t L.ByteString where
+  pgEncodeBinary _ = BinE.text . Right . TextLE.decodeUtf8
+instance PGBinaryParameter "bytea" BS.ByteString where
+  pgEncodeBinary _ = BinE.bytea . Left
+instance PGBinaryParameter "bytea" L.ByteString where
+  pgEncodeBinary _ = BinE.bytea . Right
+instance PGBinaryParameter "date" Time.Day where
+  pgEncodeBinary _ = BinE.date
+{- Need to know PGConnection parameter "integer_datetimes" for these:
+instance PGBinaryParameter "time" Time.TimeOfDay where
+  pgEncodeBinary _ = BinE.time
+instance PGBinaryParameter "timestamp" Time.LocalTime where
+  pgEncodeBinary _ = BinE.timestamp
+instance PGBinaryParameter "timestamptz" Time.UTCTime where
+  pgEncodeBinary _ = BinE.timestamptz
+instance PGBinaryParameter "interval" Time.DiffTime where
+  pgEncodeBinary _ = BinE.interval
+-}
+instance PGBinaryParameter "bool" Bool where
+  pgEncodeBinary _ = BinE.bool
+#ifdef USE_UUID
+instance PGBinaryParameter "uuid" UUID.UUID where
+  pgEncodeBinary _ = BinE.uuid
+#endif
+#endif
 
 {-
 --, ( 114,  199, "json",        ?)

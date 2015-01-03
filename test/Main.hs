@@ -19,11 +19,11 @@ assert True = return ()
 useTPGDatabase db
 
 simple :: PGConnection -> OID -> IO [String]
-simple        c t = pgQuery c [pgSQL|SELECT typname FROM pg_catalog.pg_type WHERE oid = ${t} AND oid = $1|]
+simple c t = pgQuery c [pgSQL|SELECT typname FROM pg_catalog.pg_type WHERE oid = ${t} AND oid = $1|]
 simpleApply :: PGConnection -> OID -> IO [Maybe String]
-simpleApply   c = pgQuery c . [pgSQL|?SELECT typname FROM pg_catalog.pg_type WHERE oid = $1|]
-prepared :: PGConnection -> OID -> IO [Maybe String]
-prepared      c t = pgQuery c [pgSQL|?$SELECT typname FROM pg_catalog.pg_type WHERE oid = ${t} AND oid = $1|]
+simpleApply c = pgQuery c . [pgSQL|?SELECT typname FROM pg_catalog.pg_type WHERE oid = $1|]
+prepared :: PGConnection -> OID -> String -> IO [Maybe String]
+prepared c t = pgQuery c . [pgSQL|?$SELECT typname FROM pg_catalog.pg_type WHERE oid = ${t} AND typname = $2|]
 preparedApply :: PGConnection -> Int32 -> IO [String]
 preparedApply c = pgQuery c . [pgSQL|$(integer)SELECT typname FROM pg_catalog.pg_type WHERE oid = $1|]
 
@@ -46,9 +46,9 @@ main = do
 
   ["box"] <- simple c 603
   [Just "box"] <- simpleApply c 603
-  [Just "box"] <- prepared c 603
+  [Just "box"] <- prepared c 603 "box"
   ["box"] <- preparedApply c 603
-  [Just "line"] <- prepared c 628
+  [Just "line"] <- prepared c 628 "line"
   ["line"] <- preparedApply c 628
 
   pgDisconnect c

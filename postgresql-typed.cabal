@@ -27,16 +27,20 @@ Flag md5
   Description: Enable md5 password authentication method
   Default: True
 
+Flag binary
+  Description: Use binary protocol encoding via postgresql-binary
+  Default: True
+
+Flag text
+  Description: Support Text string values via text (implied by binary)
+  Default: True
+
 Flag uuid
-  Description: Support the UUID type via uuid
+  Description: Support the UUID type via uuid (implied by binary)
   Default: True
 
 Flag scientific
-  Description: Support decoding numeric via scientific
-  Default: True
-
-Flag binary
-  Description: Use binary protocol encoding via postgresql-binary
+  Description: Support decoding numeric via scientific (implied by binary)
   Default: True
 
 Library
@@ -62,15 +66,19 @@ Library
   if flag(md5)
     Build-Depends: cryptohash >= 0.5
     CPP-options: -DUSE_MD5
-  if flag(uuid)
-    Build-Depends: uuid >= 1.3
-    CPP-options: -DUSE_UUID
-  if flag(scientific)
-    Build-Depends: scientific >= 0.3
-    CPP-options: -DUSE_SCIENTIFIC
   if flag(binary)
-    Build-Depends: postgresql-binary >= 0.5.0 
-    CPP-options: -DUSE_BINARY
+    Build-Depends: postgresql-binary >= 0.5.0, text >= 1, uuid >= 1.3, scientific >= 0.3
+    CPP-options: -DUSE_BINARY -DUSE_TEXT -DUSE_UUID -DUSE_SCIENTIFIC
+  else
+    if flag(text)
+      Build-Depends: text >= 1
+      CPP-options: -DUSE_TEXT
+    if flag(uuid)
+      Build-Depends: uuid >= 1.3
+      CPP-options: -DUSE_UUID
+    if flag(scientific)
+      Build-Depends: scientific >= 0.3
+      CPP-options: -DUSE_SCIENTIFIC
 
 test-suite test
   build-depends: base, network, time, postgresql-typed

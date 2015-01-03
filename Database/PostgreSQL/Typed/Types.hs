@@ -38,12 +38,16 @@ import Control.Applicative ((<$>), (<$))
 import Control.Monad (mzero)
 import Data.Bits (shiftL, shiftR, (.|.), (.&.))
 import Data.ByteString.Internal (w2c)
+import qualified Data.ByteString.Builder as B
+import qualified Data.ByteString.Builder.Prim as BP
+import Data.ByteString.Internal (c2w)
 import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString.Lazy.Char8 as LC
 import qualified Data.ByteString.Lazy.UTF8 as U
 import Data.Char (isDigit, digitToInt, intToDigit, toLower)
 import Data.Int
-import Data.List (intercalate)
+import Data.List (intersperse)
+import Data.Monoid ((<>), mconcat, mempty)
 import Data.Ratio ((%), numerator, denominator)
 import qualified Data.Time as Time
 import Data.Word (Word32)
@@ -124,15 +128,13 @@ pgQuote = ('\'':) . es where
   es (c@'\'':r) = c:c:es r
   es (c:r) = c:es r
 
-dQuote :: String -> String -> String
-dQuote _ "" = "\"\""
+dQuote :: String -> L.ByteString -> B.Builder
 dQuote unsafe s
-  | all (`notElem` unsafe) s && map toLower s /= "null" = s
-  | otherwise = '"':es s where
-    es "" = "\""
-    es (c@'"':r) = '\\':c:es r
-    es (c@'\\':r) = '\\':c:es r
-    es (c:r) = c:es r
+  | not (L.null s) && all (`LC.notElem` s) unsafe && LC.map toLower s /= LC.pack "null" = B.lazyByteString s
+  | otherwise = dq <> BP.primMapLazyByteStringBounded ec s <> dq where
+    dq = B.char7 '"'
+    ec = BP.condB (\c -> c == c2w '"' || c == c2w '\\') bs (BP.liftFixedToBounded BP.word8)
+    bs = BP.liftFixedToBounded $ ((,) '\\') BP.>$< (BP.char7 BP.>*< BP.word8)
 
 parseDQuote :: P.Stream s m Char => String -> P.ParsecT s u m String
 parseDQuote unsafe = (q P.<|> uq) where
@@ -329,10 +331,9 @@ class (KnownSymbol ta, KnownSymbol t) => PGArrayType ta t | ta -> t, t -> ta whe
   pgArrayDelim _ = ','
 
 instance (PGArrayType ta t, PGParameter t a) => PGParameter ta (PGArray a) where
-  -- TODO: rewrite to use BS
-  pgEncode ta l = U.fromString $ '{' : intercalate [pgArrayDelim ta] (map el l) ++ "}" where
-    el Nothing = "null"
-    el (Just e) = dQuote (pgArrayDelim ta : "\"\\{}") $ U.toString $ pgEncode (pgArrayElementType ta) e
+  pgEncode ta l = B.toLazyByteString $ B.char7 '{' <> mconcat (intersperse (B.char7 $ pgArrayDelim ta) $ map el l) <> B.char7 '}' where
+    el Nothing = B.string7 "null"
+    el (Just e) = dQuote (pgArrayDelim ta : "\"\\{}") $ pgEncode (pgArrayElementType ta) e
 instance (PGArrayType ta t, PGColumn t a) => PGColumn ta (PGArray a) where
   pgDecode ta = either (error . ("pgDecode array: " ++) . show) id . P.parse pa "array" where
     pa = do
@@ -422,17 +423,16 @@ class (KnownSymbol tr, KnownSymbol t) => PGRangeType tr t | tr -> t where
 
 instance (PGRangeType tr t, PGParameter t a) => PGParameter tr (Range.Range a) where
   pgEncode _ Range.Empty = LC.pack "empty"
-  -- TODO: rewrite to use BS
-  pgEncode tr (Range.Range (Range.Lower l) (Range.Upper u)) = U.fromString $
+  pgEncode tr (Range.Range (Range.Lower l) (Range.Upper u)) = B.toLazyByteString $
     pc '[' '(' l
-      : pb (Range.bound l)
-      ++ ','
-      : pb (Range.bound u)
-      ++ [pc ']' ')' u]
+      <> pb (Range.bound l)
+      <> B.char7 ','
+      <> pb (Range.bound u)
+      <> pc ']' ')' u
     where
-    pb Nothing = ""
-    pb (Just b) = dQuote "\"(),[\\]" $ U.toString $ pgEncode (pgRangeElementType tr) b
-    pc c o b = if Range.boundClosed b then c else o
+    pb Nothing = mempty
+    pb (Just b) = dQuote "\"(),[\\]" $ pgEncode (pgRangeElementType tr) b
+    pc c o b = B.char7 $ if Range.boundClosed b then c else o
 instance (PGRangeType tr t, PGColumn t a) => PGColumn tr (Range.Range a) where
   pgDecode tr = either (error . ("pgDecode range: " ++) . show) id . P.parse per "array" where
     per = Range.Empty <$ pe P.<|> pr

@@ -1,4 +1,4 @@
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskell, FlexibleInstances, MultiParamTypeClasses, DataKinds #-}
 -- |
 -- Module: Database.PostgreSQL.Typed.Enum
 -- Copyright: 2015 Dylan Simon
@@ -10,6 +10,7 @@ module Database.PostgreSQL.Typed.Enum
   ) where
 
 import Control.Monad (when)
+import qualified Data.ByteString.Lazy.Char8 as BSC
 import qualified Data.ByteString.Lazy.UTF8 as U
 import Data.Foldable (toList)
 import qualified Data.Sequence as Seq
@@ -28,22 +29,33 @@ import Database.PostgreSQL.Typed.Types
 -- instance PGType Foo where ...
 -- registerPGType \"foo\" (ConT ''Foo)
 -- @
+--
+-- Requires language extensions: TemplateHaskell, FlexibleInstances, MultiParamTypeClasses, DataKinds
 makePGEnum :: String -- ^ PostgreSQL enum type name
   -> String -- ^ Haskell type to create
   -> (String -> String) -- ^ How to generate constructor names from enum values, e.g. @(\"Type_\"++)@
   -> TH.DecsQ
-makePGEnum name typs valf = do
+makePGEnum name typs valnf = do
   (_, vals) <- TH.runIO $ withTPGConnection $ \c ->
     pgSimpleQuery c $ "SELECT enumlabel FROM pg_catalog.pg_enum JOIN pg_catalog.pg_type ON pg_enum.enumtypid = pg_type.oid WHERE typtype = 'e' AND typname = " ++ pgQuote name ++ " ORDER BY enumsortorder"
   when (Seq.null vals) $ fail $ "makePGEnum: enum " ++ name ++ " not found"
   let 
-    valn = map (\[Just v] -> let s = U.toString v in (TH.StringL s, TH.mkName $ valf s)) $ toList vals
+    valn = map (\[Just v] -> (TH.StringL (BSC.unpack v), TH.mkName $ valnf (U.toString v))) $ toList vals
+  dv <- TH.newName "x"
+  ds <- TH.newName "s"
   return
     [ TH.DataD [] typn [] (map (\(_, n) -> TH.NormalC n []) valn) [''Eq, ''Ord, ''Enum, ''Bounded]
     , TH.InstanceD [] (TH.ConT ''PGParameter `TH.AppT` TH.LitT (TH.StrTyLit name) `TH.AppT` typt)
-      [ TH.FunD 'pgEncode $ map (\(l, n) -> TH.Clause [TH.WildP, TH.ConP n []] (TH.NormalB (TH.LitE l)) []) valn ]
+      [ TH.FunD 'pgEncode $ map (\(l, n) -> TH.Clause [TH.WildP, TH.ConP n []]
+        (TH.NormalB $ TH.VarE 'BSC.pack `TH.AppE` TH.LitE l) []) valn ]
     , TH.InstanceD [] (TH.ConT ''PGColumn `TH.AppT` TH.LitT (TH.StrTyLit name) `TH.AppT` typt)
-      [ TH.FunD 'pgDecode $ map (\(l, n) -> TH.Clause [TH.WildP, TH.LitP l] (TH.NormalB (TH.ConE n)) []) valn ]
+      [ TH.FunD 'pgDecode [TH.Clause [TH.WildP, TH.VarP dv]
+        (TH.NormalB $ TH.CaseE (TH.VarE 'BSC.unpack `TH.AppE` TH.VarE dv) $ map (\(l, n) ->
+          TH.Match (TH.LitP l) (TH.NormalB $ TH.ConE n) []) valn ++
+          [TH.Match (TH.VarP ds) (TH.NormalB $ TH.AppE (TH.VarE 'error) $
+            TH.InfixE (Just $ TH.LitE (TH.StringL ("pgDecode " ++ name ++ ": "))) (TH.VarE '(++)) (Just $ TH.VarE ds))
+            []])
+        []] ]
     ]
   where
   typn = TH.mkName typs

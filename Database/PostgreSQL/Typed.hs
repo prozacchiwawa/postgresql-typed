@@ -173,7 +173,7 @@ import Database.PostgreSQL.Typed.Query
 -- >   pgEncode _ (v :: MyType) = ... :: ByteString
 -- > instance PGColumn "mytype" MyType where
 -- >   pgDecode _ (s :: ByteString) = ... :: MyType
--- > instance PGArrayType "_mytype" "mytype"
+-- > instance PGArrayType "mytype[]" "mytype"
 --
 -- Required language extensions: FlexibleInstances, MultiParamTypeClasses, DataKinds
 

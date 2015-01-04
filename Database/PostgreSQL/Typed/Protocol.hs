@@ -333,21 +333,27 @@ runGet g s = either (\(_, _, e) -> fail e) (\(_, _, r) -> return r) $ G.runGetOr
 
 -- |Receive the next message from PostgreSQL (low-level). Note that this will
 -- block until it gets a message.
-pgReceive :: PGConnection -> IO PGBackendMessage
-pgReceive c@PGConnection{ connHandle = h } = do
+pgReceive :: Bool -> PGConnection -> IO PGBackendMessage
+pgReceive raw c@PGConnection{ connHandle = h } = do
   (typ, len) <- runGet (liftM2 (,) G.getWord8 G.getWord32be) =<< BSL.hGet h 5
   msg <- runGet (getMessageBody $ w2c typ) =<< BSL.hGet h (fromIntegral len - 4)
   when (connDebug c) $ putStrLn $ "< " ++ show msg
+  let rawres
+        | raw = return msg
+        | otherwise = pgReceive raw c
   case msg of
-    ReadyForQuery s -> msg <$ writeIORef (connState c) s
+    ReadyForQuery s ->
+      writeIORef (connState c) s >> rawres
     NoticeResponse{ messageFields = m } ->
-      connLogMessage c m >> pgReceive c
+      connLogMessage c m >> pgReceive raw c
     ErrorResponse{ messageFields = m } ->
       writeIORef (connState c) StateUnknown >> throwIO (PGError m) 
+    EmptyQueryResponse -> -- just ignore these: usually means someone put a stray semi-colon somewhere
+      rawres
     _ -> return msg
 
-pgHandle :: PGConnection -> (PGBackendMessage -> IO a) -> IO a
-pgHandle c = (pgReceive c >>=)
+pgHandle :: Bool -> PGConnection -> (PGBackendMessage -> IO a) -> IO a
+pgHandle raw c = (pgReceive raw c >>=)
 
 -- |Connect to a PostgreSQL server.
 pgConnect :: PGDatabase -> IO PGConnection
@@ -377,7 +383,7 @@ pgConnect db = do
   pgFlush c
   conn c
   where
-  conn c = pgHandle c (msg c)
+  conn c = pgHandle True c (msg c)
   msg c (ReadyForQuery _) = return c
     { connTypeEnv = PGTypeEnv
       { pgIntegerDatetimes = (connParameters c Map.! "integer_datetimes") == "on"
@@ -424,7 +430,7 @@ pgSync c@PGConnection{ connState = sr } = do
   when (s == StateUnknown) $ do
     pgSend c Sync
     pgFlush c
-    _ <- pgReceive c `catch` \(PGError m) -> ErrorResponse m <$ connLogMessage c m
+    _ <- pgReceive True c `catch` \(PGError m) -> ErrorResponse m <$ connLogMessage c m
     pgSync c
     
 -- |Describe a SQL statement/query. A statement description consists of 0 or
@@ -441,9 +447,9 @@ pgDescribe h sql types nulls = do
   pgSend h $ Describe ""
   pgSend h $ Flush
   pgFlush h
-  ParseComplete <- pgReceive h
-  ParameterDescription ps <- pgReceive h
-  m <- pgReceive h
+  ParseComplete <- pgReceive False h
+  ParameterDescription ps <- pgReceive False h
+  m <- pgReceive False h
   (,) ps <$> case m of
     NoData -> return []
     RowDescription r -> mapM desc r
@@ -489,17 +495,14 @@ pgSimpleQuery h sql = do
   pgSend h $ SimpleQuery sql
   pgFlush h
   go start where 
-  go = pgHandle h
+  go = pgHandle False h
   start (CommandComplete c) = got c Seq.empty
   start (RowDescription rd) = go $ row (map colBinary rd) Seq.empty
   start m = fail $ "pgSimpleQuery: unexpected response: " ++ show m
   row bc s (DataRow fs) = go $ row bc (s Seq.|> fixBinary bc fs)
   row _ s (CommandComplete c) = got c s
   row _ _ m = fail $ "pgSimpleQuery: unexpected row: " ++ show m
-  got c s = (rowsAffected c, s) <$ go end
-  end (ReadyForQuery _) = return []
-  end EmptyQueryResponse = go end
-  end m = fail $ "pgSimpleQuery: unexpected message: " ++ show m
+  got c s = return (rowsAffected c, s)
 
 pgPreparedBind :: PGConnection -> String -> [OID] -> PGValues -> [Bool] -> IO (IO ())
 pgPreparedBind c@PGConnection{ connPreparedStatements = psr } sql types bind bc = do
@@ -511,7 +514,7 @@ pgPreparedBind c@PGConnection{ connPreparedStatements = psr } sql types bind bc 
     pgSend c $ Parse{ queryString = sql, statementName = sn, parseTypes = types }
   pgSend c $ Bind{ statementName = sn, bindParameters = bind, binaryColumns = bc }
   let
-    go = pgHandle c start
+    go = pgHandle False c start
     start ParseComplete = do
       modifyIORef psr $ \(i, m) ->
         (i, Map.insert key n m)
@@ -536,7 +539,7 @@ pgPreparedQuery c sql types bind bc = do
   start
   go Seq.empty
   where
-  go = pgHandle c . row
+  go = pgHandle False c . row
   row s (DataRow fs) = go (s Seq.|> fixBinary bc fs)
   row s (CommandComplete r) = return (rowsAffected r, s)
   row _ m = fail $ "pgPreparedQuery: unexpected row: " ++ show m
@@ -556,7 +559,7 @@ pgPreparedLazyQuery c sql types bind bc count = do
     pgSend c $ Execute count
     pgSend c $ Flush
     pgFlush c
-  go = pgHandle c . row
+  go = pgHandle False c . row
   row s (DataRow fs) = go (s Seq.|> fixBinary bc fs)
   row s PortalSuspended = (Fold.toList s ++) <$> unsafeInterleaveIO (execute >> go Seq.empty)
   row s (CommandComplete _) = return $ Fold.toList s
@@ -570,5 +573,5 @@ pgCloseStatement c@PGConnection{ connPreparedStatements = psr } sql types = do
   Fold.forM_ mn $ \n -> do
     pgSend c $ Close{ statementName = show n }
     pgFlush c
-    CloseComplete <- pgReceive c
+    CloseComplete <- pgReceive False c
     return ()

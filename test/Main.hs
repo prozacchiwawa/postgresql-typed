@@ -9,6 +9,7 @@ import System.Exit (exitSuccess, exitFailure)
 import Database.PostgreSQL.Typed
 import Database.PostgreSQL.Typed.Types (OID)
 import qualified Database.PostgreSQL.Typed.Range as Range
+import Database.PostgreSQL.Typed.Enum
 
 import Connect
 
@@ -17,6 +18,11 @@ assert False = exitFailure
 assert True = return ()
 
 useTPGDatabase db
+
+-- This runs at compile-time:
+[pgSQL|!CREATE TYPE myenum AS enum ('abc', 'DEF', 'XX_ye')|]
+
+makePGEnum "myenum" "MyEnum" ("MyEnum_" ++)
 
 simple :: PGConnection -> OID -> IO [String]
 simple c t = pgQuery c [pgSQL|SELECT typname FROM pg_catalog.pg_type WHERE oid = ${t} AND oid = $1|]
@@ -40,9 +46,10 @@ main = do
       s = "\"hel\\o'"
       l = [Just "a\\\"b,c", Nothing]
       r = Range.normal (Just (-2 :: Int32)) Nothing
-  [(Just b', Just i', Just f', Just s', Just d', Just t', Just z', Just p', Just l', Just r')] <- pgQuery c
-    [pgSQL|$SELECT ${b}::bool, ${Just i}::int, ${f}::float4, ${s}::varchar(10), ${Just d}::date, ${t}::timestamp, ${Time.zonedTimeToUTC z}::timestamptz, ${p}::interval, ${l}::text[], ${r}::int4range|]
-  assert $ i == i' && b == b' && s == s' && f == f' && d == d' && t == t' && Time.zonedTimeToUTC z == z' && p == p' && l == l' && r == r'
+      e = MyEnum_XX_ye
+  [(Just b', Just i', Just f', Just s', Just d', Just t', Just z', Just p', Just l', Just r', Just e')] <- pgQuery c
+    [pgSQL|$SELECT ${b}::bool, ${Just i}::int, ${f}::float4, ${s}::varchar(10), ${Just d}::date, ${t}::timestamp, ${Time.zonedTimeToUTC z}::timestamptz, ${p}::interval, ${l}::text[], ${r}::int4range, ${e}::myenum|]
+  assert $ i == i' && b == b' && s == s' && f == f' && d == d' && t == t' && Time.zonedTimeToUTC z == z' && p == p' && l == l' && r == r' && e == e'
 
   ["box"] <- simple c 603
   [Just "box"] <- simpleApply c 603

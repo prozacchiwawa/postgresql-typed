@@ -37,7 +37,7 @@ makePGEnum :: String -- ^ PostgreSQL enum type name
   -> TH.DecsQ
 makePGEnum name typs valnf = do
   (_, vals) <- TH.runIO $ withTPGConnection $ \c ->
-    pgSimpleQuery c $ "SELECT enumlabel FROM pg_catalog.pg_enum JOIN pg_catalog.pg_type ON pg_enum.enumtypid = pg_type.oid WHERE typtype = 'e' AND typname = " ++ pgQuote name ++ " ORDER BY enumsortorder"
+    pgSimpleQuery c $ "SELECT enumlabel FROM pg_catalog.pg_enum JOIN pg_catalog.pg_type t ON enumtypid = t.oid WHERE typtype = 'e' AND format_type(t.oid, -1) = " ++ pgQuote name ++ " ORDER BY enumsortorder"
   when (Seq.null vals) $ fail $ "makePGEnum: enum " ++ name ++ " not found"
   let 
     valn = map (\[PGTextValue v] -> (TH.StringL (BSC.unpack v), TH.mkName $ valnf (U.toString v))) $ toList vals

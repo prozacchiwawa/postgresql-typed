@@ -10,6 +10,7 @@ module Database.PostgreSQL.Typed.TH
   ( getTPGDatabase
   , withTPGConnection
   , useTPGDatabase
+  , reloadTPGTypes
   , TPGValueInfo(..)
   , tpgDescribe
   , tpgTypeEncoder
@@ -17,7 +18,7 @@ module Database.PostgreSQL.Typed.TH
   ) where
 
 import Control.Applicative ((<$>), (<$), (<|>))
-import Control.Concurrent.MVar (MVar, newMVar, takeMVar, putMVar)
+import Control.Concurrent.MVar (MVar, newMVar, takeMVar, putMVar, modifyMVar_)
 import Control.Exception (onException, finally)
 import Control.Monad (liftM2)
 import qualified Data.Foldable as Fold
@@ -28,7 +29,7 @@ import qualified Data.Traversable as Tv
 import qualified Language.Haskell.TH as TH
 import Network (PortID(UnixSocket, PortNumber), PortNumber)
 import System.Environment (lookupEnv)
-import System.IO.Unsafe (unsafePerformIO)
+import System.IO.Unsafe (unsafePerformIO, unsafeInterleaveIO)
 
 import Database.PostgreSQL.Typed.Types
 import Database.PostgreSQL.Typed.Protocol
@@ -65,14 +66,16 @@ data TPGState = TPGState
   , tpgTypes :: IntMap.IntMap TPGType -- keyed on fromIntegral OID
   }
 
+tpgLoadTypes :: TPGState -> IO TPGState
+tpgLoadTypes tpg = do
+  -- defer loading types until they're needed
+  tl <- unsafeInterleaveIO $ pgSimpleQuery (tpgConnection tpg) "SELECT typ.oid, format_type(CASE WHEN typtype = 'd' THEN typbasetype ELSE typ.oid END, -1) FROM pg_catalog.pg_type typ JOIN pg_catalog.pg_namespace nsp ON typnamespace = nsp.oid WHERE nspname <> 'pg_toast' AND nspname <> 'information_schema' ORDER BY typ.oid"
+  return $ tpg{ tpgTypes = IntMap.fromAscList $ map (\[PGTextValue to, PGTextValue tn] ->
+    (fromIntegral (pgDecode (PGTypeProxy :: PGTypeName "oid") to :: OID), pgDecode (PGTypeProxy :: PGTypeName "text") tn)) $ Fold.toList $ snd tl
+  }
+
 tpgInit :: PGConnection -> IO TPGState
-tpgInit c = do
-  (_, tl) <- pgSimpleQuery c "SELECT typ.oid, format_type(CASE WHEN typtype = 'd' THEN typbasetype ELSE typ.oid END, -1) FROM pg_catalog.pg_type typ JOIN pg_catalog.pg_namespace nsp ON typnamespace = nsp.oid WHERE nspname <> 'pg_toast' AND nspname <> 'information_schema' ORDER BY typ.oid"
-  return $ TPGState
-    { tpgConnection = c
-    , tpgTypes = IntMap.fromAscList $ map (\[PGTextValue to, PGTextValue tn] ->
-        (fromIntegral (pgDecode (PGTypeProxy :: PGTypeName "oid") to :: OID), pgDecode (PGTypeProxy :: PGTypeName "text") tn)) $ Fold.toList tl
-    }
+tpgInit c = tpgLoadTypes TPGState{ tpgConnection = c, tpgTypes = undefined }
 
 -- |Run an action using the Template Haskell state.
 withTPGState :: (TPGState -> IO a) -> IO a
@@ -101,6 +104,11 @@ useTPGDatabase db = TH.runIO $ do
       else Nothing <$ Fold.mapM_ (pgDisconnect . tpgConnection) tpg')
     `onException` putMVar tpgState (db, Nothing)
   return []
+
+-- |Force reloading of all types from the database.
+-- This may be needed if you make structural changes to the database during compile-time.
+reloadTPGTypes :: TH.DecsQ
+reloadTPGTypes = TH.runIO $ [] <$ modifyMVar_ tpgState (\(d, c) -> (,) d <$> Tv.mapM tpgLoadTypes c)
 
 -- |Lookup a type name by OID.
 -- Error if not found.

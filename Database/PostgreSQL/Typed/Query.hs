@@ -16,6 +16,7 @@ module Database.PostgreSQL.Typed.Query
 
 import Control.Applicative ((<$>))
 import Control.Arrow ((***), first, second)
+import Control.Exception (try)
 import Control.Monad (when, mapAndUnzipM)
 import Data.Array (listArray, (!), inRange)
 import Data.Char (isDigit, isSpace)
@@ -188,12 +189,13 @@ qqQuery f@QueryFlags{ flagPrepare = Just [] } ('(':s) = qqQuery f{ flagPrepare =
   sql _ = fail "pgSQL: unterminated argument list" 
 qqQuery f q = makePGQuery f q
 
-{-
-qqTop :: String -> TH.DecsQ
-qqTop sql =
-  TH.runIO $ withTPGConnection $ \c ->
-    _ <- pgSimpleQuery c sql
--}
+qqTop :: Bool -> String -> TH.DecsQ
+qqTop True ('!':sql) = qqTop False sql
+qqTop err sql = do
+  r <- TH.runIO $ try $ withTPGConnection $ \c ->
+    pgSimpleQuery c sql
+  either ((if err then TH.reportError else TH.reportWarning) . (show :: PGError -> String)) (const $ return ()) r
+  return []
 
 -- |A quasi-quoter for PGSQL queries.
 --
@@ -209,10 +211,13 @@ qqTop sql =
 -- [@?@] To disable nullability inference, treating all result values as nullable, thus returning 'Maybe' values regardless of inferred nullability.
 -- [@$@] To create a 'PGPreparedQuery' rather than a 'PGSimpleQuery', by default inferring parameter types.
 -- [@$(type,...)@] To specify specific types to a prepared query (see <http://www.postgresql.org/docs/current/static/sql-prepare.html> for details).
+-- 
+-- This can also be used at the top-level to execute SQL statements at compile-time (without any parameters and ignoring results).
+-- Here the query can only be prefixed with @!@ to make errors non-fatal.
 pgSQL :: QuasiQuoter
 pgSQL = QuasiQuoter
   { quoteExp = qqQuery simpleFlags
   , quoteType = const $ fail "pgSQL not supported in types"
   , quotePat = const $ fail "pgSQL not supported in patterns"
-  , quoteDec = const $ fail "pgSQL not supported at top level"
+  , quoteDec = qqTop True
   }

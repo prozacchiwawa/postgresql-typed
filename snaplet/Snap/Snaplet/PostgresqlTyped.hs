@@ -118,7 +118,7 @@ getPGConfig config = do
   return $ PGConfig db stripes idle resources
 
 pgMake :: Initializer b PG PGConfig -> SnapletInit b PG
-pgMake config = makeSnaplet "templatepg" "TemplatePG interface" (Just getDataDir) $ do
+pgMake config = makeSnaplet "postgresql-typed" "PostgreSQL-Typed interface" (Just getDataDir) $ do
   c <- config
   liftIO $ PGPool <$> createPool (PG.pgConnect (pgConfigDatabase c)) PG.pgDisconnect
     (pgConfigNumStripes c) (realToFrac $ pgConfigIdleTime c) (pgConfigResources c)

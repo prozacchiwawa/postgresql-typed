@@ -1,9 +1,9 @@
 name:           snaplet-postgresql-typed
 version:        0
-synopsis:       postgresql-types snaplet for the Snap Framework
+synopsis:       postgresql-typed snaplet for the Snap Framework
 description:    This snaplet contains support for using the Postgresql
                 database with a Snap Framework application via the
-                templatepg package.  Based on snaplet-postgresql-simple.
+                postgresql-typed package.  Based on snaplet-postgresql-simple.
 license:        BSD3
 license-file:   LICENSE
 author:         Dylan simon

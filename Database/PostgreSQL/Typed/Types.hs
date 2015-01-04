@@ -31,9 +31,6 @@ module Database.PostgreSQL.Typed.Types
   , pgDecodeBinaryColumnNotNull
 
   -- * Specific type support
-  , pgBoolType
-  , pgOIDType
-  , pgNameType
   , PGArrayType
   , PGRangeType
   ) where
@@ -228,34 +225,29 @@ instance PGLiteralType t a => PGParameter t a where
 instance PGLiteralType t a => PGColumn t a where
   pgDecode _ = read . BSC.unpack
 
-instance PGParameter "bool" Bool where
+instance PGParameter "boolean" Bool where
   pgEncode _ False = BSC.singleton 'f'
   pgEncode _ True = BSC.singleton 't'
   pgLiteral _ False = "false"
   pgLiteral _ True = "true"
-instance PGColumn "bool" Bool where
+instance PGColumn "boolean" Bool where
   pgDecode _ s = case BSC.head s of
     'f' -> False
     't' -> True
-    c -> error $ "pgDecode bool: " ++ [c]
-pgBoolType :: PGTypeName "bool"
-pgBoolType = PGTypeProxy
+    c -> error $ "pgDecode boolean: " ++ [c]
 
 type OID = Word32
 instance PGLiteralType "oid" OID
-pgOIDType :: PGTypeName "oid"
-pgOIDType = PGTypeProxy
-
-instance PGLiteralType "int2" Int16
-instance PGLiteralType "int4" Int32
-instance PGLiteralType "int8" Int64
-instance PGLiteralType "float4" Float
-instance PGLiteralType "float8" Double
+instance PGLiteralType "smallint" Int16
+instance PGLiteralType "integer" Int32
+instance PGLiteralType "bigint" Int64
+instance PGLiteralType "real" Float
+instance PGLiteralType "double precision" Double
 
 
-instance PGParameter "char" Char where
+instance PGParameter "\"char\"" Char where
   pgEncode _ = BSC.singleton
-instance PGColumn "char" Char where
+instance PGColumn "\"char\"" Char where
   pgDecode _ = BSC.head
 
 
@@ -289,10 +281,8 @@ instance PGStringType t => PGColumn t TL.Text where
 #endif
 
 instance PGStringType "text"
-instance PGStringType "varchar"
+instance PGStringType "character varying"
 instance PGStringType "name" -- limit 63 characters
-pgNameType :: PGTypeName "name"
-pgNameType = PGTypeProxy
 instance PGStringType "bpchar" -- blank padded
 
 
@@ -327,16 +317,16 @@ instance PGParameter "date" Time.Day where
 instance PGColumn "date" Time.Day where
   pgDecode _ = Time.readTime defaultTimeLocale "%F" . BSC.unpack
 
-instance PGParameter "time" Time.TimeOfDay where
+instance PGParameter "time without time zone" Time.TimeOfDay where
   pgEncode _ = BSC.pack . Time.formatTime defaultTimeLocale "%T%Q"
   pgLiteral _ = pgQuoteUnsafe . Time.formatTime defaultTimeLocale "%T%Q"
-instance PGColumn "time" Time.TimeOfDay where
+instance PGColumn "time without time zone" Time.TimeOfDay where
   pgDecode _ = Time.readTime defaultTimeLocale "%T%Q" . BSC.unpack
 
-instance PGParameter "timestamp" Time.LocalTime where
+instance PGParameter "timestamp without time zone" Time.LocalTime where
   pgEncode _ = BSC.pack . Time.formatTime defaultTimeLocale "%F %T%Q"
   pgLiteral _ = pgQuoteUnsafe . Time.formatTime defaultTimeLocale "%F %T%Q"
-instance PGColumn "timestamp" Time.LocalTime where
+instance PGColumn "timestamp without time zone" Time.LocalTime where
   pgDecode _ = Time.readTime defaultTimeLocale "%F %T%Q" . BSC.unpack
 
 -- PostgreSQL uses "[+-]HH[:MM]" timezone offsets, while "%z" uses "+HHMM" by default.
@@ -349,10 +339,10 @@ fixTZ ['+',h1,h2,m1,m2] | isDigit h1 && isDigit h2 && isDigit m1 && isDigit m2 =
 fixTZ ['-',h1,h2,m1,m2] | isDigit h1 && isDigit h2 && isDigit m1 && isDigit m2 = ['-',h1,h2,':',m1,m2]
 fixTZ (c:s) = c:fixTZ s
 
-instance PGParameter "timestamptz" Time.UTCTime where
+instance PGParameter "timestamp with time zone" Time.UTCTime where
   pgEncode _ = BSC.pack . fixTZ . Time.formatTime defaultTimeLocale "%F %T%Q%z"
   pgLiteral _ = pgQuote{-Unsafe-} . fixTZ . Time.formatTime defaultTimeLocale "%F %T%Q%z"
-instance PGColumn "timestamptz" Time.UTCTime where
+instance PGColumn "timestamp with time zone" Time.UTCTime where
   pgDecode _ = Time.readTime defaultTimeLocale "%F %T%Q%z" . fixTZ . BSC.unpack
 
 instance PGParameter "interval" Time.DiffTime where
@@ -453,73 +443,73 @@ instance (PGArrayType ta t, PGColumn t a) => PGColumn ta (PGArray a) where
     el = pgDecode (pgArrayElementType ta) . BSC.pack <$> parseDQuote (pgArrayDelim ta : "{}")
 
 -- Just a dump of pg_type:
-instance PGArrayType "_bool"          "bool"
-instance PGArrayType "_bytea"         "bytea"
-instance PGArrayType "_char"          "char"
-instance PGArrayType "_name"          "name"
-instance PGArrayType "_int8"          "int8"
-instance PGArrayType "_int2"          "int2"
-instance PGArrayType "_int2vector"    "int2vector"
-instance PGArrayType "_int4"          "int4"
-instance PGArrayType "_regproc"       "regproc"
-instance PGArrayType "_text"          "text"
-instance PGArrayType "_oid"           "oid"
-instance PGArrayType "_tid"           "tid"
-instance PGArrayType "_xid"           "xid"
-instance PGArrayType "_cid"           "cid"
-instance PGArrayType "_oidvector"     "oidvector"
-instance PGArrayType "_json"          "json"
-instance PGArrayType "_xml"           "xml"
-instance PGArrayType "_point"         "point"
-instance PGArrayType "_lseg"          "lseg"
-instance PGArrayType "_path"          "path"
-instance PGArrayType "_box"           "box" where
+instance PGArrayType "boolean[]"       "boolean"
+instance PGArrayType "bytea[]"         "bytea"
+instance PGArrayType "\"char\"[]"      "\"char\""
+instance PGArrayType "name[]"          "name"
+instance PGArrayType "bigint[]"        "bigint"
+instance PGArrayType "smallint[]"      "smallint"
+instance PGArrayType "int2vector[]"    "int2vector"
+instance PGArrayType "integer[]"       "integer"
+instance PGArrayType "regproc[]"       "regproc"
+instance PGArrayType "text[]"          "text"
+instance PGArrayType "oid[]"           "oid"
+instance PGArrayType "tid[]"           "tid"
+instance PGArrayType "xid[]"           "xid"
+instance PGArrayType "cid[]"           "cid"
+instance PGArrayType "oidvector[]"     "oidvector"
+instance PGArrayType "json[]"          "json"
+instance PGArrayType "xml[]"           "xml"
+instance PGArrayType "point[]"         "point"
+instance PGArrayType "lseg[]"          "lseg"
+instance PGArrayType "path[]"          "path"
+instance PGArrayType "box[]"           "box" where
   pgArrayDelim _ = ';'
-instance PGArrayType "_polygon"       "polygon"
-instance PGArrayType "_line"          "line"
-instance PGArrayType "_cidr"          "cidr"
-instance PGArrayType "_float4"        "float4"
-instance PGArrayType "_float8"        "float8"
-instance PGArrayType "_abstime"       "abstime"
-instance PGArrayType "_reltime"       "reltime"
-instance PGArrayType "_tinterval"     "tinterval"
-instance PGArrayType "_circle"        "circle"
-instance PGArrayType "_money"         "money"
-instance PGArrayType "_macaddr"       "macaddr"
-instance PGArrayType "_inet"          "inet"
-instance PGArrayType "_aclitem"       "aclitem"
-instance PGArrayType "_bpchar"        "bpchar"
-instance PGArrayType "_varchar"       "varchar"
-instance PGArrayType "_date"          "date"
-instance PGArrayType "_time"          "time"
-instance PGArrayType "_timestamp"     "timestamp"
-instance PGArrayType "_timestamptz"   "timestamptz"
-instance PGArrayType "_interval"      "interval"
-instance PGArrayType "_timetz"        "timetz"
-instance PGArrayType "_bit"           "bit"
-instance PGArrayType "_varbit"        "varbit"
-instance PGArrayType "_numeric"       "numeric"
-instance PGArrayType "_refcursor"     "refcursor"
-instance PGArrayType "_regprocedure"  "regprocedure"
-instance PGArrayType "_regoper"       "regoper"
-instance PGArrayType "_regoperator"   "regoperator"
-instance PGArrayType "_regclass"      "regclass"
-instance PGArrayType "_regtype"       "regtype"
-instance PGArrayType "_record"        "record"
-instance PGArrayType "_cstring"       "cstring"
-instance PGArrayType "_uuid"          "uuid"
-instance PGArrayType "_txid_snapshot" "txid_snapshot"
-instance PGArrayType "_tsvector"      "tsvector"
-instance PGArrayType "_tsquery"       "tsquery"
-instance PGArrayType "_gtsvector"     "gtsvector"
-instance PGArrayType "_regconfig"     "regconfig"
-instance PGArrayType "_regdictionary" "regdictionary"
-instance PGArrayType "_int4range"     "int4range"
-instance PGArrayType "_numrange"      "numrange"
-instance PGArrayType "_tsrange"       "tsrange"
-instance PGArrayType "_tstzrange"     "tstzrange"
-instance PGArrayType "_daterange"     "daterange"
-instance PGArrayType "_int8range"     "int8range"
+instance PGArrayType "polygon[]"       "polygon"
+instance PGArrayType "line[]"          "line"
+instance PGArrayType "cidr[]"          "cidr"
+instance PGArrayType "real[]"          "real"
+instance PGArrayType "double precision[]" "double precision"
+instance PGArrayType "abstime[]"       "abstime"
+instance PGArrayType "reltime[]"       "reltime"
+instance PGArrayType "tinterval[]"     "tinterval"
+instance PGArrayType "circle[]"        "circle"
+instance PGArrayType "money[]"         "money"
+instance PGArrayType "macaddr[]"       "macaddr"
+instance PGArrayType "inet[]"          "inet"
+instance PGArrayType "aclitem[]"       "aclitem"
+instance PGArrayType "bpchar[]"        "bpchar"
+instance PGArrayType "character varying[]" "character varying"
+instance PGArrayType "date[]"          "date"
+instance PGArrayType "time without time zone[]"          "time without time zone"
+instance PGArrayType "timestamp without time zone[]"     "timestamp without time zone"
+instance PGArrayType "timestamp with time zone[]"   "timestamp with time zone"
+instance PGArrayType "interval[]"      "interval"
+instance PGArrayType "time with time zone[]"        "time with time zone"
+instance PGArrayType "bit[]"           "bit"
+instance PGArrayType "varbit[]"        "varbit"
+instance PGArrayType "numeric[]"       "numeric"
+instance PGArrayType "refcursor[]"     "refcursor"
+instance PGArrayType "regprocedure[]"  "regprocedure"
+instance PGArrayType "regoper[]"       "regoper"
+instance PGArrayType "regoperator[]"   "regoperator"
+instance PGArrayType "regclass[]"      "regclass"
+instance PGArrayType "regtype[]"       "regtype"
+instance PGArrayType "record[]"        "record"
+instance PGArrayType "cstring[]"       "cstring"
+instance PGArrayType "uuid[]"          "uuid"
+instance PGArrayType "txid_snapshot[]" "txid_snapshot"
+instance PGArrayType "tsvector[]"      "tsvector"
+instance PGArrayType "tsquery[]"       "tsquery"
+instance PGArrayType "gtsvector[]"     "gtsvector"
+instance PGArrayType "regconfig[]"     "regconfig"
+instance PGArrayType "regdictionary[]" "regdictionary"
+instance PGArrayType "int4range[]"     "int4range"
+instance PGArrayType "numrange[]"      "numrange"
+instance PGArrayType "tsrange[]"       "tsrange"
+instance PGArrayType "tstzrange[]"     "tstzrange"
+instance PGArrayType "daterange[]"     "daterange"
+instance PGArrayType "int8range[]"     "int8range"
 
 
 -- |Class indicating that the first PostgreSQL type is a range of the second.
@@ -556,12 +546,12 @@ instance (PGRangeType tr t, PGColumn t a) => PGColumn tr (Range.Range a) where
       uc <- pc ']' ')'
       return $ Range.Range (Range.Lower (mb lc lb)) (Range.Upper (mb uc ub))
 
-instance PGRangeType "int4range" "int4"
+instance PGRangeType "int4range" "integer"
 instance PGRangeType "numrange" "numeric"
-instance PGRangeType "tsrange" "timestamp"
-instance PGRangeType "tstzrange" "timestamptz"
+instance PGRangeType "tsrange" "timestamp without time zone"
+instance PGRangeType "tstzrange" "timestamp with time zone"
 instance PGRangeType "daterange" "date"
-instance PGRangeType "int8range" "int8"
+instance PGRangeType "int8range" "bigint"
 
 #ifdef USE_UUID
 instance PGParameter "uuid" UUID.UUID where
@@ -581,34 +571,34 @@ instance PGBinaryParameter "oid" OID where
 instance PGBinaryColumn "oid" OID where
   pgDecodeBinary _ = binDec BinD.int
 
-instance PGBinaryType "int2"
-instance PGBinaryParameter "int2" Int16 where
+instance PGBinaryType "smallint"
+instance PGBinaryParameter "smallint" Int16 where
   pgEncodeBinary _ _ = BinE.int2 . Left
-instance PGBinaryColumn "int2" Int16 where
+instance PGBinaryColumn "smallint" Int16 where
   pgDecodeBinary _ = binDec BinD.int
 
-instance PGBinaryType "int4"
-instance PGBinaryParameter "int4" Int32 where
+instance PGBinaryType "integer"
+instance PGBinaryParameter "integer" Int32 where
   pgEncodeBinary _ _ = BinE.int4 . Left
-instance PGBinaryColumn "int4" Int32 where
+instance PGBinaryColumn "integer" Int32 where
   pgDecodeBinary _ = binDec BinD.int
 
-instance PGBinaryType "int8"
-instance PGBinaryParameter "int8" Int64 where
+instance PGBinaryType "bigint"
+instance PGBinaryParameter "bigint" Int64 where
   pgEncodeBinary _ _ = BinE.int8 . Left
-instance PGBinaryColumn "int8" Int64 where
+instance PGBinaryColumn "bigint" Int64 where
   pgDecodeBinary _ = binDec BinD.int
 
-instance PGBinaryType "float4"
-instance PGBinaryParameter "float4" Float where
+instance PGBinaryType "real"
+instance PGBinaryParameter "real" Float where
   pgEncodeBinary _ _ = BinE.float4
-instance PGBinaryColumn "float4" Float where
+instance PGBinaryColumn "real" Float where
   pgDecodeBinary _ = binDec BinD.float4
 
-instance PGBinaryType "float8"
-instance PGBinaryParameter "float8" Double where
+instance PGBinaryType "double precision"
+instance PGBinaryParameter "double precision" Double where
   pgEncodeBinary _ _ = BinE.float8
-instance PGBinaryColumn "float8" Double where
+instance PGBinaryColumn "double precision" Double where
   pgDecodeBinary _ = binDec BinD.float8
 
 instance PGBinaryType "numeric"
@@ -621,14 +611,14 @@ instance PGBinaryParameter "numeric" Rational where
 instance PGBinaryColumn "numeric" Rational where
   pgDecodeBinary _ t = realToFrac . binDec BinD.numeric t
 
-instance PGBinaryType "char"
-instance PGBinaryParameter "char" Char where
+instance PGBinaryType "\"char\""
+instance PGBinaryParameter "\"char\"" Char where
   pgEncodeBinary _ _ = BinE.char
-instance PGBinaryColumn "char" Char where
+instance PGBinaryColumn "\"char\"" Char where
   pgDecodeBinary _ = binDec BinD.char
 
 instance PGBinaryType "text"
-instance PGBinaryType "varchar"
+instance PGBinaryType "character varying"
 instance PGBinaryType "bpchar"
 instance PGBinaryType "name" -- not strictly textsend, but essentially the same
 instance (PGStringType t, PGBinaryType t) => PGBinaryParameter t T.Text where
@@ -667,20 +657,20 @@ instance PGBinaryParameter "date" Time.Day where
   pgEncodeBinary _ _ = BinE.date
 instance PGBinaryColumn "date" Time.Day where
   pgDecodeBinary _ = binDec BinD.date
-instance PGBinaryType "time"
-instance PGBinaryParameter "time" Time.TimeOfDay where
+instance PGBinaryType "time without time zone"
+instance PGBinaryParameter "time without time zone" Time.TimeOfDay where
   pgEncodeBinary e _ = BinE.time (pgIntegerDatetimes e)
-instance PGBinaryColumn "time" Time.TimeOfDay where
+instance PGBinaryColumn "time without time zone" Time.TimeOfDay where
   pgDecodeBinary e = binDec $ BinD.time (pgIntegerDatetimes e)
-instance PGBinaryType "timestamp"
-instance PGBinaryParameter "timestamp" Time.LocalTime where
+instance PGBinaryType "timestamp without time zone"
+instance PGBinaryParameter "timestamp without time zone" Time.LocalTime where
   pgEncodeBinary e _ = BinE.timestamp (pgIntegerDatetimes e)
-instance PGBinaryColumn "timestamp" Time.LocalTime where
+instance PGBinaryColumn "timestamp without time zone" Time.LocalTime where
   pgDecodeBinary e = binDec $ BinD.timestamp (pgIntegerDatetimes e)
-instance PGBinaryType "timestamptz"
-instance PGBinaryParameter "timestamptz" Time.UTCTime where
+instance PGBinaryType "timestamp with time zone"
+instance PGBinaryParameter "timestamp with time zone" Time.UTCTime where
   pgEncodeBinary e _ = BinE.timestamptz (pgIntegerDatetimes e)
-instance PGBinaryColumn "timestamptz" Time.UTCTime where
+instance PGBinaryColumn "timestamp with time zone" Time.UTCTime where
   pgDecodeBinary e = binDec $ BinD.timestamptz (pgIntegerDatetimes e)
 instance PGBinaryType "interval"
 instance PGBinaryParameter "interval" Time.DiffTime where
@@ -688,10 +678,10 @@ instance PGBinaryParameter "interval" Time.DiffTime where
 instance PGBinaryColumn "interval" Time.DiffTime where
   pgDecodeBinary e = binDec $ BinD.interval (pgIntegerDatetimes e)
 
-instance PGBinaryType "bool"
-instance PGBinaryParameter "bool" Bool where
+instance PGBinaryType "boolean"
+instance PGBinaryParameter "boolean" Bool where
   pgEncodeBinary _ _ = BinE.bool
-instance PGBinaryColumn "bool" Bool where
+instance PGBinaryColumn "boolean" Bool where
   pgDecodeBinary _ = binDec BinD.bool
 
 instance PGBinaryType "uuid"

@@ -1,28 +1,30 @@
-{-# LANGUAGE PatternGuards, ScopedTypeVariables, FlexibleContexts, TemplateHaskell #-}
+{-# LANGUAGE CPP, PatternGuards, ScopedTypeVariables, FlexibleContexts, TemplateHaskell, DataKinds #-}
 -- |
 -- Module: Database.PostgreSQL.Typed.TH
 -- Copyright: 2015 Dylan Simon
 -- 
 -- Support functions for compile-time PostgreSQL connection and state management.
--- Although this is meant to be used from other TH code, it will work during normal runtime if just want simple PGConnection management.
+-- You can use these to build your own Template Haskell functions using the PostgreSQL connection.
 
 module Database.PostgreSQL.Typed.TH
   ( getTPGDatabase
   , withTPGConnection
   , useTPGDatabase
-  , PGTypeInfo(..)
-  , getPGTypeInfo
+  , TPGValueInfo(..)
   , tpgDescribe
-  , pgTypeIsBinary
-  , pgTypeEncoder
-  , pgTypeDecoder
+  , tpgTypeEncoder
+  , tpgTypeDecoder
   ) where
 
-import Control.Applicative ((<$>), (<|>))
-import Control.Concurrent.MVar (MVar, newMVar, modifyMVar, modifyMVar_)
-import Control.Monad ((>=>), liftM2)
-import Data.Foldable (toList)
+import Control.Applicative ((<$>), (<$), (<|>))
+import Control.Concurrent.MVar (MVar, newMVar, takeMVar, putMVar)
+import Control.Exception (onException, finally)
+import Control.Monad (liftM2)
+import qualified Data.Foldable as Fold
+import qualified Data.IntMap.Lazy as IntMap
+import Data.List (find)
 import Data.Maybe (isJust, fromMaybe)
+import qualified Data.Traversable as Tv
 import qualified Language.Haskell.TH as TH
 import Network (PortID(UnixSocket, PortNumber), PortNumber)
 import System.Environment (lookupEnv)
@@ -30,6 +32,9 @@ import System.IO.Unsafe (unsafePerformIO)
 
 import Database.PostgreSQL.Typed.Types
 import Database.PostgreSQL.Typed.Protocol
+
+-- |A particular PostgreSQL type, identified by full formatted name (from @format_type@ or @\\dT@).
+type TPGType = String
 
 -- |Generate a 'PGDatabase' based on the environment variables:
 -- @TPG_HOST@ (localhost); @TPG_SOCK@ or @TPG_PORT@ (5432); @TPG_DB@ or user; @TPG_USER@ or @USER@ (postgres); @TPG_PASS@ ()
@@ -51,74 +56,129 @@ getTPGDatabase = do
     , pgDBDebug = debug
     }
 
-tpgConnection :: MVar (Either (IO PGConnection) PGConnection)
-tpgConnection = unsafePerformIO $ newMVar $ Left $ pgConnect =<< getTPGDatabase
+tpgState :: MVar (PGDatabase, Maybe TPGState)
+tpgState = unsafePerformIO $
+  newMVar (unsafePerformIO getTPGDatabase, Nothing)
+
+data TPGState = TPGState
+  { tpgConnection :: PGConnection
+  , tpgTypes :: IntMap.IntMap TPGType -- keyed on fromIntegral OID
+  }
+
+tpgInit :: PGConnection -> IO TPGState
+tpgInit c = do
+  (_, tl) <- pgSimpleQuery c "SELECT typ.oid, format_type(CASE WHEN typtype = 'd' THEN typbasetype ELSE typ.oid END, -1) FROM pg_catalog.pg_type typ JOIN pg_catalog.pg_namespace nsp ON typnamespace = nsp.oid WHERE nspname <> 'pg_toast' AND nspname <> 'information_schema' ORDER BY typ.oid"
+  return $ TPGState
+    { tpgConnection = c
+    , tpgTypes = IntMap.fromAscList $ map (\[PGTextValue to, PGTextValue tn] ->
+        (fromIntegral (pgDecode (PGTypeProxy :: PGTypeName "oid") to :: OID), pgDecode (PGTypeProxy :: PGTypeName "text") tn)) $ Fold.toList tl
+    }
+
+-- |Run an action using the Template Haskell state.
+withTPGState :: (TPGState -> IO a) -> IO a
+withTPGState f = do
+  (db, tpg') <- takeMVar tpgState
+  tpg <- maybe (tpgInit =<< pgConnect db) return tpg'
+    `onException` putMVar tpgState (db, Nothing) -- might leave connection open
+  f tpg `finally` putMVar tpgState (db, Just tpg)
 
 -- |Run an action using the Template Haskell PostgreSQL connection.
 withTPGConnection :: (PGConnection -> IO a) -> IO a
-withTPGConnection f = modifyMVar tpgConnection $ either id return >=> (\c -> (,) (Right c) <$> f c)
+withTPGConnection f = withTPGState (f . tpgConnection)
 
 -- |Specify an alternative database to use during compilation.
 -- This lets you override the default connection parameters that are based on TPG environment variables.
 -- This should be called as a top-level declaration and produces no code.
--- It uses 'pgReconnect' so is a no-op to call multiple times with the same database.
+-- It uses 'pgReconnect' so is safe to call multiple times with the same database.
 useTPGDatabase :: PGDatabase -> TH.DecsQ
-useTPGDatabase db = do
-  TH.runIO $ modifyMVar_ tpgConnection $ either
-    (const $ return $ Left $ pgConnect db)
-    (\c -> Right <$> pgReconnect c db)
+useTPGDatabase db = TH.runIO $ do
+  (db', tpg') <- takeMVar tpgState
+  putMVar tpgState . (,) db =<<
+    (if db == db'
+      then Tv.mapM (\t -> do
+        c <- pgReconnect (tpgConnection t) db
+        return t{ tpgConnection = c }) tpg'
+      else Nothing <$ Fold.mapM_ (pgDisconnect . tpgConnection) tpg')
+    `onException` putMVar tpgState (db, Nothing)
   return []
 
-data PGTypeInfo = PGTypeInfo
-  { pgTypeOID :: OID
-  , pgTypeName :: String
-  }
+-- |Lookup a type name by OID.
+-- Error if not found.
+tpgType :: TPGState -> OID -> TPGType
+tpgType TPGState{ tpgTypes = types } t =
+  IntMap.findWithDefault (error $ "Unknown PostgreSQL type: " ++ show t) (fromIntegral t) types
 
--- |Lookup a type by OID, internal or formatted name (case sensitive).
+-- |Lookup a type OID by type name.
+-- This is less common and thus less efficient than going the other way.
 -- Fail if not found.
-getPGTypeInfo :: PGConnection -> Either OID String -> IO PGTypeInfo
-getPGTypeInfo c t = do
-  (_, r) <- pgSimpleQuery c $ "SELECT oid, typname FROM pg_catalog.pg_type WHERE " ++ either
-    (\o -> "oid = " ++ pgLiteral pgOIDType o)
-    (\n -> "typname = " ++ pgQuote n ++ " OR format_type(oid, -1) = " ++ pgQuote n)
-    t
-  case toList r of
-    [[PGTextValue o, PGTextValue n]] -> return $ PGTypeInfo (pgDecode pgOIDType o) (pgDecode pgNameType n)
-    _ -> fail $ "Unknown PostgreSQL type: " ++ either show id t
+getTPGTypeOID :: Monad m => TPGState -> String -> m OID
+getTPGTypeOID TPGState{ tpgTypes = types } t =
+  maybe (fail $ "Unknown PostgreSQL type: " ++ t ++ "; be sure to use the exact type name from \\dTS") (return . fromIntegral . fst)
+    $ find ((==) t . snd) $ IntMap.toList types
 
-
--- |A type-aware wrapper to 'pgDescribe'
-tpgDescribe :: PGConnection -> String -> [String] -> Bool -> IO ([PGTypeInfo], [(String, PGTypeInfo, Bool)])
-tpgDescribe conn sql types nulls = do
-  at <- mapM (fmap pgTypeOID . getPGTypeInfo conn . Right) types
-  (pt, rt) <- pgDescribe conn sql at nulls
-  pth <- mapM (getPGTypeInfo conn . Left) pt
-  rth <- mapM (\(c, t, n) -> do
-    th <- getPGTypeInfo conn (Left t)
-    return (c, th, n)) rt
-  return (pth, rth)
-
-pgTypeIsBinary :: PGTypeInfo -> TH.Q Bool
-pgTypeIsBinary PGTypeInfo{ pgTypeName = t } =
+-- |Determine if a type supports binary format marshalling.
+-- Checks for a 'PGBinaryType' instance.  Should be efficient.
+tpgTypeIsBinary :: TPGType -> TH.Q Bool
+tpgTypeIsBinary t =
   TH.isInstance ''PGBinaryType [TH.LitT (TH.StrTyLit t)]
 
+data TPGValueInfo = TPGValueInfo
+  { tpgValueName :: String
+  , tpgValueTypeOID :: !OID
+  , tpgValueType :: TPGType
+  , tpgValueBinary :: Bool
+  , tpgValueNullable :: Bool
+  }
 
-typeApply :: TH.Name -> TH.Name -> PGTypeInfo -> TH.Name -> TH.Exp
-typeApply f e PGTypeInfo{ pgTypeName = n } v =
+-- |A type-aware wrapper to 'pgDescribe'
+tpgDescribe :: String -> [String] -> Bool -> TH.Q ([TPGValueInfo], [TPGValueInfo])
+tpgDescribe sql types nulls = do
+  (pv, rv) <- TH.runIO $ withTPGState $ \tpg -> do
+    at <- mapM (getTPGTypeOID tpg) types
+    (pt, rt) <- pgDescribe (tpgConnection tpg) sql at nulls
+    return
+      ( map (\o -> TPGValueInfo
+        { tpgValueName = ""
+        , tpgValueTypeOID = o
+        , tpgValueType = tpgType tpg o
+        , tpgValueBinary = False
+        , tpgValueNullable = True
+        }) pt
+      , map (\(c, o, n) -> TPGValueInfo
+        { tpgValueName = c
+        , tpgValueTypeOID = o
+        , tpgValueType = tpgType tpg o
+        , tpgValueBinary = False
+        , tpgValueNullable = n
+        }) rt
+      )
+#ifdef USE_BINARY
+  -- now that we're back in Q (and have given up the TPGState) we go back to fill in binary:
+  liftM2 (,) (fillBin pv) (fillBin rv)
+  where
+  fillBin = mapM (\i -> do
+    b <- tpgTypeIsBinary (tpgValueType i)
+    return i{ tpgValueBinary = b })
+#else
+  return (pv, rv)
+#endif
+
+
+typeApply :: TPGType -> TH.Name -> TH.Name -> TH.Name -> TH.Exp
+typeApply t f e v =
   TH.VarE f `TH.AppE` TH.VarE e
-    `TH.AppE` (TH.ConE 'PGTypeProxy `TH.SigE` (TH.ConT ''PGTypeName `TH.AppT` TH.LitT (TH.StrTyLit n)))
+    `TH.AppE` (TH.ConE 'PGTypeProxy `TH.SigE` (TH.ConT ''PGTypeName `TH.AppT` TH.LitT (TH.StrTyLit t)))
     `TH.AppE` TH.VarE v
 
 
 -- |TH expression to encode a 'PGParameter' value to a 'Maybe' 'L.ByteString'.
-pgTypeEncoder :: Bool -> Bool -> TH.Name -> PGTypeInfo -> TH.Name -> TH.Exp
-pgTypeEncoder False False = typeApply 'pgEncodeParameter
-pgTypeEncoder False True = typeApply 'pgEncodeBinaryParameter
-pgTypeEncoder True _ = typeApply 'pgEscapeParameter
+tpgTypeEncoder :: Bool -> TPGValueInfo -> TH.Name -> TH.Name -> TH.Exp
+tpgTypeEncoder lit v = typeApply (tpgValueType v) $ if lit
+  then 'pgEscapeParameter
+  else if tpgValueBinary v then 'pgEncodeBinaryParameter else 'pgEncodeParameter
 
 -- |TH expression to decode a 'Maybe' 'L.ByteString' to a ('Maybe') 'PGColumn' value.
-pgTypeDecoder :: Bool -> Bool -> TH.Name -> PGTypeInfo -> TH.Name -> TH.Exp
-pgTypeDecoder True False = typeApply 'pgDecodeColumn
-pgTypeDecoder True True = typeApply 'pgDecodeBinaryColumn
-pgTypeDecoder False False = typeApply 'pgDecodeColumnNotNull
-pgTypeDecoder False True = typeApply 'pgDecodeBinaryColumnNotNull
+tpgTypeDecoder :: TPGValueInfo -> TH.Name -> TH.Name -> TH.Exp
+tpgTypeDecoder v = typeApply (tpgValueType v) $ if tpgValueBinary v
+  then if tpgValueNullable v then 'pgDecodeBinaryColumn else 'pgDecodeBinaryColumnNotNull
+  else if tpgValueNullable v then 'pgDecodeColumn       else 'pgDecodeColumnNotNull

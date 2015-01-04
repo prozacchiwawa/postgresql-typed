@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP, DeriveDataTypeable, PatternGuards #-}
+{-# LANGUAGE CPP, DeriveDataTypeable, PatternGuards, DataKinds #-}
 -- Copyright 2010, 2011, 2012, 2013 Chris Forno
 -- Copyright 2014-2015 Dylan Simon
 
@@ -461,7 +461,7 @@ pgDescribe h sql types nulls = do
       -- table, we can check there.
       (_, r) <- pgSimpleQuery h ("SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = " ++ show oid ++ " AND attnum = " ++ show col)
       case Fold.toList r of
-        [[PGTextValue s]] -> return $ not $ pgDecode pgBoolType s
+        [[PGTextValue s]] -> return $ not $ pgDecode (PGTypeProxy :: PGTypeName "boolean") s
         [] -> return True
         _ -> fail $ "Failed to determine nullability of column #" ++ show col
     | otherwise = return True

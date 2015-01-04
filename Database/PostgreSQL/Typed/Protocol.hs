@@ -25,7 +25,7 @@ module Database.PostgreSQL.Typed.Protocol (
 
 import Control.Applicative ((<$>), (<$))
 import Control.Arrow (second)
-import Control.Exception (Exception, throwIO, catch)
+import Control.Exception (Exception, throwIO)
 import Control.Monad (liftM2, replicateM, when, unless)
 #ifdef USE_MD5
 import qualified Crypto.Hash as Hash
@@ -34,18 +34,19 @@ import qualified Data.Binary.Get as G
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Builder as B
 import qualified Data.ByteString.Char8 as BSC
-import Data.ByteString.Internal (c2w, w2c)
+import Data.ByteString.Internal (w2c)
 import qualified Data.ByteString.Lazy as BSL
+import Data.ByteString.Lazy.Internal (smallChunkSize)
 import qualified Data.ByteString.Lazy.UTF8 as BSLU
 import qualified Data.ByteString.UTF8 as BSU
 import qualified Data.Foldable as Fold
 import Data.IORef (IORef, newIORef, writeIORef, readIORef, atomicModifyIORef, atomicModifyIORef', modifyIORef)
-import qualified Data.Map as Map
+import qualified Data.Map.Lazy as Map
 import Data.Maybe (fromMaybe)
 import Data.Monoid (mempty, (<>))
 import qualified Data.Sequence as Seq
 import Data.Typeable (Typeable)
-import Data.Word (Word8, Word32)
+import Data.Word (Word32)
 import Network (HostName, PortID(..), connectTo)
 import System.IO (Handle, hFlush, hClose, stderr, hPutStrLn)
 import System.IO.Unsafe (unsafeInterleaveIO)
@@ -86,6 +87,7 @@ data PGConnection = PGConnection
   , connTypeEnv :: PGTypeEnv
   , connPreparedStatements :: IORef (Integer, Map.Map (String, [OID]) Integer)
   , connState :: IORef PGState
+  , connInput :: IORef (G.Decoder PGBackendMessage)
   }
 
 data ColDescription = ColDescription
@@ -97,7 +99,7 @@ data ColDescription = ColDescription
   , colBinary :: !Bool
   } deriving (Show)
 
-type MessageFields = Map.Map Word8 BS.ByteString
+type MessageFields = Map.Map Char String
 
 -- |PGFrontendMessage represents a PostgreSQL protocol message that we'll send.
 -- See <http://www.postgresql.org/docs/current/interactive/protocol-message-formats.html>.
@@ -175,12 +177,15 @@ instance Exception PGError
 -- |Produce a human-readable string representing the message
 displayMessage :: MessageFields -> String
 displayMessage m = "PG" ++ f 'S' ++ " [" ++ f 'C' ++ "]: " ++ f 'M' ++ '\n' : f 'D'
-  where f c = maybe "" BSU.toString $ Map.lookup (c2w c) m
+  where f c = Map.findWithDefault "" c m
+
+makeMessage :: String -> String -> MessageFields
+makeMessage m d = Map.fromAscList [('D', d), ('M', m)]
 
 -- |Message SQLState code.
 --  See <http://www.postgresql.org/docs/current/static/errcodes-appendix.html>.
 pgMessageCode :: MessageFields -> String
-pgMessageCode = maybe "" BSC.unpack . Map.lookup (c2w 'C')
+pgMessageCode = Map.findWithDefault "" 'C'
 
 defaultLogMessage :: MessageFields -> IO ()
 defaultLogMessage = hPutStrLn stderr . displayMessage
@@ -271,9 +276,9 @@ getByteStringNul :: G.Get BS.ByteString
 getByteStringNul = fmap BSL.toStrict G.getLazyByteStringNul
 
 getMessageFields :: G.Get MessageFields
-getMessageFields = g =<< G.getWord8 where
-  g 0 = return Map.empty
-  g f = liftM2 (Map.insert f) getByteStringNul getMessageFields
+getMessageFields = g . w2c =<< G.getWord8 where
+  g '\0' = return Map.empty
+  g f = liftM2 (Map.insert f . BSU.toString) getByteStringNul getMessageFields
 
 -- |Parse an incoming message.
 getMessageBody :: Char -> G.Get PGBackendMessage
@@ -328,38 +333,57 @@ getMessageBody 's' = return PortalSuspended
 getMessageBody 'N' = NoticeResponse <$> getMessageFields
 getMessageBody t = fail $ "pgGetMessage: unknown message type: " ++ show t
 
-runGet :: Monad m => G.Get a -> BSL.ByteString -> m a
-runGet g s = either (\(_, _, e) -> fail e) (\(_, _, r) -> return r) $ G.runGetOrFail g s
+getMessage :: G.Decoder PGBackendMessage
+getMessage = G.runGetIncremental $ do
+  typ <- G.getWord8
+  s <- G.bytesRead
+  len <- G.getWord32be
+  msg <- getMessageBody (w2c typ)
+  e <- G.bytesRead
+  let r = fromIntegral len - fromIntegral (e - s)
+  when (r > 0) $ G.skip r
+  when (r < 0) $ fail "pgReceive: decoder overran message"
+  return msg
+
+pgRecv :: Bool -> PGConnection -> IO (Maybe PGBackendMessage)
+pgRecv block c@PGConnection{ connHandle = h, connInput = dr } =
+  go =<< readIORef dr where
+  next = writeIORef dr
+  state s d = writeIORef (connState c) s >> next d
+  new = G.pushChunk getMessage
+  go (G.Done b _ m) = do
+    when (connDebug c) $ putStrLn $ "< " ++ show m
+    got (new b) m
+  go (G.Fail _ _ r) = next (new BS.empty) >> fail r -- not clear how can recover
+  go d@(G.Partial r) = do
+    b <- (if block then BS.hGetSome else BS.hGetNonBlocking) h smallChunkSize
+    if BS.null b
+      then Nothing <$ next d
+      else go $ r (Just b)
+  got :: G.Decoder PGBackendMessage -> PGBackendMessage -> IO (Maybe PGBackendMessage)
+  got d (NoticeResponse m) = connLogMessage c m >> go d
+  got d m@(ReadyForQuery s) = Just m <$ state s d
+  got d m@(ErrorResponse _) = Just m <$ state StateUnknown d
+  got d m                   = Just m <$ next d
 
 -- |Receive the next message from PostgreSQL (low-level). Note that this will
 -- block until it gets a message.
-pgReceive :: Bool -> PGConnection -> IO PGBackendMessage
-pgReceive raw c@PGConnection{ connHandle = h } = do
-  (typ, len) <- runGet (liftM2 (,) G.getWord8 G.getWord32be) =<< BSL.hGet h 5
-  msg <- runGet (getMessageBody $ w2c typ) =<< BSL.hGet h (fromIntegral len - 4)
-  when (connDebug c) $ putStrLn $ "< " ++ show msg
-  let rawres
-        | raw = return msg
-        | otherwise = pgReceive raw c
-  case msg of
-    ReadyForQuery s ->
-      writeIORef (connState c) s >> rawres
-    NoticeResponse{ messageFields = m } ->
-      connLogMessage c m >> pgReceive raw c
-    ErrorResponse{ messageFields = m } ->
-      writeIORef (connState c) StateUnknown >> throwIO (PGError m) 
-    EmptyQueryResponse -> -- just ignore these: usually means someone put a stray semi-colon somewhere
-      rawres
-    _ -> return msg
-
-pgHandle :: Bool -> PGConnection -> (PGBackendMessage -> IO a) -> IO a
-pgHandle raw c = (pgReceive raw c >>=)
+pgReceive :: PGConnection -> IO PGBackendMessage
+pgReceive c = do
+  r <- pgRecv True c
+  case r of
+    Nothing -> do
+      writeIORef (connState c) StateClosed
+      fail $ "pgReceive: connection closed"
+    Just ErrorResponse{ messageFields = m } -> throwIO (PGError m)
+    Just m -> return m
 
 -- |Connect to a PostgreSQL server.
 pgConnect :: PGDatabase -> IO PGConnection
 pgConnect db = do
   state <- newIORef StateUnknown
   prep <- newIORef (0, Map.empty)
+  input <- newIORef getMessage
   h <- connectTo (pgDBHost db) (pgDBPort db)
   let c = PGConnection
         { connHandle = h
@@ -370,6 +394,7 @@ pgConnect db = do
         , connPreparedStatements = prep
         , connState = state
         , connTypeEnv = undefined
+        , connInput = input
         }
   pgSend c $ StartupMessage
     [ ("user", pgDBUser db)
@@ -383,7 +408,7 @@ pgConnect db = do
   pgFlush c
   conn c
   where
-  conn c = pgHandle True c (msg c)
+  conn c = pgReceive c >>= msg c
   msg c (ReadyForQuery _) = return c
     { connTypeEnv = PGTypeEnv
       { pgIntegerDatetimes = (connParameters c Map.! "integer_datetimes") == "on"
@@ -427,11 +452,21 @@ pgSync :: PGConnection -> IO ()
 pgSync c@PGConnection{ connState = sr } = do
   s <- readIORef sr
   when (s == StateClosed) $ fail "pgSync: operation on closed connection"
-  when (s == StateUnknown) $ do
-    pgSend c Sync
-    pgFlush c
-    _ <- pgReceive True c `catch` \(PGError m) -> ErrorResponse m <$ connLogMessage c m
-    pgSync c
+  when (s == StateUnknown) $ wait False where
+  wait s = do
+    r <- pgRecv s c
+    case r of
+      Nothing -> do
+        pgSend c Sync
+        pgFlush c
+        wait True
+      (Just (ErrorResponse{ messageFields = m })) -> do
+        connLogMessage c m
+        wait s
+      (Just (ReadyForQuery _)) -> return ()
+      (Just m) -> do
+        connLogMessage c $ makeMessage ("Unexpected server message: " ++ show m) "Each statement should only contain a single query"
+        wait s
     
 -- |Describe a SQL statement/query. A statement description consists of 0 or
 -- more parameter descriptions (a PostgreSQL type) and zero or more result
@@ -445,11 +480,12 @@ pgDescribe h sql types nulls = do
   pgSync h
   pgSend h $ Parse{ queryString = sql, statementName = "", parseTypes = types }
   pgSend h $ Describe ""
-  pgSend h $ Flush
+  pgSend h Flush
+  pgSend h Sync
   pgFlush h
-  ParseComplete <- pgReceive False h
-  ParameterDescription ps <- pgReceive False h
-  m <- pgReceive False h
+  ParseComplete <- pgReceive h
+  ParameterDescription ps <- pgReceive h
+  m <- pgReceive h
   (,) ps <$> case m of
     NoData -> return []
     RowDescription r -> mapM desc r
@@ -495,9 +531,10 @@ pgSimpleQuery h sql = do
   pgSend h $ SimpleQuery sql
   pgFlush h
   go start where 
-  go = pgHandle False h
-  start (CommandComplete c) = got c Seq.empty
+  go = (pgReceive h >>=)
   start (RowDescription rd) = go $ row (map colBinary rd) Seq.empty
+  start (CommandComplete c) = got c Seq.empty
+  start EmptyQueryResponse = return (0, Seq.empty)
   start m = fail $ "pgSimpleQuery: unexpected response: " ++ show m
   row bc s (DataRow fs) = go $ row bc (s Seq.|> fixBinary bc fs)
   row _ s (CommandComplete c) = got c s
@@ -514,7 +551,7 @@ pgPreparedBind c@PGConnection{ connPreparedStatements = psr } sql types bind bc 
     pgSend c $ Parse{ queryString = sql, statementName = sn, parseTypes = types }
   pgSend c $ Bind{ statementName = sn, bindParameters = bind, binaryColumns = bc }
   let
-    go = pgHandle False c start
+    go = pgReceive c >>= start
     start ParseComplete = do
       modifyIORef psr $ \(i, m) ->
         (i, Map.insert key n m)
@@ -534,14 +571,16 @@ pgPreparedQuery :: PGConnection -> String -- ^ SQL statement with placeholders
 pgPreparedQuery c sql types bind bc = do
   start <- pgPreparedBind c sql types bind bc
   pgSend c $ Execute 0
-  pgSend c $ Flush
+  pgSend c Flush
+  pgSend c Sync
   pgFlush c
   start
   go Seq.empty
   where
-  go = pgHandle False c . row
+  go = (pgReceive c >>=) . row
   row s (DataRow fs) = go (s Seq.|> fixBinary bc fs)
   row s (CommandComplete r) = return (rowsAffected r, s)
+  row s EmptyQueryResponse = return (0, s)
   row _ m = fail $ "pgPreparedQuery: unexpected row: " ++ show m
 
 -- |Like 'pgPreparedQuery' but requests results lazily in chunks of the given size.
@@ -559,10 +598,11 @@ pgPreparedLazyQuery c sql types bind bc count = do
     pgSend c $ Execute count
     pgSend c $ Flush
     pgFlush c
-  go = pgHandle False c . row
+  go = (pgReceive c >>=) . row
   row s (DataRow fs) = go (s Seq.|> fixBinary bc fs)
   row s PortalSuspended = (Fold.toList s ++) <$> unsafeInterleaveIO (execute >> go Seq.empty)
   row s (CommandComplete _) = return $ Fold.toList s
+  row s EmptyQueryResponse = return $ Fold.toList s
   row _ m = fail $ "pgPreparedLazyQuery: unexpected row: " ++ show m
 
 -- |Close a previously prepared query (if necessary).
@@ -571,7 +611,8 @@ pgCloseStatement c@PGConnection{ connPreparedStatements = psr } sql types = do
   mn <- atomicModifyIORef psr $ \(i, m) ->
     let (n, m') = Map.updateLookupWithKey (\_ _ -> Nothing) (sql, types) m in ((i, m'), n)
   Fold.forM_ mn $ \n -> do
+    pgSync c
     pgSend c $ Close{ statementName = show n }
     pgFlush c
-    CloseComplete <- pgReceive False c
+    CloseComplete <- pgReceive c
     return ()

@@ -469,7 +469,7 @@ instance PGArrayType "polygon[]"       "polygon"
 instance PGArrayType "line[]"          "line"
 instance PGArrayType "cidr[]"          "cidr"
 instance PGArrayType "real[]"          "real"
-instance PGArrayType "double precision[]" "double precision"
+instance PGArrayType "double precision[]"            "double precision"
 instance PGArrayType "abstime[]"       "abstime"
 instance PGArrayType "reltime[]"       "reltime"
 instance PGArrayType "tinterval[]"     "tinterval"
@@ -479,13 +479,13 @@ instance PGArrayType "macaddr[]"       "macaddr"
 instance PGArrayType "inet[]"          "inet"
 instance PGArrayType "aclitem[]"       "aclitem"
 instance PGArrayType "bpchar[]"        "bpchar"
-instance PGArrayType "character varying[]" "character varying"
+instance PGArrayType "character varying[]"           "character varying"
 instance PGArrayType "date[]"          "date"
-instance PGArrayType "time without time zone[]"          "time without time zone"
-instance PGArrayType "timestamp without time zone[]"     "timestamp without time zone"
-instance PGArrayType "timestamp with time zone[]"   "timestamp with time zone"
+instance PGArrayType "time without time zone[]"      "time without time zone"
+instance PGArrayType "timestamp without time zone[]" "timestamp without time zone"
+instance PGArrayType "timestamp with time zone[]"    "timestamp with time zone"
 instance PGArrayType "interval[]"      "interval"
-instance PGArrayType "time with time zone[]"        "time with time zone"
+instance PGArrayType "time with time zone[]"         "time with time zone"
 instance PGArrayType "bit[]"           "bit"
 instance PGArrayType "varbit[]"        "varbit"
 instance PGArrayType "numeric[]"       "numeric"
@@ -690,7 +690,7 @@ instance PGBinaryParameter "uuid" UUID.UUID where
 instance PGBinaryColumn "uuid" UUID.UUID where
   pgDecodeBinary _ = binDec BinD.uuid
 
--- TODO: arrays
+-- TODO: arrays (a bit complicated, need OID?, but theoretically possible)
 #endif
 
 {-

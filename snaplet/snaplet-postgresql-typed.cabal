@@ -1,6 +1,6 @@
-name:           snaplet-templatepg
+name:           snaplet-postgresql-typed
 version:        0
-synopsis:       templatepg snaplet for the Snap Framework
+synopsis:       postgresql-types snaplet for the Snap Framework
 description:    This snaplet contains support for using the Postgresql
                 database with a Snap Framework application via the
                 templatepg package.  Based on snaplet-postgresql-simple.
@@ -10,7 +10,7 @@ author:         Dylan simon
 maintainer:     dylan@dylex.net
 build-type:     Simple
 cabal-version:  >= 1.6
-homepage:       https://github.com/dylex/snaplet-templatepg
+homepage:       https://github.com/dylex/postgresql-typed/snaplet/tree/master/snaplet
 category:       Snap
 
 data-files:
@@ -18,14 +18,14 @@ data-files:
 
 source-repository head
   type:     git
-  location: https://github.com/dylex/snaplet-templatepg.git
+  location: https://github.com/dylex/postgresql-typed.git
 
 Library
   exposed-modules:
-    Snap.Snaplet.TemplatePG
+    Snap.Snaplet.PostgresqlTyped
 
   other-modules:
-    Paths_snaplet_templatepg
+    Paths_snaplet_postgresql_typed
 
   build-depends:
     base                       >= 4       && < 4.8,
@@ -34,13 +34,12 @@ Library
     lens,
     MonadCatchIO-transformers  >= 0.3     && < 0.4,
     mtl                        >= 2       && < 2.3,
-    templatepg                 >= 0.3     && < 0.4,
     resource-pool-catchio      >= 0.2     && < 0.3,
     snap                       >= 0.10    && < 0.14,
     transformers               >= 0.2     && < 0.5,
     containers,
     time,
-    network
+    network,
+    postgresql-typed
 
-  ghc-options: -Wall -fwarn-tabs -funbox-strict-fields
-               -fno-warn-orphans -fno-warn-unused-do-bind
+  ghc-options: -Wall

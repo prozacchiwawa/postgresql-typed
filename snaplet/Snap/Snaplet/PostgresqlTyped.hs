@@ -1,5 +1,5 @@
 {-# LANGUAGE FlexibleInstances, FlexibleContexts, OverloadedStrings #-}
-module Snap.Snaplet.TemplatePG (
+module Snap.Snaplet.PostgresqlTyped (
   -- * The Snaplet
     PG(..)
   , HasPG(..)
@@ -19,7 +19,6 @@ module Snap.Snaplet.TemplatePG (
   , pgRunQuery
   , pgExecute
   , pgQuery
-  , PG.registerTPGType
   ) where
 
 import           Control.Applicative
@@ -35,9 +34,9 @@ import           Data.Sequence (Seq)
 import           Network (PortID(..))
 import           Snap
 
-import           qualified Database.TemplatePG as PG
-import           qualified Database.TemplatePG.Query as PG
-import           Paths_snaplet_templatepg
+import           qualified Database.PostgreSQL.Typed as PG
+import           qualified Database.PostgreSQL.Typed.Query as PG
+import           Paths_snaplet_postgresql_typed
 
 
 data PG

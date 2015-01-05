@@ -12,7 +12,7 @@ Homepage:      https://github.com/dylex/postgresql-typed
 Category:      Database
 Synopsis:      A PostgreSQL access library with compile-time SQL type inference
 Description:   Automatically type-check SQL statements at compile time.
-               Uses Template Haskell and the raw PostgreSQL protocol to describe SQL statement at compile time and provide appropriate type marshalling for both parameters and results.
+               Uses Template Haskell and the raw PostgreSQL protocol to describe SQL statements at compile time and provide appropriate type marshalling for both parameters and results.
                Allows not only syntax verification of your SQL but also full type safety between your SQL and Haskell.
                Supports many built-in PostgreSQL types already, including arrays and ranges, and can be easily extended in user code to support any other types.
                Originally based on Chris Forno's templatepg library.

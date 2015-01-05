@@ -44,8 +44,7 @@ querySQL "" = ""
 -- 
 -- Example (where @h@ is a handle from 'pgConnect'):
 -- 
--- @$(queryTuples \"SELECT usesysid, usename FROM pg_user\") h :: IO [(Maybe String, Maybe Integer)]
--- @
+-- > $(queryTuples "SELECT usesysid, usename FROM pg_user") h :: IO [(Maybe String, Maybe Integer)]
 queryTuples :: String -> TH.ExpQ
 queryTuples sql = [| \c -> pgQuery c $(makePGQuery simpleFlags $ querySQL sql) |]
 
@@ -56,10 +55,8 @@ queryTuples sql = [| \c -> pgQuery c $(makePGQuery simpleFlags $ querySQL sql) |
 -- 
 -- Example (where @h@ is a handle from 'pgConnect'):
 -- 
--- @let sysid = 10::Integer;
--- 
--- $(queryTuple \"SELECT usesysid, usename FROM pg_user WHERE usesysid = {sysid}\") h :: IO (Maybe (Maybe String, Maybe Integer))
--- @
+-- > let sysid = 10::Integer;
+-- > $(queryTuple "SELECT usesysid, usename FROM pg_user WHERE usesysid = {sysid}") h :: IO (Maybe (Maybe String, Maybe Integer))
 queryTuple :: String -> TH.ExpQ
 queryTuple sql = [| liftM listToMaybe . $(queryTuples sql) |]
 
@@ -68,11 +65,6 @@ queryTuple sql = [| liftM listToMaybe . $(queryTuples sql) |]
 -- Convenience function to execute a statement on the PostgreSQL server.
 -- 
 -- Example (where @h@ is a handle from 'pgConnect'):
--- 
--- @let rolename = \"BOfH\"
--- 
--- $(execute \"CREATE ROLE {rolename}\") h
--- @
 execute :: String -> TH.ExpQ
 execute sql = [| \c -> void $ pgExecute c $(makePGQuery simpleFlags $ querySQL sql) |]
 

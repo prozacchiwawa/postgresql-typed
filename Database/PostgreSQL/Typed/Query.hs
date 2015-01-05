@@ -39,7 +39,7 @@ class PGQuery q a | q -> a where
   pgRunQuery :: PGConnection -> q -> IO (Int, Seq a)
 class PGQuery q PGValues => PGRawQuery q
 
--- |Execute a query that does not return result.
+-- |Execute a query that does not return results.
 -- Return the number of rows affected (or -1 if not known).
 pgExecute :: PGQuery q () => PGConnection -> q -> IO Int
 pgExecute c q = fst <$> pgRunQuery c q
@@ -212,7 +212,7 @@ qqTop err sql = do
 -- [@$@] To create a 'PGPreparedQuery' rather than a 'PGSimpleQuery', by default inferring parameter types.
 -- [@$(type,...)@] To specify specific types to a prepared query (see <http://www.postgresql.org/docs/current/static/sql-prepare.html> for details).
 -- 
--- This can also be used at the top-level to execute SQL statements at compile-time (without any parameters and ignoring results).
+-- 'pgSQL' can also be used at the top-level to execute SQL statements at compile-time (without any parameters and ignoring results).
 -- Here the query can only be prefixed with @!@ to make errors non-fatal.
 pgSQL :: QuasiQuoter
 pgSQL = QuasiQuoter

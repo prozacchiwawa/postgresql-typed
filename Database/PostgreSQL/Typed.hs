@@ -71,7 +71,7 @@ import Database.PostgreSQL.Typed.Query
 -- While compile-time query analysis eliminates many errors, it doesn't
 -- eliminate all of them. If you modify the database without recompilation or
 -- have an error in a trigger or function, for example, you can still trigger a
--- 'PGException' or other failure (if types change).  Also, nullable result fields resulting from outer joins are not
+-- 'PGError' or other failure (if types change).  Also, nullable result fields resulting from outer joins are not
 -- detected and need to be handled explicitly.
 --
 -- Based originally on Chris Forno's TemplatePG library.
@@ -102,12 +102,11 @@ import Database.PostgreSQL.Typed.Query
 -- 
 -- [@TPG_PORT@ or @TPG_SOCK@] the port number or local socket path to connect on (default: @5432@)
 -- 
--- If you'd like to specify what connection to use directly, use 'useTHConnection' at the top level:
+-- If you'd like to specify what connection to use directly, use 'useTPGDatabase' at the top level:
 --
--- > myConnect = pgConnect ...
--- > useTHConnection myConnect
+-- > useTPGDatabase PGDatabase{ ... }
 --
--- Note that due to TH limitations, @myConnect@ must be in-line or in a different module, and must be processed by the compiler before (above) any other TH calls.
+-- Note that due to TH limitations, the database must be in-line or in a different module.  This call must be processed by the compiler before (above) any other TH calls.
 --
 -- You can set @TPG_DEBUG@ at compile or runtime to get a protocol-level trace.
 
@@ -119,7 +118,7 @@ import Database.PostgreSQL.Typed.Query
 --
 -- > let q = [pgSQL|SELECT id, name, address FROM people WHERE name LIKE ${query++"%"} OR email LIKE $1|] :: PGSimpleQuery [(Int32, String, Maybe String)]
 --
--- Expression placeholders are substituted by PostgreSQL ones in left-to-right order starting with 1, so must be in places that PostgreSQL allows them (e.g., not identifiers, table names, column names, operators, etc.)
+-- Expression placeholders are substituted with PostgreSQL ones in left-to-right order starting with 1, so must be in places that PostgreSQL allows them (e.g., not identifiers, table names, column names, operators, etc.)
 -- However, this does mean that you can repeat expressions using the corresponding PostgreSQL placeholder as above.
 -- If there are extra PostgreSQL parameters the may be passed as arguments:
 --
@@ -137,7 +136,7 @@ import Database.PostgreSQL.Typed.Query
 -- 
 -- 'PGPreparedQuery' is a bit more complex: the first time any given prepared query is run on a given connection, the query is prepared.  Every subsequent time, the previously-prepared query is re-used and the new placeholder values are bound to it.
 -- Queries are identified by the text of the SQL statement with PostgreSQL placeholders in-place, so the exact parameter values do not matter (but the exact SQL statement, whitespace, etc. does).
--- (Prepared queries are released automatically at 'pgDisconnect', but may be closed early using 'pgCloseQuery'.)
+-- (Prepared queries are released automatically at 'pgDisconnect', but may be closed early using 'Database.PostgreSQL.Typed.Protocol.pgCloseQuery'.)
 
 -- $templatepg
 -- There is also an older, simpler interface based on TemplatePG that combines both the compile and runtime steps.
@@ -149,7 +148,7 @@ import Database.PostgreSQL.Typed.Query
 -- given one at compile-time, so you need to pass it after the splice:
 --
 -- > h <- pgConnect ...
--- > tuples <- $(queryTuples \"SELECT * FROM pg_database\") h
+-- > tuples <- $(queryTuples "SELECT * FROM pg_database") h
 --
 -- To pass parameters to a query, include them in the string with {}. Most
 -- Haskell expressions should work. For example:
@@ -157,17 +156,17 @@ import Database.PostgreSQL.Typed.Query
 -- > let owner = 33 :: Int32
 -- > tuples <- $(queryTuples "SELECT * FROM pg_database WHERE datdba = {owner} LIMIT {2 * 3 :: Int64}") h
 -- 
--- TemplatePG provides 'withTransaction', 'rollback', and 'insertIgnore', but they've
+-- TemplatePG provides 'Database.PostgreSQL.Typed.TemplatePG.withTransaction', 'Database.PostgreSQL.Typed.TemplatePG.rollback', and 'Database.PostgreSQL.Typed.TemplatePG.insertIgnore', but they've
 -- not been thoroughly tested, so use them at your own risk.
 
 -- $types
 -- Most builtin types are already supported.
 -- For the most part, exactly equivalent types are all supported (e.g., 'Int32' for int4) as well as other safe equivalents, but you cannot, for example, pass an 'Integer' as a @smallint@.
 -- To achieve this flexibility, the exact types of all parameters and results must be fully known (e.g., numeric literals will not work).
--- Currenly only 1-dimentional arrays are supported.
+-- Currently only 1-dimensional arrays are supported.
 --
--- However you can add support for your own types or add flexibility to existing types by creating new instances of 'PGParameter' (for encoding) and 'PGColumn' (for decoding).
--- If you also want to support arrays of a new type, you should also provide a 'PGArrayType' instance (or 'PGRangeType' for new ranges):
+-- However you can add support for your own types or add flexibility to existing types by creating new instances of 'Database.PostgreSQL.Typed.Types.PGParameter' (for encoding) and 'Database.PostgreSQL.Typed.Types.PGColumn' (for decoding).
+-- If you also want to support arrays of a new type, you should also provide a 'Database.PostgreSQL.Typed.Types.PGArrayType' instance (or 'Database.PostgreSQL.Typed.Types.PGRangeType' for new ranges):
 -- 
 -- > instance PGParameter "mytype" MyType where
 -- >   pgEncode _ (v :: MyType) = ... :: ByteString
@@ -193,7 +192,7 @@ import Database.PostgreSQL.Typed.Query
 -- You cannot construct queries at run-time, since they
 -- wouldn't be available to be analyzed at compile time (but you can construct them at compile time by writing your own TH functions).
 --
--- Because of how PostgreSQL handles placeholders, they cannot be used in place of lists (such as @IN (?)@), you must replace such cases with equivalent arrays (@= ANY (?)@).
+-- Because of how PostgreSQL handles placeholders, they cannot be used in place of lists (such as @IN (?)@). You must replace such cases with equivalent arrays (@= ANY (?)@).
 --
 -- For the most part, any code must be compiled and run against databases that are at least structurally identical.
 -- However, some features have even stronger requirements:
@@ -205,6 +204,6 @@ import Database.PostgreSQL.Typed.Query
 -- to functions, you can use @uncurryN@ from the tuple package. The following
 -- examples are equivalent.
 --
--- > (a, b, c) <- $(queryTuple \"SELECT a, b, c FROM table LIMIT 1\")
+-- > (a, b, c) <- $(queryTuple "SELECT a, b, c FROM table LIMIT 1")
 -- > someFunction a b c
--- > uncurryN someFunction \`liftM\` $(queryTuple \"SELECT a, b, c FROM table LIMIT 1\")
+-- > uncurryN someFunction \`liftM\` $(queryTuple "SELECT a, b, c FROM table LIMIT 1")

@@ -217,14 +217,6 @@ parseDQuote unsafe = (q P.<|> uq) where
   uq = P.many1 (P.noneOf ('"':'\\':unsafe))
 
 
-class (Show a, Read a, KnownSymbol t) => PGLiteralType t a
-
-instance PGLiteralType t a => PGParameter t a where
-  pgEncode _ = BSC.pack . show
-  pgLiteral _ = show
-instance PGLiteralType t a => PGColumn t a where
-  pgDecode _ = read . BSC.unpack
-
 instance PGParameter "boolean" Bool where
   pgEncode _ False = BSC.singleton 'f'
   pgEncode _ True = BSC.singleton 't'
@@ -237,13 +229,41 @@ instance PGColumn "boolean" Bool where
     c -> error $ "pgDecode boolean: " ++ [c]
 
 type OID = Word32
-instance PGLiteralType "oid" OID
-instance PGLiteralType "smallint" Int16
-instance PGLiteralType "integer" Int32
-instance PGLiteralType "bigint" Int64
-instance PGLiteralType "real" Float
-instance PGLiteralType "double precision" Double
+instance PGParameter "oid" OID where
+  pgEncode _ = BSC.pack . show
+  pgLiteral _ = show
+instance PGColumn "oid" OID where
+  pgDecode _ = read . BSC.unpack
 
+instance PGParameter "smallint" Int16 where
+  pgEncode _ = BSC.pack . show
+  pgLiteral _ = show
+instance PGColumn "smallint" Int16 where
+  pgDecode _ = read . BSC.unpack
+
+instance PGParameter "integer" Int32 where
+  pgEncode _ = BSC.pack . show
+  pgLiteral _ = show
+instance PGColumn "integer" Int32 where
+  pgDecode _ = read . BSC.unpack
+
+instance PGParameter "bigint" Int64 where
+  pgEncode _ = BSC.pack . show
+  pgLiteral _ = show
+instance PGColumn "bigint" Int64 where
+  pgDecode _ = read . BSC.unpack
+
+instance PGParameter "real" Float where
+  pgEncode _ = BSC.pack . show
+  pgLiteral _ = show
+instance PGColumn "real" Float where
+  pgDecode _ = read . BSC.unpack
+
+instance PGParameter "double precision" Double where
+  pgEncode _ = BSC.pack . show
+  pgLiteral _ = show
+instance PGColumn "double precision" Double where
+  pgDecode _ = read . BSC.unpack
 
 instance PGParameter "\"char\"" Char where
   pgEncode _ = BSC.singleton
@@ -410,7 +430,11 @@ showRational r = show (ri :: Integer) ++ '.' : frac (abs rf) where
   frac f = intToDigit i : frac f' where (i, f') = properFraction (10 * f)
 
 #ifdef USE_SCIENTIFIC
-instance PGLiteralType "numeric" Scientific
+instance PGParameter "numeric" Scientific where
+  pgEncode _ = BSC.pack . show
+  pgLiteral _ = show
+instance PGColumn "numeric" Scientific where
+  pgDecode _ = read . BSC.unpack
 #endif
 
 -- |The cannonical representation of a PostgreSQL array of any type, which may always contain NULLs.

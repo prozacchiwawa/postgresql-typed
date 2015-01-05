@@ -206,4 +206,4 @@ import Database.PostgreSQL.Typed.Query
 --
 -- > (a, b, c) <- $(queryTuple "SELECT a, b, c FROM table LIMIT 1")
 -- > someFunction a b c
--- > uncurryN someFunction \`liftM\` $(queryTuple "SELECT a, b, c FROM table LIMIT 1")
+-- > uncurryN someFunction `liftM` $(queryTuple "SELECT a, b, c FROM table LIMIT 1")

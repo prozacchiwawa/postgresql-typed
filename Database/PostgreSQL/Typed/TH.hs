@@ -57,9 +57,11 @@ getTPGDatabase = do
     , pgDBDebug = debug
     }
 
+{-# NOINLINE tpgState #-}
 tpgState :: MVar (PGDatabase, Maybe TPGState)
-tpgState = unsafePerformIO $
-  newMVar (unsafePerformIO getTPGDatabase, Nothing)
+tpgState = unsafePerformIO $ do
+  db <- unsafeInterleaveIO getTPGDatabase
+  newMVar (db, Nothing)
 
 data TPGState = TPGState
   { tpgConnection :: PGConnection

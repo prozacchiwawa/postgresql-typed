@@ -17,9 +17,10 @@ module Database.PostgreSQL.Typed.Types
 
   -- * Marshalling classes
   , PGParameter(..)
-  , PGBinaryParameter
   , PGColumn(..)
   , PGBinaryType
+  , PGBinaryParameter(..)
+  , PGBinaryColumn(..)
 
   -- * Marshalling utilities
   , pgEncodeParameter
@@ -48,7 +49,7 @@ import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.UTF8 as BSU
 import Data.Char (isSpace, isDigit, digitToInt, intToDigit, toLower)
 import Data.Int
-import Data.List (intersperse)
+import Data.List (intersperse, intercalate)
 import Data.Maybe (fromMaybe)
 import Data.Monoid ((<>), mconcat, mempty)
 import Data.Ratio ((%), numerator, denominator)
@@ -584,6 +585,28 @@ instance PGParameter "uuid" UUID.UUID where
 instance PGColumn "uuid" UUID.UUID where
   pgDecode _ u = fromMaybe (error $ "pgDecode uuid: " ++ BSC.unpack u) $ UUID.fromASCIIBytes u
 #endif
+
+-- |Generic class of composite (row or record) types.
+class KnownSymbol t => PGRecordType t
+instance PGRecordType t => PGParameter t [Maybe PGTextValue] where
+  pgEncode _ l =
+    buildBS $ BSB.char7 '(' <> mconcat (intersperse (BSB.char7 ',') $ map (maybe mempty (dQuote "(),")) l) <> BSB.char7 ')' where
+  pgLiteral _ l =
+    "ROW(" ++ intercalate "," (map (maybe "NULL" (pgQuote . BSU.toString)) l) ++ ")" where
+instance PGRecordType t => PGColumn t [Maybe PGTextValue] where
+  pgDecode _ = either (error . ("pgDecode record: " ++) . show) id . P.parse pa "record" where
+    pa = do
+      l <- P.between (P.char '(') (P.char ')') $
+        P.sepBy nel (P.char ',')
+      _ <- P.eof
+      return l
+    nel = P.optionMaybe $ P.between P.spaces P.spaces el
+    el = BSC.pack <$> parseDQuote "(),"
+
+-- |The generic anonymous record type, as created by @ROW@.
+-- In this case we can not know the types, and in fact, PostgreSQL does not accept values of this type regardless (except as literals).
+instance PGRecordType "record"
+
 
 #ifdef USE_BINARY
 binDec :: KnownSymbol t => BinD.D a -> PGTypeName t -> PGBinaryValue -> a

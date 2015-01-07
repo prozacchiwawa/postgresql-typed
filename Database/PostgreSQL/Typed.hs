@@ -195,9 +195,8 @@ import Database.PostgreSQL.Typed.Query
 -- Because of how PostgreSQL handles placeholders, they cannot be used in place of lists (such as @IN (?)@). You must replace such cases with equivalent arrays (@= ANY (?)@).
 --
 -- For the most part, any code must be compiled and run against databases that are at least structurally identical.
--- However, some features have even stronger requirements:
---
---   * The @$(type, ...)@ feature stores OIDs for user types, so the resulting code can only be run the exact same database or one restored from a dump with OIDs (@pg_dump -o@).  If this is a concern, only use built-in types in this construct.
+-- Furthermore, prepared queries also store OIDs for user types, so the generated 'PGPreparedQuery' can only be run on the exact same database or one restored from a dump with OIDs (@pg_dump -o@).  If this is a concern, only use built-in types in prepared queries.
+-- (This requirement could be weakened with some work, if there were need.)
 
 -- $tips
 -- If you find yourself pattern matching on result tuples just to pass them on

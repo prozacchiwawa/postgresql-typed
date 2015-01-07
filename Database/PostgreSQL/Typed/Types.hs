@@ -11,7 +11,6 @@ module Database.PostgreSQL.Typed.Types
     OID
   , PGValue(..)
   , PGValues
-  , pgQuote
   , PGTypeName(..)
   , PGTypeEnv(..)
 
@@ -22,7 +21,7 @@ module Database.PostgreSQL.Typed.Types
   , PGBinaryParameter(..)
   , PGBinaryColumn(..)
 
-  -- * Marshalling utilities
+  -- * Marshalling interface
   , pgEncodeParameter
   , pgEncodeBinaryParameter
   , pgEscapeParameter
@@ -31,9 +30,11 @@ module Database.PostgreSQL.Typed.Types
   , pgDecodeBinaryColumn
   , pgDecodeBinaryColumnNotNull
 
-  -- * Specific type support
-  , PGArrayType
-  , PGRangeType
+  -- * Conversion utilities
+  , pgQuote
+  , pgDQuote
+  , parsePGDQuote
+  , buildPGValue
   ) where
 
 import Control.Applicative ((<$>), (<$))
@@ -77,8 +78,6 @@ import qualified PostgreSQLBinary.Encoder as BinE
 import System.Locale (defaultTimeLocale)
 import qualified Text.Parsec as P
 import Text.Parsec.Token (naturalOrFloat, makeTokenParser, GenLanguageDef(..))
-
-import qualified Database.PostgreSQL.Typed.Range as Range
 
 type PGTextValue = BS.ByteString
 type PGBinaryValue = BS.ByteString
@@ -197,13 +196,13 @@ pgQuote = ('\'':) . es where
   es (c@'\'':r) = c:c:es r
   es (c:r) = c:es r
 
-buildBS :: BSB.Builder -> BS.ByteString
-buildBS = BSL.toStrict . BSB.toLazyByteString
+buildPGValue :: BSB.Builder -> BS.ByteString
+buildPGValue = BSL.toStrict . BSB.toLazyByteString
 
 -- |Double-quote a value if it's \"\", \"null\", or contains any whitespace, \'\"\', \'\\\', or the characters given in the first argument.
 -- Checking all these things may not be worth it.  We could just double-quote everything.
-dQuote :: String -> BS.ByteString -> BSB.Builder
-dQuote unsafe s
+pgDQuote :: String -> BS.ByteString -> BSB.Builder
+pgDQuote unsafe s
   | BS.null s || BSC.any (\c -> isSpace c || c == '"' || c == '\\' || c `elem` unsafe) s || BSC.map toLower s == BSC.pack "null" =
     dq <> BSBP.primMapByteStringBounded ec s <> dq
   | otherwise = BSB.byteString s where
@@ -211,8 +210,9 @@ dQuote unsafe s
   ec = BSBP.condB (\c -> c == c2w '"' || c == c2w '\\') bs (BSBP.liftFixedToBounded BSBP.word8)
   bs = BSBP.liftFixedToBounded $ ((,) '\\') BSBP.>$< (BSBP.char7 BSBP.>*< BSBP.word8)
 
-parseDQuote :: P.Stream s m Char => String -> P.ParsecT s u m String
-parseDQuote unsafe = (q P.<|> uq) where
+-- |Parse double-quoted values ala 'pgDQuote'.
+parsePGDQuote :: P.Stream s m Char => String -> P.ParsecT s u m String
+parsePGDQuote unsafe = (q P.<|> uq) where
   q = P.between (P.char '"') (P.char '"') $
     P.many $ (P.char '\\' >> P.anyChar) P.<|> P.noneOf "\\\""
   uq = P.many1 (P.noneOf ('"':'\\':unsafe))
@@ -308,7 +308,7 @@ instance PGStringType "bpchar" -- blank padded
 
 
 encodeBytea :: BSB.Builder -> PGTextValue
-encodeBytea h = buildBS $ BSB.string7 "\\x" <> h
+encodeBytea h = buildPGValue $ BSB.string7 "\\x" <> h
 
 decodeBytea :: PGTextValue -> [Word8]
 decodeBytea s
@@ -438,146 +438,6 @@ instance PGColumn "numeric" Scientific where
   pgDecode _ = read . BSC.unpack
 #endif
 
--- |The cannonical representation of a PostgreSQL array of any type, which may always contain NULLs.
--- Currenly only one-dimetional arrays are supported, although in PostgreSQL, any array may be of any dimentionality.
-type PGArray a = [Maybe a]
-
--- |Class indicating that the first PostgreSQL type is an array of the second.
--- This implies 'PGParameter' and 'PGColumn' instances that will work for any type using comma as a delimiter (i.e., anything but @box@).
--- This will only work with 1-dimensional arrays.
-class (KnownSymbol ta, KnownSymbol t) => PGArrayType ta t | ta -> t, t -> ta where
-  pgArrayElementType :: PGTypeName ta -> PGTypeName t
-  pgArrayElementType PGTypeProxy = PGTypeProxy
-  -- |The character used as a delimeter.  The default @,@ is correct for all standard types (except @box@).
-  pgArrayDelim :: PGTypeName ta -> Char
-  pgArrayDelim _ = ','
-
-instance (PGArrayType ta t, PGParameter t a) => PGParameter ta (PGArray a) where
-  pgEncode ta l = buildBS $ BSB.char7 '{' <> mconcat (intersperse (BSB.char7 $ pgArrayDelim ta) $ map el l) <> BSB.char7 '}' where
-    el Nothing = BSB.string7 "null"
-    el (Just e) = dQuote (pgArrayDelim ta : "{}") $ pgEncode (pgArrayElementType ta) e
-instance (PGArrayType ta t, PGColumn t a) => PGColumn ta (PGArray a) where
-  pgDecode ta = either (error . ("pgDecode array: " ++) . show) id . P.parse pa "array" where
-    pa = do
-      l <- P.between (P.char '{') (P.char '}') $
-        P.sepBy nel (P.char (pgArrayDelim ta))
-      _ <- P.eof
-      return l
-    nel = P.between P.spaces P.spaces $ Nothing <$ nul P.<|> Just <$> el
-    nul = P.oneOf "Nn" >> P.oneOf "Uu" >> P.oneOf "Ll" >> P.oneOf "Ll"
-    el = pgDecode (pgArrayElementType ta) . BSC.pack <$> parseDQuote (pgArrayDelim ta : "{}")
-
--- Just a dump of pg_type:
-instance PGArrayType "boolean[]"       "boolean"
-instance PGArrayType "bytea[]"         "bytea"
-instance PGArrayType "\"char\"[]"      "\"char\""
-instance PGArrayType "name[]"          "name"
-instance PGArrayType "bigint[]"        "bigint"
-instance PGArrayType "smallint[]"      "smallint"
-instance PGArrayType "int2vector[]"    "int2vector"
-instance PGArrayType "integer[]"       "integer"
-instance PGArrayType "regproc[]"       "regproc"
-instance PGArrayType "text[]"          "text"
-instance PGArrayType "oid[]"           "oid"
-instance PGArrayType "tid[]"           "tid"
-instance PGArrayType "xid[]"           "xid"
-instance PGArrayType "cid[]"           "cid"
-instance PGArrayType "oidvector[]"     "oidvector"
-instance PGArrayType "json[]"          "json"
-instance PGArrayType "xml[]"           "xml"
-instance PGArrayType "point[]"         "point"
-instance PGArrayType "lseg[]"          "lseg"
-instance PGArrayType "path[]"          "path"
-instance PGArrayType "box[]"           "box" where
-  pgArrayDelim _ = ';'
-instance PGArrayType "polygon[]"       "polygon"
-instance PGArrayType "line[]"          "line"
-instance PGArrayType "cidr[]"          "cidr"
-instance PGArrayType "real[]"          "real"
-instance PGArrayType "double precision[]"            "double precision"
-instance PGArrayType "abstime[]"       "abstime"
-instance PGArrayType "reltime[]"       "reltime"
-instance PGArrayType "tinterval[]"     "tinterval"
-instance PGArrayType "circle[]"        "circle"
-instance PGArrayType "money[]"         "money"
-instance PGArrayType "macaddr[]"       "macaddr"
-instance PGArrayType "inet[]"          "inet"
-instance PGArrayType "aclitem[]"       "aclitem"
-instance PGArrayType "bpchar[]"        "bpchar"
-instance PGArrayType "character varying[]"           "character varying"
-instance PGArrayType "date[]"          "date"
-instance PGArrayType "time without time zone[]"      "time without time zone"
-instance PGArrayType "timestamp without time zone[]" "timestamp without time zone"
-instance PGArrayType "timestamp with time zone[]"    "timestamp with time zone"
-instance PGArrayType "interval[]"      "interval"
-instance PGArrayType "time with time zone[]"         "time with time zone"
-instance PGArrayType "bit[]"           "bit"
-instance PGArrayType "varbit[]"        "varbit"
-instance PGArrayType "numeric[]"       "numeric"
-instance PGArrayType "refcursor[]"     "refcursor"
-instance PGArrayType "regprocedure[]"  "regprocedure"
-instance PGArrayType "regoper[]"       "regoper"
-instance PGArrayType "regoperator[]"   "regoperator"
-instance PGArrayType "regclass[]"      "regclass"
-instance PGArrayType "regtype[]"       "regtype"
-instance PGArrayType "record[]"        "record"
-instance PGArrayType "cstring[]"       "cstring"
-instance PGArrayType "uuid[]"          "uuid"
-instance PGArrayType "txid_snapshot[]" "txid_snapshot"
-instance PGArrayType "tsvector[]"      "tsvector"
-instance PGArrayType "tsquery[]"       "tsquery"
-instance PGArrayType "gtsvector[]"     "gtsvector"
-instance PGArrayType "regconfig[]"     "regconfig"
-instance PGArrayType "regdictionary[]" "regdictionary"
-instance PGArrayType "int4range[]"     "int4range"
-instance PGArrayType "numrange[]"      "numrange"
-instance PGArrayType "tsrange[]"       "tsrange"
-instance PGArrayType "tstzrange[]"     "tstzrange"
-instance PGArrayType "daterange[]"     "daterange"
-instance PGArrayType "int8range[]"     "int8range"
-
-
--- |Class indicating that the first PostgreSQL type is a range of the second.
--- This implies 'PGParameter' and 'PGColumn' instances that will work for any type.
-class (KnownSymbol tr, KnownSymbol t) => PGRangeType tr t | tr -> t where
-  pgRangeElementType :: PGTypeName tr -> PGTypeName t
-  pgRangeElementType PGTypeProxy = PGTypeProxy
-
-instance (PGRangeType tr t, PGParameter t a) => PGParameter tr (Range.Range a) where
-  pgEncode _ Range.Empty = BSC.pack "empty"
-  pgEncode tr (Range.Range (Range.Lower l) (Range.Upper u)) = buildBS $
-    pc '[' '(' l
-      <> pb (Range.bound l)
-      <> BSB.char7 ','
-      <> pb (Range.bound u)
-      <> pc ']' ')' u
-    where
-    pb Nothing = mempty
-    pb (Just b) = dQuote "(),[]" $ pgEncode (pgRangeElementType tr) b
-    pc c o b = BSB.char7 $ if Range.boundClosed b then c else o
-instance (PGRangeType tr t, PGColumn t a) => PGColumn tr (Range.Range a) where
-  pgDecode tr = either (error . ("pgDecode range: " ++) . show) id . P.parse per "range" where
-    per = Range.Empty <$ pe P.<|> pr
-    pe = P.oneOf "Ee" >> P.oneOf "Mm" >> P.oneOf "Pp" >> P.oneOf "Tt" >> P.oneOf "Yy"
-    pp = pgDecode (pgRangeElementType tr) . BSC.pack <$> parseDQuote "(),[]"
-    pc c o = True <$ P.char c P.<|> False <$ P.char o
-    pb = P.optionMaybe $ P.between P.spaces P.spaces $ pp
-    mb = maybe Range.Unbounded . Range.Bounded
-    pr = do
-      lc <- pc '[' '('
-      lb <- pb
-      _ <- P.char ','
-      ub <- pb 
-      uc <- pc ']' ')'
-      return $ Range.Range (Range.Lower (mb lc lb)) (Range.Upper (mb uc ub))
-
-instance PGRangeType "int4range" "integer"
-instance PGRangeType "numrange" "numeric"
-instance PGRangeType "tsrange" "timestamp without time zone"
-instance PGRangeType "tstzrange" "timestamp with time zone"
-instance PGRangeType "daterange" "date"
-instance PGRangeType "int8range" "bigint"
-
 #ifdef USE_UUID
 instance PGParameter "uuid" UUID.UUID where
   pgEncode _ = UUID.toASCIIBytes
@@ -590,7 +450,7 @@ instance PGColumn "uuid" UUID.UUID where
 class KnownSymbol t => PGRecordType t
 instance PGRecordType t => PGParameter t [Maybe PGTextValue] where
   pgEncode _ l =
-    buildBS $ BSB.char7 '(' <> mconcat (intersperse (BSB.char7 ',') $ map (maybe mempty (dQuote "(),")) l) <> BSB.char7 ')' where
+    buildPGValue $ BSB.char7 '(' <> mconcat (intersperse (BSB.char7 ',') $ map (maybe mempty (pgDQuote "(),")) l) <> BSB.char7 ')' where
   pgLiteral _ l =
     "ROW(" ++ intercalate "," (map (maybe "NULL" (pgQuote . BSU.toString)) l) ++ ")" where
 instance PGRecordType t => PGColumn t [Maybe PGTextValue] where
@@ -601,7 +461,7 @@ instance PGRecordType t => PGColumn t [Maybe PGTextValue] where
       _ <- P.eof
       return l
     nel = P.optionMaybe $ P.between P.spaces P.spaces el
-    el = BSC.pack <$> parseDQuote "(),"
+    el = BSC.pack <$> parsePGDQuote "(),"
 
 -- |The generic anonymous record type, as created by @ROW@.
 -- In this case we can not know the types, and in fact, PostgreSQL does not accept values of this type regardless (except as literals).

@@ -60,6 +60,7 @@ Library
     Database.PostgreSQL.Typed.TH
     Database.PostgreSQL.Typed.Query
     Database.PostgreSQL.Typed.Enum
+    Database.PostgreSQL.Typed.Array
     Database.PostgreSQL.Typed.Range
     Database.PostgreSQL.Typed.TemplatePG
   GHC-Options: -Wall

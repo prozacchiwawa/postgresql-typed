@@ -1,3 +1,4 @@
+{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, UndecidableInstances, FunctionalDependencies, DataKinds #-}
 -- |
 -- Module: Database.PostgreSQL.Typed.Range
 -- Copyright: 2015 Dylan Simon
@@ -8,9 +9,15 @@
 
 module Database.PostgreSQL.Typed.Range where
 
-import Control.Applicative ((<$))
+import Control.Applicative ((<$>), (<$))
 import Control.Monad (guard)
-import Data.Monoid ((<>))
+import qualified Data.ByteString.Builder as BSB
+import qualified Data.ByteString.Char8 as BSC
+import Data.Monoid ((<>), mempty)
+import GHC.TypeLits (KnownSymbol)
+import qualified Text.Parsec as P
+
+import Database.PostgreSQL.Typed.Types
 
 data Bound a
   = Unbounded
@@ -139,3 +146,46 @@ r @>. a = r @> point a
 intersect :: Ord a => Range a -> Range a -> Range a
 intersect (Range la ua) (Range lb ub) = normalize $ Range (max la lb) (min ua ub)
 intersect _ _ = Empty
+
+
+-- |Class indicating that the first PostgreSQL type is a range of the second.
+-- This implies 'PGParameter' and 'PGColumn' instances that will work for any type.
+class (KnownSymbol tr, KnownSymbol t) => PGRangeType tr t | tr -> t where
+  pgRangeElementType :: PGTypeName tr -> PGTypeName t
+  pgRangeElementType PGTypeProxy = PGTypeProxy
+
+instance (PGRangeType tr t, PGParameter t a) => PGParameter tr (Range a) where
+  pgEncode _ Empty = BSC.pack "empty"
+  pgEncode tr (Range (Lower l) (Upper u)) = buildPGValue $
+    pc '[' '(' l
+      <> pb (bound l)
+      <> BSB.char7 ','
+      <> pb (bound u)
+      <> pc ']' ')' u
+    where
+    pb Nothing = mempty
+    pb (Just b) = pgDQuote "(),[]" $ pgEncode (pgRangeElementType tr) b
+    pc c o b = BSB.char7 $ if boundClosed b then c else o
+instance (PGRangeType tr t, PGColumn t a) => PGColumn tr (Range a) where
+  pgDecode tr = either (error . ("pgDecode range: " ++) . show) id . P.parse per "range" where
+    per = Empty <$ pe P.<|> pr
+    pe = P.oneOf "Ee" >> P.oneOf "Mm" >> P.oneOf "Pp" >> P.oneOf "Tt" >> P.oneOf "Yy"
+    pp = pgDecode (pgRangeElementType tr) . BSC.pack <$> parsePGDQuote "(),[]"
+    pc c o = True <$ P.char c P.<|> False <$ P.char o
+    pb = P.optionMaybe $ P.between P.spaces P.spaces $ pp
+    mb = maybe Unbounded . Bounded
+    pr = do
+      lc <- pc '[' '('
+      lb <- pb
+      _ <- P.char ','
+      ub <- pb 
+      uc <- pc ']' ')'
+      return $ Range (Lower (mb lc lb)) (Upper (mb uc ub))
+
+instance PGRangeType "int4range" "integer"
+instance PGRangeType "numrange" "numeric"
+instance PGRangeType "tsrange" "timestamp without time zone"
+instance PGRangeType "tstzrange" "timestamp with time zone"
+instance PGRangeType "daterange" "date"
+instance PGRangeType "int8range" "bigint"
+

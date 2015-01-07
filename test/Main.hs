@@ -8,6 +8,7 @@ import System.Exit (exitSuccess, exitFailure)
 
 import Database.PostgreSQL.Typed
 import Database.PostgreSQL.Typed.Types (OID)
+import Database.PostgreSQL.Typed.Array ()
 import qualified Database.PostgreSQL.Typed.Range as Range
 import Database.PostgreSQL.Typed.Enum
 

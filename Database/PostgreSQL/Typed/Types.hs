@@ -12,6 +12,7 @@ module Database.PostgreSQL.Typed.Types
   , PGValue(..)
   , PGValues
   , PGTypeName(..)
+  , pgTypeName
   , PGTypeEnv(..)
 
   -- * Marshalling classes

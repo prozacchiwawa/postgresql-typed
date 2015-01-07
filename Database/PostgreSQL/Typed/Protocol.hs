@@ -53,6 +53,7 @@ import System.IO.Unsafe (unsafeInterleaveIO)
 import Text.Read (readMaybe)
 
 import Database.PostgreSQL.Typed.Types
+import Database.PostgreSQL.Typed.Dynamic
 
 data PGState
   = StateUnknown
@@ -501,9 +502,9 @@ pgDescribe h sql types nulls = do
     | nulls && oid /= 0 = do
       -- In cases where the resulting field is tracable to the column of a
       -- table, we can check there.
-      (_, r) <- pgSimpleQuery h ("SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = " ++ show oid ++ " AND attnum = " ++ show col)
+      (_, r) <- pgSimpleQuery h ("SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = " ++ pgSafeLiteral oid ++ " AND attnum = " ++ show col)
       case Fold.toList r of
-        [[PGTextValue s]] -> return $ not $ pgDecode (PGTypeProxy :: PGTypeName "boolean") s
+        [[s]] -> return $ not $ pgDecodeRep s
         [] -> return True
         _ -> fail $ "Failed to determine nullability of column #" ++ show col
     | otherwise = return True

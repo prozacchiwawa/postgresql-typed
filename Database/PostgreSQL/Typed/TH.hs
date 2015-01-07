@@ -32,6 +32,7 @@ import System.Environment (lookupEnv)
 import System.IO.Unsafe (unsafePerformIO, unsafeInterleaveIO)
 
 import Database.PostgreSQL.Typed.Types
+import Database.PostgreSQL.Typed.Dynamic
 import Database.PostgreSQL.Typed.Protocol
 
 -- |A particular PostgreSQL type, identified by full formatted name (from @format_type@ or @\\dT@).
@@ -72,8 +73,8 @@ tpgLoadTypes :: TPGState -> IO TPGState
 tpgLoadTypes tpg = do
   -- defer loading types until they're needed
   tl <- unsafeInterleaveIO $ pgSimpleQuery (tpgConnection tpg) "SELECT typ.oid, format_type(CASE WHEN typtype = 'd' THEN typbasetype ELSE typ.oid END, -1) FROM pg_catalog.pg_type typ JOIN pg_catalog.pg_namespace nsp ON typnamespace = nsp.oid WHERE nspname <> 'pg_toast' AND nspname <> 'information_schema' ORDER BY typ.oid"
-  return $ tpg{ tpgTypes = IntMap.fromAscList $ map (\[PGTextValue to, PGTextValue tn] ->
-    (fromIntegral (pgDecode (PGTypeProxy :: PGTypeName "oid") to :: OID), pgDecode (PGTypeProxy :: PGTypeName "text") tn)) $ Fold.toList $ snd tl
+  return $ tpg{ tpgTypes = IntMap.fromAscList $ map (\[to, tn] ->
+    (fromIntegral (pgDecodeRep to :: OID), pgDecodeRep tn)) $ Fold.toList $ snd tl
   }
 
 tpgInit :: PGConnection -> IO TPGState

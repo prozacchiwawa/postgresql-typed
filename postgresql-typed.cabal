@@ -62,6 +62,7 @@ Library
     Database.PostgreSQL.Typed.Enum
     Database.PostgreSQL.Typed.Array
     Database.PostgreSQL.Typed.Range
+    Database.PostgreSQL.Typed.Dynamic
     Database.PostgreSQL.Typed.TemplatePG
   GHC-Options: -Wall
   if flag(md5)

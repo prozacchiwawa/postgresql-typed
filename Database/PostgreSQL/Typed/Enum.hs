@@ -19,6 +19,7 @@ import qualified Language.Haskell.TH as TH
 import Database.PostgreSQL.Typed.Protocol
 import Database.PostgreSQL.Typed.TH
 import Database.PostgreSQL.Typed.Types
+import Database.PostgreSQL.Typed.Dynamic
 
 -- |Create a new enum type corresponding to the given PostgreSQL enum type.
 -- For example, if you have @CREATE TYPE foo AS ENUM (\'abc\', \'DEF\');@, then
@@ -45,10 +46,10 @@ makePGEnum name typs valnf = do
   ds <- TH.newName "s"
   return
     [ TH.DataD [] typn [] (map (\(_, n) -> TH.NormalC n []) valn) [''Eq, ''Ord, ''Enum, ''Bounded]
-    , TH.InstanceD [] (TH.ConT ''PGParameter `TH.AppT` TH.LitT (TH.StrTyLit name) `TH.AppT` typt)
+    , TH.InstanceD [] (TH.ConT ''PGParameter `TH.AppT` typl `TH.AppT` typt)
       [ TH.FunD 'pgEncode $ map (\(l, n) -> TH.Clause [TH.WildP, TH.ConP n []]
         (TH.NormalB $ TH.VarE 'BSC.pack `TH.AppE` TH.LitE l) []) valn ]
-    , TH.InstanceD [] (TH.ConT ''PGColumn `TH.AppT` TH.LitT (TH.StrTyLit name) `TH.AppT` typt)
+    , TH.InstanceD [] (TH.ConT ''PGColumn `TH.AppT` typl `TH.AppT` typt)
       [ TH.FunD 'pgDecode [TH.Clause [TH.WildP, TH.VarP dv]
         (TH.NormalB $ TH.CaseE (TH.VarE 'BSC.unpack `TH.AppE` TH.VarE dv) $ map (\(l, n) ->
           TH.Match (TH.LitP l) (TH.NormalB $ TH.ConE n) []) valn ++
@@ -56,7 +57,9 @@ makePGEnum name typs valnf = do
             TH.InfixE (Just $ TH.LitE (TH.StringL ("pgDecode " ++ name ++ ": "))) (TH.VarE '(++)) (Just $ TH.VarE ds))
             []])
         []] ]
+    , TH.InstanceD [] (TH.ConT ''PGRep `TH.AppT` typl `TH.AppT` typt) []
     ]
   where
   typn = TH.mkName typs
   typt = TH.ConT typn
+  typl = TH.LitT (TH.StrTyLit name)

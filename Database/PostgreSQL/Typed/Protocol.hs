@@ -56,10 +56,13 @@ import Database.PostgreSQL.Typed.Types
 import Database.PostgreSQL.Typed.Dynamic
 
 data PGState
-  = StateUnknown
+  = StateUnknown -- no Sync
+  | StatePending -- Sync sent
+  -- ReadyForQuery received:
   | StateIdle
   | StateTransaction
   | StateTransactionFailed
+  -- Terminate sent or EOF received
   | StateClosed
   deriving (Show, Eq)
 
@@ -260,7 +263,7 @@ messageBody Terminate = (Just 'X', mempty)
 -- |Send a message to PostgreSQL (low-level).
 pgSend :: PGConnection -> PGFrontendMessage -> IO ()
 pgSend c@PGConnection{ connHandle = h, connState = sr } msg = do
-  writeIORef sr StateUnknown
+  writeIORef sr (case msg of Sync -> StatePending ; _ -> StateUnknown)
   when (connDebug c) $ putStrLn $ "> " ++ show msg
   B.hPutBuilder h $ Fold.foldMap B.char7 t <> B.word32BE (fromIntegral $ 4 + BS.length b)
   BS.hPut h b -- or B.hPutBuilder? But we've already had to convert to BS to get length
@@ -452,8 +455,12 @@ pgReconnect c@PGConnection{ connDatabase = cd, connState = cs } d = do
 pgSync :: PGConnection -> IO ()
 pgSync c@PGConnection{ connState = sr } = do
   s <- readIORef sr
-  when (s == StateClosed) $ fail "pgSync: operation on closed connection"
-  when (s == StateUnknown) $ wait False where
+  case s of
+    StateClosed -> fail "pgSync: operation on closed connection"
+    StatePending -> wait True
+    StateUnknown -> wait False
+    _ -> return ()
+  where
   wait s = do
     r <- pgRecv s c
     case r of

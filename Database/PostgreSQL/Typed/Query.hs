@@ -159,7 +159,7 @@ makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
   (pt, rt) <- tpgDescribe sqlp (fromMaybe [] prep) (not nulls)
   when (length pt < length exprs) $ fail "Not all expression placeholders were recognized by PostgreSQL; literal occurrences of '${' may need to be escaped with '$${'"
 
-  e <- TH.newName "tenv"
+  e <- TH.newName "_tenv"
   (vars, vals) <- mapAndUnzipM (\t -> do
     v <- TH.newName $ 'p':tpgValueName t
     return (TH.VarP v, tpgTypeEncoder (isNothing prep) t e v)) pt

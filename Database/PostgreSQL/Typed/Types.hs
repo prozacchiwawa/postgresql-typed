@@ -133,6 +133,8 @@ class PGParameterNull t a => PGBinaryParameterNull t a where
 -- |Support decoding of assumed non-null columns but also still allow decoding into 'Maybe'.
 class PGColumnNotNull t a where
   pgDecodeNotNull :: PGTypeName t -> PGValue -> a
+class PGColumnNotNull t a => PGBinaryColumnNotNull t a where
+  pgDecodeBinaryNotNull :: PGTypeEnv -> PGTypeName t -> PGValue -> a
 
 
 instance PGParameter t a => PGParameterNull t a where
@@ -154,6 +156,12 @@ instance PGColumn t a => PGColumnNotNull t (Maybe a) where
   pgDecodeNotNull _ PGNullValue = Nothing
   pgDecodeNotNull t (PGTextValue v) = Just $ pgDecode t v
   pgDecodeNotNull t (PGBinaryValue _) = error $ "pgDecode: unexpected binary value in " ++ pgTypeName t
+instance PGBinaryColumn t a => PGBinaryColumnNotNull t a where
+  pgDecodeBinaryNotNull e t (PGBinaryValue v) = pgDecodeBinary e t v
+  pgDecodeBinaryNotNull _ t v = pgDecodeNotNull t v
+instance PGBinaryColumn t a => PGBinaryColumnNotNull t (Maybe a) where
+  pgDecodeBinaryNotNull e t (PGBinaryValue v) = Just $ pgDecodeBinary e t v
+  pgDecodeBinaryNotNull _ t v = pgDecodeNotNull t v
 
 
 -- |Final parameter encoding function used when a (nullable) parameter is passed to a prepared query.
@@ -178,13 +186,11 @@ pgDecodeColumnNotNull _ = pgDecodeNotNull
 
 -- |Final column decoding function used for a nullable binary-encoded result value.
 pgDecodeBinaryColumn :: PGBinaryColumn t a => PGTypeEnv -> PGTypeName t -> PGValue -> Maybe a
-pgDecodeBinaryColumn e t (PGBinaryValue v) = Just $ pgDecodeBinary e t v
-pgDecodeBinaryColumn e t v = pgDecodeColumn e t v
+pgDecodeBinaryColumn = pgDecodeBinaryNotNull
 
 -- |Final column decoding function used for a non-nullable binary-encoded result value.
-pgDecodeBinaryColumnNotNull :: (PGColumnNotNull t a, PGBinaryColumn t a) => PGTypeEnv -> PGTypeName t -> PGValue -> a
-pgDecodeBinaryColumnNotNull e t (PGBinaryValue v) = pgDecodeBinary e t v
-pgDecodeBinaryColumnNotNull _ t v = pgDecodeNotNull t v
+pgDecodeBinaryColumnNotNull :: PGBinaryColumnNotNull t a => PGTypeEnv -> PGTypeName t -> PGValue -> a
+pgDecodeBinaryColumnNotNull = pgDecodeBinaryNotNull
 
 
 pgQuoteUnsafe :: String -> String

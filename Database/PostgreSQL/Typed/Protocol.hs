@@ -41,6 +41,7 @@ import qualified Data.ByteString.Lazy.UTF8 as BSLU
 import qualified Data.ByteString.UTF8 as BSU
 import qualified Data.Foldable as Fold
 import Data.IORef (IORef, newIORef, writeIORef, readIORef, atomicModifyIORef, atomicModifyIORef', modifyIORef)
+import Data.Int (Int32, Int16)
 import qualified Data.Map.Lazy as Map
 import Data.Maybe (fromMaybe)
 import Data.Monoid (mempty, (<>))
@@ -97,9 +98,9 @@ data PGConnection = PGConnection
 data ColDescription = ColDescription
   { colName :: String
   , colTable :: !OID
-  , colNumber :: !Int
+  , colNumber :: !Int16
   , colType :: !OID
-  , colModifier :: !Word32
+  , colModifier :: !Int32
   , colBinary :: !Bool
   } deriving (Show)
 
@@ -310,7 +311,7 @@ getMessageBody 'T' = do
       , colTable = oid
       , colNumber = fromIntegral col
       , colType = typ'
-      , colModifier = tmod
+      , colModifier = fromIntegral tmod
       , colBinary = toEnum (fromIntegral fmt)
       }
 getMessageBody 'Z' = ReadyForQuery <$> (rs . w2c =<< G.getWord8) where
@@ -397,7 +398,7 @@ pgConnect db = do
         , connParameters = Map.empty
         , connPreparedStatements = prep
         , connState = state
-        , connTypeEnv = undefined
+        , connTypeEnv = unknownPGTypeEnv
         , connInput = input
         }
   pgSend c $ StartupMessage
@@ -509,7 +510,7 @@ pgDescribe h sql types nulls = do
     | nulls && oid /= 0 = do
       -- In cases where the resulting field is tracable to the column of a
       -- table, we can check there.
-      (_, r) <- pgSimpleQuery h ("SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = " ++ pgSafeLiteral oid ++ " AND attnum = " ++ show col)
+      (_, r) <- pgPreparedQuery h "SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = $1 AND attnum = $2" [26, 21] [pgEncodeRep (oid :: OID), pgEncodeRep (col :: Int16)] []
       case Fold.toList r of
         [[s]] -> return $ not $ pgDecodeRep s
         [] -> return True

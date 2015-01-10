@@ -14,6 +14,7 @@ module Database.PostgreSQL.Typed.Types
   , PGTypeName(..)
   , pgTypeName
   , PGTypeEnv(..)
+  , unknownPGTypeEnv
 
   -- * Marshalling classes
   , PGParameter(..)
@@ -104,6 +105,10 @@ pgTypeName = symbolVal
 data PGTypeEnv = PGTypeEnv
   { pgIntegerDatetimes :: Bool -- ^ If @integer_datetimes@ is @on@; only relevant for binary encoding.
   }
+
+unknownPGTypeEnv :: PGTypeEnv
+unknownPGTypeEnv = PGTypeEnv
+  { pgIntegerDatetimes = error "current setting of pgIntegerDatetimes is unknown" }
 
 -- |A @PGParameter t a@ instance describes how to encode a PostgreSQL type @t@ from @a@.
 class KnownSymbol t => PGParameter (t :: Symbol) a where

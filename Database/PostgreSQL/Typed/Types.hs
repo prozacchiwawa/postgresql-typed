@@ -140,26 +140,27 @@ class PGColumnNotNull t a => PGBinaryColumnNotNull t a where
 instance PGParameter t a => PGParameterNull t a where
   pgEncodeNull t = PGTextValue . pgEncode t
   pgLiteralNull = pgLiteral
-instance PGParameterNull t a => PGParameterNull t (Maybe a) where
-  pgEncodeNull t = maybe PGNullValue (pgEncodeNull t)
-  pgLiteralNull = maybe "NULL" . pgLiteralNull
+instance PGParameter t a => PGParameterNull t (Maybe a) where
+  pgEncodeNull t = maybe PGNullValue (PGTextValue . pgEncode t)
+  pgLiteralNull = maybe "NULL" . pgLiteral
 instance PGBinaryParameter t a => PGBinaryParameterNull t a where
   pgEncodeBinaryNull e t = PGBinaryValue . pgEncodeBinary e t
-instance PGBinaryParameterNull t a => PGBinaryParameterNull t (Maybe a) where
-  pgEncodeBinaryNull e t = maybe PGNullValue (pgEncodeBinaryNull e t)
+instance PGBinaryParameter t a => PGBinaryParameterNull t (Maybe a) where
+  pgEncodeBinaryNull e t = maybe PGNullValue (PGBinaryValue . pgEncodeBinary e t)
 
 instance PGColumn t a => PGColumnNotNull t a where
   pgDecodeNotNull t PGNullValue = error $ "NULL in " ++ pgTypeName t ++ " column (use Maybe or COALESCE)"
   pgDecodeNotNull t (PGTextValue v) = pgDecode t v
   pgDecodeNotNull t (PGBinaryValue _) = error $ "pgDecode: unexpected binary value in " ++ pgTypeName t
-instance PGColumnNotNull t a => PGColumnNotNull t (Maybe a) where
+instance PGColumn t a => PGColumnNotNull t (Maybe a) where
   pgDecodeNotNull _ PGNullValue = Nothing
-  pgDecodeNotNull t v = Just $ pgDecodeNotNull t v
+  pgDecodeNotNull t (PGTextValue v) = Just $ pgDecode t v
+  pgDecodeNotNull t (PGBinaryValue _) = error $ "pgDecode: unexpected binary value in " ++ pgTypeName t
 instance PGBinaryColumn t a => PGBinaryColumnNotNull t a where
   pgDecodeBinaryNotNull e t (PGBinaryValue v) = pgDecodeBinary e t v
   pgDecodeBinaryNotNull _ t v = pgDecodeNotNull t v
-instance PGBinaryColumnNotNull t a => PGBinaryColumnNotNull t (Maybe a) where
-  pgDecodeBinaryNotNull e t (PGBinaryValue v) = Just $ pgDecodeBinaryNotNull e t (PGBinaryValue v)
+instance PGBinaryColumn t a => PGBinaryColumnNotNull t (Maybe a) where
+  pgDecodeBinaryNotNull e t (PGBinaryValue v) = Just $ pgDecodeBinary e t v
   pgDecodeBinaryNotNull _ t v = pgDecodeNotNull t v
 
 
@@ -184,7 +185,7 @@ pgDecodeColumnNotNull :: PGColumnNotNull t a => PGTypeEnv -> PGTypeName t -> PGV
 pgDecodeColumnNotNull _ = pgDecodeNotNull
 
 -- |Final column decoding function used for a nullable binary-encoded result value.
-pgDecodeBinaryColumn :: PGBinaryColumnNotNull t (Maybe a) => PGTypeEnv -> PGTypeName t -> PGValue -> Maybe a
+pgDecodeBinaryColumn :: PGBinaryColumn t a => PGTypeEnv -> PGTypeName t -> PGValue -> Maybe a
 pgDecodeBinaryColumn = pgDecodeBinaryNotNull
 
 -- |Final column decoding function used for a non-nullable binary-encoded result value.

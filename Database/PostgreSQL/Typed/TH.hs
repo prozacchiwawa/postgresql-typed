@@ -15,6 +15,7 @@ module Database.PostgreSQL.Typed.TH
   , tpgDescribe
   , tpgTypeEncoder
   , tpgTypeDecoder
+  , tpgTypeBinary
   ) where
 
 import Control.Applicative ((<$>), (<$), (<|>))
@@ -127,69 +128,53 @@ getTPGTypeOID TPGState{ tpgTypes = types } t =
   maybe (fail $ "Unknown PostgreSQL type: " ++ t ++ "; be sure to use the exact type name from \\dTS") (return . fromIntegral . fst)
     $ find ((==) t . snd) $ IntMap.toList types
 
--- |Determine if a type supports binary format marshalling.
--- Checks for a 'PGBinaryType' instance.  Should be efficient.
-tpgTypeIsBinary :: TPGType -> TH.Q Bool
-tpgTypeIsBinary t =
-  TH.isInstance ''PGBinaryType [TH.LitT (TH.StrTyLit t)]
-
 data TPGValueInfo = TPGValueInfo
   { tpgValueName :: String
   , tpgValueTypeOID :: !OID
   , tpgValueType :: TPGType
-  , tpgValueBinary :: Bool
   , tpgValueNullable :: Bool
   }
 
 -- |A type-aware wrapper to 'pgDescribe'
-tpgDescribe :: String -> [String] -> Bool -> TH.Q ([TPGValueInfo], [TPGValueInfo])
-tpgDescribe sql types nulls = do
-  (pv, rv) <- TH.runIO $ withTPGState $ \tpg -> do
-    at <- mapM (getTPGTypeOID tpg) types
-    (pt, rt) <- pgDescribe (tpgConnection tpg) sql at nulls
-    return
-      ( map (\o -> TPGValueInfo
-        { tpgValueName = ""
-        , tpgValueTypeOID = o
-        , tpgValueType = tpgType tpg o
-        , tpgValueBinary = False
-        , tpgValueNullable = True
-        }) pt
-      , map (\(c, o, n) -> TPGValueInfo
-        { tpgValueName = c
-        , tpgValueTypeOID = o
-        , tpgValueType = tpgType tpg o
-        , tpgValueBinary = False
-        , tpgValueNullable = n
-        }) rt
-      )
-#ifdef USE_BINARY
-  -- now that we're back in Q (and have given up the TPGState) we go back to fill in binary:
-  (,) pv <$> fillBin rv
-  where
-  fillBin = mapM (\i -> do
-    b <- tpgTypeIsBinary (tpgValueType i)
-    return i{ tpgValueBinary = b })
-#else
-  return (pv, rv)
-#endif
+tpgDescribe :: String -> [String] -> Bool -> IO ([TPGValueInfo], [TPGValueInfo])
+tpgDescribe sql types nulls = withTPGState $ \tpg -> do
+  at <- mapM (getTPGTypeOID tpg) types
+  (pt, rt) <- pgDescribe (tpgConnection tpg) sql at nulls
+  return
+    ( map (\o -> TPGValueInfo
+      { tpgValueName = ""
+      , tpgValueTypeOID = o
+      , tpgValueType = tpgType tpg o
+      , tpgValueNullable = True
+      }) pt
+    , map (\(c, o, n) -> TPGValueInfo
+      { tpgValueName = c
+      , tpgValueTypeOID = o
+      , tpgValueType = tpgType tpg o
+      , tpgValueNullable = n
+      }) rt
+    )
 
-
-typeApply :: TPGType -> TH.Name -> TH.Name -> TH.Name -> TH.Exp
-typeApply t f e v =
+typeApply :: TPGType -> TH.Name -> TH.Name -> TH.Exp
+typeApply t f e =
   TH.VarE f `TH.AppE` TH.VarE e
     `TH.AppE` (TH.ConE 'PGTypeProxy `TH.SigE` (TH.ConT ''PGTypeName `TH.AppT` TH.LitT (TH.StrTyLit t)))
-    `TH.AppE` TH.VarE v
 
 
 -- |TH expression to encode a 'PGParameter' value to a 'Maybe' 'L.ByteString'.
-tpgTypeEncoder :: Bool -> TPGValueInfo -> TH.Name -> TH.Name -> TH.Exp
-tpgTypeEncoder lit v = typeApply (tpgValueType v) $ if lit
-  then 'pgEscapeParameter
-  else 'pgEncodeParameter
+tpgTypeEncoder :: Bool -> TPGValueInfo -> TH.Name -> TH.Exp
+tpgTypeEncoder lit v = typeApply (tpgValueType v) $
+  if lit
+    then 'pgEscapeParameter
+    else 'pgEncodeParameter
 
 -- |TH expression to decode a 'Maybe' 'L.ByteString' to a ('Maybe') 'PGColumn' value.
-tpgTypeDecoder :: TPGValueInfo -> TH.Name -> TH.Name -> TH.Exp
-tpgTypeDecoder v = typeApply (tpgValueType v) $ if tpgValueBinary v
-  then if tpgValueNullable v then 'pgDecodeBinaryColumn else 'pgDecodeBinaryColumnNotNull
-  else if tpgValueNullable v then 'pgDecodeColumn       else 'pgDecodeColumnNotNull
+tpgTypeDecoder :: TPGValueInfo -> TH.Name -> TH.Exp
+tpgTypeDecoder v = typeApply (tpgValueType v) $
+  if tpgValueNullable v
+    then 'pgDecodeColumn
+    else 'pgDecodeColumnNotNull
+
+-- |TH expression calling 'pgBinaryColumn'.
+tpgTypeBinary :: TPGValueInfo -> TH.Name -> TH.Exp
+tpgTypeBinary v = typeApply (tpgValueType v) 'pgBinaryColumn

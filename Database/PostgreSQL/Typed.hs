@@ -163,15 +163,24 @@ import Database.PostgreSQL.Typed.Query
 -- Most builtin types are already supported.
 -- For the most part, exactly equivalent types are all supported (e.g., 'Int32' for int4) as well as other safe equivalents, but you cannot, for example, pass an 'Integer' as a @smallint@.
 -- To achieve this flexibility, the exact types of all parameters and results must be fully known (e.g., numeric literals will not work).
--- Currently only 1-dimensional arrays are supported.
 --
 -- However you can add support for your own types or add flexibility to existing types by creating new instances of 'Database.PostgreSQL.Typed.Types.PGParameter' (for encoding) and 'Database.PostgreSQL.Typed.Types.PGColumn' (for decoding).
--- If you also want to support arrays of a new type, you should also provide a 'Database.PostgreSQL.Typed.Types.PGArrayType' instance (or 'Database.PostgreSQL.Typed.Types.PGRangeType' for new ranges):
 -- 
+-- > instance PGType "mytype"
 -- > instance PGParameter "mytype" MyType where
 -- >   pgEncode _ (v :: MyType) = ... :: ByteString
 -- > instance PGColumn "mytype" MyType where
 -- >   pgDecode _ (s :: ByteString) = ... :: MyType
+-- 
+-- You can make as many 'PGParameter' and 'PGColumn' instances as you want if you want to support different representations of your type.
+-- If you want to use any of the functions in "Database.PostgreSQL.Typed.Dynamic", however, such as 'Database.PostgreSQL.Typed.Dynamic.pgSafeLiteral', you must define a default representation:
+--
+-- > instance PGRep "mytype" MyType
+--
+-- If you want to support arrays of your new type, you should also provide a 'Database.PostgreSQL.Typed.Array.PGArrayType' instance (or 'Database.PostgreSQL.Typed.Range.PGRangeType' for new ranges).
+-- Currently only 1-dimensional arrays are supported.
+--
+-- > instance PGType "mytype[]"
 -- > instance PGArrayType "mytype[]" "mytype"
 --
 -- Required language extensions: FlexibleInstances, MultiParamTypeClasses, DataKinds

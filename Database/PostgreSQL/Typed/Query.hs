@@ -1,4 +1,4 @@
-{-# LANGUAGE PatternGuards, MultiParamTypeClasses, FunctionalDependencies, TypeSynonymInstances, FlexibleInstances, FlexibleContexts, TemplateHaskell #-}
+{-# LANGUAGE CPP, PatternGuards, MultiParamTypeClasses, FunctionalDependencies, TypeSynonymInstances, FlexibleInstances, FlexibleContexts, TemplateHaskell #-}
 module Database.PostgreSQL.Typed.Query
   ( PGQuery(..)
   , PGSimpleQuery
@@ -156,28 +156,43 @@ simpleFlags = QueryFlags False Nothing
 -- |Construct a 'PGQuery' from a SQL string.
 makePGQuery :: QueryFlags -> String -> TH.ExpQ
 makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
-  (pt, rt) <- tpgDescribe sqlp (fromMaybe [] prep) (not nulls)
+  (pt, rt) <- TH.runIO $ tpgDescribe sqlp (fromMaybe [] prep) (not nulls)
   when (length pt < length exprs) $ fail "Not all expression placeholders were recognized by PostgreSQL; literal occurrences of '${' may need to be escaped with '$${'"
 
   e <- TH.newName "_tenv"
   (vars, vals) <- mapAndUnzipM (\t -> do
     v <- TH.newName $ 'p':tpgValueName t
-    return (TH.VarP v, tpgTypeEncoder (isNothing prep) t e v)) pt
-  (pats, conv, bc) <- unzip3 <$> mapM (\t -> do
+    return 
+      ( TH.VarP v
+      , tpgTypeEncoder (isNothing prep) t e `TH.AppE` TH.VarE v
+      )) pt
+  (pats, conv, bins) <- unzip3 <$> mapM (\t -> do
     v <- TH.newName $ 'c':tpgValueName t
-    return (TH.VarP v, tpgTypeDecoder t e v, tpgValueBinary t)) rt
-  let pgq
-        | isNothing prep = TH.ConE 'SimpleQuery `TH.AppE` sqlSubstitute sqlp vals
-        | otherwise = TH.ConE 'PreparedQuery `TH.AppE` stringL sqlp `TH.AppE` TH.ListE (map (TH.LitE . TH.IntegerL . toInteger . tpgValueTypeOID) pt) `TH.AppE` TH.ListE vals `TH.AppE` TH.ListE (map boolL bc)
+    return 
+      ( TH.VarP v
+      , tpgTypeDecoder t e `TH.AppE` TH.VarE v
+      , tpgTypeBinary t e
+      )) rt
   foldl TH.AppE (TH.LamE vars $ TH.ConE 'QueryParser
-    `TH.AppE` TH.LamE [TH.VarP e] pgq
+    `TH.AppE` TH.LamE [TH.VarP e] (if isNothing prep
+      then TH.ConE 'SimpleQuery
+        `TH.AppE` sqlSubstitute sqlp vals
+      else TH.ConE 'PreparedQuery
+        `TH.AppE` stringL sqlp 
+        `TH.AppE` TH.ListE (map (TH.LitE . TH.IntegerL . toInteger . tpgValueTypeOID) pt) 
+        `TH.AppE` TH.ListE vals 
+        `TH.AppE` TH.ListE 
+#ifdef USE_BINARY
+          bins
+#else
+          []
+#endif
+      )
     `TH.AppE` TH.LamE [TH.VarP e, TH.ListP pats] (TH.TupE conv))
     <$> mapM parse exprs
   where
   (sqlp, exprs) = sqlPlaceholders sqle
   parse e = either (fail . (++) ("Failed to parse expression {" ++ e ++ "}: ")) return $ parseExp e
-  boolL False = TH.ConE 'False
-  boolL True = TH.ConE 'True
 
 qqQuery :: QueryFlags -> String -> TH.ExpQ
 qqQuery f@QueryFlags{ flagNullable = False } ('?':q) = qqQuery f{ flagNullable = True } q

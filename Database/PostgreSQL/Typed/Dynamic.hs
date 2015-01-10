@@ -19,12 +19,11 @@ import qualified Data.Time as Time
 #ifdef USE_UUID
 import qualified Data.UUID as UUID
 #endif
-import GHC.TypeLits (KnownSymbol)
 
 import Database.PostgreSQL.Typed.Types
 
 -- |Represents canonical/default PostgreSQL representation for various Haskell types, allowing convenient type-driven marshalling.
-class KnownSymbol t => PGRep t a | a -> t where
+class PGType t => PGRep t a | a -> t where
   pgTypeOf :: a -> PGTypeName t
   pgTypeOf _ = PGTypeProxy
   pgEncodeRep :: a -> PGValue

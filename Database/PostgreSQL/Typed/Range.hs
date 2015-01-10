@@ -1,4 +1,5 @@
 {-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, UndecidableInstances, FunctionalDependencies, DataKinds #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 -- |
 -- Module: Database.PostgreSQL.Typed.Range
 -- Copyright: 2015 Dylan Simon
@@ -14,7 +15,6 @@ import Control.Monad (guard)
 import qualified Data.ByteString.Builder as BSB
 import qualified Data.ByteString.Char8 as BSC
 import Data.Monoid ((<>), mempty)
-import GHC.TypeLits (KnownSymbol)
 import qualified Text.Parsec as P
 
 import Database.PostgreSQL.Typed.Types
@@ -150,7 +150,7 @@ intersect _ _ = Empty
 
 -- |Class indicating that the first PostgreSQL type is a range of the second.
 -- This implies 'PGParameter' and 'PGColumn' instances that will work for any type.
-class (KnownSymbol tr, KnownSymbol t) => PGRangeType tr t | tr -> t where
+class (PGType tr, PGType t) => PGRangeType tr t | tr -> t where
   pgRangeElementType :: PGTypeName tr -> PGTypeName t
   pgRangeElementType PGTypeProxy = PGTypeProxy
 
@@ -182,10 +182,16 @@ instance (PGRangeType tr t, PGColumn t a) => PGColumn tr (Range a) where
       uc <- pc ']' ')'
       return $ Range (Lower (mb lc lb)) (Upper (mb uc ub))
 
+instance PGType "int4range"
 instance PGRangeType "int4range" "integer"
+instance PGType "numrange"
 instance PGRangeType "numrange" "numeric"
+instance PGType "tsrange"
 instance PGRangeType "tsrange" "timestamp without time zone"
+instance PGType "tstzrange"
 instance PGRangeType "tstzrange" "timestamp with time zone"
+instance PGType "daterange"
 instance PGRangeType "daterange" "date"
+instance PGType "int8range"
 instance PGRangeType "int8range" "bigint"
 

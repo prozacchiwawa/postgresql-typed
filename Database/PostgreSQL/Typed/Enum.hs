@@ -46,6 +46,7 @@ makePGEnum name typs valnf = do
   ds <- TH.newName "s"
   return
     [ TH.DataD [] typn [] (map (\(_, n) -> TH.NormalC n []) valn) [''Eq, ''Ord, ''Enum, ''Bounded]
+    , TH.InstanceD [] (TH.ConT ''PGType `TH.AppT` typl) []
     , TH.InstanceD [] (TH.ConT ''PGParameter `TH.AppT` typl `TH.AppT` typt)
       [ TH.FunD 'pgEncode $ map (\(l, n) -> TH.Clause [TH.WildP, TH.ConP n []]
         (TH.NormalB $ TH.VarE 'BSC.pack `TH.AppE` TH.LitE l) []) valn ]

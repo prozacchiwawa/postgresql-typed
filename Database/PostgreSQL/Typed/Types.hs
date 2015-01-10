@@ -20,12 +20,10 @@ module Database.PostgreSQL.Typed.Types
   , PGParameter(..)
   , PGColumn(..)
   , PGBinaryType
-  , PGBinaryParameter(..)
   , PGBinaryColumn(..)
 
   -- * Marshalling interface
   , pgEncodeParameter
-  , pgEncodeBinaryParameter
   , pgEscapeParameter
   , pgDecodeColumn
   , pgDecodeColumnNotNull
@@ -86,8 +84,8 @@ type PGBinaryValue = BS.ByteString
 -- |A value passed to or from PostgreSQL in raw format.
 data PGValue
   = PGNullValue
-  | PGTextValue PGTextValue -- ^ The standard text encoding format (also used for unknown formats)
-  | PGBinaryValue PGBinaryValue -- ^ Special binary-encoded data.  Not supported in all cases.
+  | PGTextValue { pgTextValue :: PGTextValue } -- ^ The standard text encoding format (also used for unknown formats)
+  | PGBinaryValue { pgBinaryValue :: PGBinaryValue } -- ^ Special binary-encoded data.  Not supported in all cases.
   deriving (Show, Eq)
 -- |A list of (nullable) data values, e.g. a single row or query parameters.
 type PGValues = [PGValue]
@@ -102,24 +100,29 @@ pgTypeName = symbolVal
 
 -- |Parameters that affect how marshalling happens.
 -- Currenly we force all other relevant parameters at connect time.
+-- Nothing values represent unknown.
 data PGTypeEnv = PGTypeEnv
-  { pgIntegerDatetimes :: Bool -- ^ If @integer_datetimes@ is @on@; only relevant for binary encoding.
+  { pgIntegerDatetimes :: Maybe Bool -- ^ If @integer_datetimes@ is @on@; only relevant for binary encoding.
   }
 
 unknownPGTypeEnv :: PGTypeEnv
 unknownPGTypeEnv = PGTypeEnv
-  { pgIntegerDatetimes = error "current setting of pgIntegerDatetimes is unknown" }
+  { pgIntegerDatetimes = Nothing
+  }
 
 -- |A @PGParameter t a@ instance describes how to encode a PostgreSQL type @t@ from @a@.
 class KnownSymbol t => PGParameter (t :: Symbol) a where
   -- |Encode a value to a PostgreSQL text representation.
   pgEncode :: PGTypeName t -> a -> PGTextValue
+  pgEncode t = pgTextValue . pgEncodeValue unknownPGTypeEnv t
   -- |Encode a value to a (quoted) literal value for use in SQL statements.
   -- Defaults to a quoted version of 'pgEncode'
   pgLiteral :: PGTypeName t -> a -> String
   pgLiteral t = pgQuote . BSU.toString . pgEncode t
-class (PGParameter t a, PGBinaryType t) => PGBinaryParameter t a where
-  pgEncodeBinary :: PGTypeEnv -> PGTypeName t -> a -> PGBinaryValue
+  -- |Encode a value to a PostgreSQL representation.
+  -- Defaults to the text representation by pgEncode
+  pgEncodeValue :: PGTypeEnv -> PGTypeName t -> a -> PGValue
+  pgEncodeValue _ t = PGTextValue . pgEncode t
 
 -- |A @PGColumn t a@ instance describes how te decode a PostgreSQL type @t@ to @a@.
 class KnownSymbol t => PGColumn (t :: Symbol) a where
@@ -128,13 +131,6 @@ class KnownSymbol t => PGColumn (t :: Symbol) a where
 class (PGColumn t a, PGBinaryType t) => PGBinaryColumn t a where
   pgDecodeBinary :: PGTypeEnv -> PGTypeName t -> PGBinaryValue -> a
 
--- |Support encoding of 'Maybe' values into NULL.
-class PGParameterNull t a where
-  pgEncodeNull :: PGTypeName t -> a -> PGValue
-  pgLiteralNull :: PGTypeName t -> a -> String
-class PGParameterNull t a => PGBinaryParameterNull t a where
-  pgEncodeBinaryNull :: PGTypeEnv -> PGTypeName t -> a -> PGValue
-
 -- |Support decoding of assumed non-null columns but also still allow decoding into 'Maybe'.
 class PGColumnNotNull t a where
   pgDecodeNotNull :: PGTypeName t -> PGValue -> a
@@ -142,16 +138,9 @@ class PGColumnNotNull t a => PGBinaryColumnNotNull t a where
   pgDecodeBinaryNotNull :: PGTypeEnv -> PGTypeName t -> PGValue -> a
 
 
-instance PGParameter t a => PGParameterNull t a where
-  pgEncodeNull t = PGTextValue . pgEncode t
-  pgLiteralNull = pgLiteral
-instance PGParameter t a => PGParameterNull t (Maybe a) where
-  pgEncodeNull t = maybe PGNullValue (PGTextValue . pgEncode t)
-  pgLiteralNull = maybe "NULL" . pgLiteral
-instance PGBinaryParameter t a => PGBinaryParameterNull t a where
-  pgEncodeBinaryNull e t = PGBinaryValue . pgEncodeBinary e t
-instance PGBinaryParameter t a => PGBinaryParameterNull t (Maybe a) where
-  pgEncodeBinaryNull e t = maybe PGNullValue (PGBinaryValue . pgEncodeBinary e t)
+instance PGParameter t a => PGParameter t (Maybe a) where
+  pgLiteral = maybe "NULL" . pgLiteral
+  pgEncodeValue e = maybe PGNullValue . pgEncodeValue e
 
 instance PGColumn t a => PGColumnNotNull t a where
   pgDecodeNotNull t PGNullValue = error $ "NULL in " ++ pgTypeName t ++ " column (use Maybe or COALESCE)"
@@ -170,16 +159,12 @@ instance PGBinaryColumn t a => PGBinaryColumnNotNull t (Maybe a) where
 
 
 -- |Final parameter encoding function used when a (nullable) parameter is passed to a prepared query.
-pgEncodeParameter :: PGParameterNull t a => PGTypeEnv -> PGTypeName t -> a -> PGValue
-pgEncodeParameter _ = pgEncodeNull
-
--- |Final parameter encoding function used when a (nullable) parameter is passed to a prepared query accepting binary-encoded data.
-pgEncodeBinaryParameter :: PGBinaryParameterNull t a => PGTypeEnv -> PGTypeName t -> a -> PGValue
-pgEncodeBinaryParameter = pgEncodeBinaryNull
+pgEncodeParameter :: PGParameter t a => PGTypeEnv -> PGTypeName t -> a -> PGValue
+pgEncodeParameter = pgEncodeValue
 
 -- |Final parameter escaping function used when a (nullable) parameter is passed to be substituted into a simple query.
-pgEscapeParameter :: PGParameterNull t a => PGTypeEnv -> PGTypeName t -> a -> String
-pgEscapeParameter _ = pgLiteralNull
+pgEscapeParameter :: PGParameter t a => PGTypeEnv -> PGTypeName t -> a -> String
+pgEscapeParameter _ = pgLiteral
 
 -- |Final column decoding function used for a nullable result value.
 pgDecodeColumn :: PGColumnNotNull t (Maybe a) => PGTypeEnv -> PGTypeName t -> PGValue -> Maybe a
@@ -235,6 +220,9 @@ instance PGParameter "boolean" Bool where
   pgEncode _ True = BSC.singleton 't'
   pgLiteral _ False = "false"
   pgLiteral _ True = "true"
+#ifdef USE_BINARY
+  pgEncodeValue _ _ = PGBinaryValue . BinE.bool
+#endif
 instance PGColumn "boolean" Bool where
   pgDecode _ s = case BSC.head s of
     'f' -> False
@@ -245,41 +233,62 @@ type OID = Word32
 instance PGParameter "oid" OID where
   pgEncode _ = BSC.pack . show
   pgLiteral _ = show
+#ifdef USE_BINARY
+  pgEncodeValue _ _ = PGBinaryValue . BinE.int4 . Right
+#endif
 instance PGColumn "oid" OID where
   pgDecode _ = read . BSC.unpack
 
 instance PGParameter "smallint" Int16 where
   pgEncode _ = BSC.pack . show
   pgLiteral _ = show
+#ifdef USE_BINARY
+  pgEncodeValue _ _ = PGBinaryValue . BinE.int2 . Left
+#endif
 instance PGColumn "smallint" Int16 where
   pgDecode _ = read . BSC.unpack
 
 instance PGParameter "integer" Int32 where
   pgEncode _ = BSC.pack . show
   pgLiteral _ = show
+#ifdef USE_BINARY
+  pgEncodeValue _ _ = PGBinaryValue . BinE.int4 . Left
+#endif
 instance PGColumn "integer" Int32 where
   pgDecode _ = read . BSC.unpack
 
 instance PGParameter "bigint" Int64 where
   pgEncode _ = BSC.pack . show
   pgLiteral _ = show
+#ifdef USE_BINARY
+  pgEncodeValue _ _ = PGBinaryValue . BinE.int8 . Left
+#endif
 instance PGColumn "bigint" Int64 where
   pgDecode _ = read . BSC.unpack
 
 instance PGParameter "real" Float where
   pgEncode _ = BSC.pack . show
   pgLiteral _ = show
+#ifdef USE_BINARY
+  pgEncodeValue _ _ = PGBinaryValue . BinE.float4
+#endif
 instance PGColumn "real" Float where
   pgDecode _ = read . BSC.unpack
 
 instance PGParameter "double precision" Double where
   pgEncode _ = BSC.pack . show
   pgLiteral _ = show
+#ifdef USE_BINARY
+  pgEncodeValue _ _ = PGBinaryValue . BinE.float8
+#endif
 instance PGColumn "double precision" Double where
   pgDecode _ = read . BSC.unpack
 
 instance PGParameter "\"char\"" Char where
   pgEncode _ = BSC.singleton
+#ifdef USE_BINARY
+  pgEncodeValue _ _ = PGBinaryValue . BinE.char
+#endif
 instance PGColumn "\"char\"" Char where
   pgDecode _ = BSC.head
 
@@ -288,34 +297,49 @@ class KnownSymbol t => PGStringType t
 
 instance PGStringType t => PGParameter t String where
   pgEncode _ = BSU.fromString
+#ifdef USE_BINARY
+  pgEncodeValue _ _ = PGBinaryValue . BinE.text . Left . T.pack
+#endif
 instance PGStringType t => PGColumn t String where
   pgDecode _ = BSU.toString
 
 instance PGStringType t => PGParameter t BS.ByteString where
   pgEncode _ = id
+#ifdef USE_BINARY
+  pgEncodeValue _ _ = PGBinaryValue . BinE.text . Left . TE.decodeUtf8
+#endif
 instance PGStringType t => PGColumn t BS.ByteString where
   pgDecode _ = id
 
 instance PGStringType t => PGParameter t BSL.ByteString where
   pgEncode _ = BSL.toStrict
+#ifdef USE_BINARY
+  pgEncodeValue _ _ = PGBinaryValue . BinE.text . Right . TLE.decodeUtf8
+#endif
 instance PGStringType t => PGColumn t BSL.ByteString where
   pgDecode _ = BSL.fromStrict
 
 #ifdef USE_TEXT
 instance PGStringType t => PGParameter t T.Text where
   pgEncode _ = TE.encodeUtf8
+#ifdef USE_BINARY
+  pgEncodeValue _ _ = PGBinaryValue . BinE.text . Left
+#endif
 instance PGStringType t => PGColumn t T.Text where
   pgDecode _ = TE.decodeUtf8
 
 instance PGStringType t => PGParameter t TL.Text where
   pgEncode _ = BSL.toStrict . TLE.encodeUtf8
+#ifdef USE_BINARY
+  pgEncodeValue _ _ = PGBinaryValue . BinE.text . Right
+#endif
 instance PGStringType t => PGColumn t TL.Text where
   pgDecode _ = TL.fromStrict . TE.decodeUtf8
 #endif
 
 instance PGStringType "text"
 instance PGStringType "character varying"
-instance PGStringType "name" -- limit 63 characters
+instance PGStringType "name" -- limit 63 characters; not strictly textsend but essentially the same
 instance PGStringType "bpchar" -- blank padded
 
 
@@ -336,29 +360,47 @@ decodeBytea s
 instance PGParameter "bytea" BSL.ByteString where
   pgEncode _ = encodeBytea . BSB.lazyByteStringHex
   pgLiteral t = pgQuoteUnsafe . BSC.unpack . pgEncode t
+#ifdef USE_BINARY
+  pgEncodeValue _ _ = PGBinaryValue . BinE.bytea . Right
+#endif
 instance PGColumn "bytea" BSL.ByteString where
   pgDecode _ = BSL.pack . decodeBytea
 instance PGParameter "bytea" BS.ByteString where
   pgEncode _ = encodeBytea . BSB.byteStringHex
   pgLiteral t = pgQuoteUnsafe . BSC.unpack . pgEncode t
+#ifdef USE_BINARY
+  pgEncodeValue _ _ = PGBinaryValue . BinE.bytea . Left
+#endif
 instance PGColumn "bytea" BS.ByteString where
   pgDecode _ = BS.pack . decodeBytea
 
 instance PGParameter "date" Time.Day where
   pgEncode _ = BSC.pack . Time.showGregorian
   pgLiteral _ = pgQuoteUnsafe . Time.showGregorian
+#ifdef USE_BINARY
+  pgEncodeValue _ _ = PGBinaryValue . BinE.date
+#endif
 instance PGColumn "date" Time.Day where
   pgDecode _ = Time.readTime defaultTimeLocale "%F" . BSC.unpack
+
+binEncDatetime :: PGParameter t a => (Bool -> a -> PGBinaryValue) -> PGTypeEnv -> PGTypeName t -> a -> PGValue
+binEncDatetime f e t = maybe (PGTextValue . pgEncode t) ((PGBinaryValue .) . f) (pgIntegerDatetimes e)
 
 instance PGParameter "time without time zone" Time.TimeOfDay where
   pgEncode _ = BSC.pack . Time.formatTime defaultTimeLocale "%T%Q"
   pgLiteral _ = pgQuoteUnsafe . Time.formatTime defaultTimeLocale "%T%Q"
+#ifdef USE_BINARY
+  pgEncodeValue = binEncDatetime BinE.time
+#endif
 instance PGColumn "time without time zone" Time.TimeOfDay where
   pgDecode _ = Time.readTime defaultTimeLocale "%T%Q" . BSC.unpack
 
 instance PGParameter "timestamp without time zone" Time.LocalTime where
   pgEncode _ = BSC.pack . Time.formatTime defaultTimeLocale "%F %T%Q"
   pgLiteral _ = pgQuoteUnsafe . Time.formatTime defaultTimeLocale "%F %T%Q"
+#ifdef USE_BINARY
+  pgEncodeValue = binEncDatetime BinE.timestamp
+#endif
 instance PGColumn "timestamp without time zone" Time.LocalTime where
   pgDecode _ = Time.readTime defaultTimeLocale "%F %T%Q" . BSC.unpack
 
@@ -375,12 +417,18 @@ fixTZ (c:s) = c:fixTZ s
 instance PGParameter "timestamp with time zone" Time.UTCTime where
   pgEncode _ = BSC.pack . fixTZ . Time.formatTime defaultTimeLocale "%F %T%Q%z"
   pgLiteral _ = pgQuote{-Unsafe-} . fixTZ . Time.formatTime defaultTimeLocale "%F %T%Q%z"
+#ifdef USE_BINARY
+  pgEncodeValue = binEncDatetime BinE.timestamptz
+#endif
 instance PGColumn "timestamp with time zone" Time.UTCTime where
   pgDecode _ = Time.readTime defaultTimeLocale "%F %T%Q%z" . fixTZ . BSC.unpack
 
 instance PGParameter "interval" Time.DiffTime where
   pgEncode _ = BSC.pack . show
   pgLiteral _ = pgQuoteUnsafe . show
+#ifdef USE_BINARY
+  pgEncodeValue = binEncDatetime BinE.interval
+#endif
 -- |Representation of DiffTime as interval.
 -- PostgreSQL stores months and days separately in intervals, but DiffTime does not.
 -- We collapse all interval fields into seconds
@@ -424,6 +472,9 @@ instance PGParameter "numeric" Rational where
   pgLiteral _ r
     | denominator r == 0 = "'NaN'" -- this can't happen
     | otherwise = '(' : show (numerator r) ++ '/' : show (denominator r) ++ "::numeric)"
+#ifdef USE_BINARY
+  pgEncodeValue _ _ = PGBinaryValue . BinE.numeric . realToFrac
+#endif
 -- |High-precision representation of Rational as numeric.
 -- Unfortunately, numeric has an NaN, while Rational does not.
 -- NaN numeric values will produce exceptions.
@@ -446,6 +497,9 @@ showRational r = show (ri :: Integer) ++ '.' : frac (abs rf) where
 instance PGParameter "numeric" Scientific where
   pgEncode _ = BSC.pack . show
   pgLiteral _ = show
+#ifdef USE_BINARY
+  pgEncodeValue _ _ = PGBinaryValue . BinE.numeric
+#endif
 instance PGColumn "numeric" Scientific where
   pgDecode _ = read . BSC.unpack
 #endif
@@ -454,6 +508,9 @@ instance PGColumn "numeric" Scientific where
 instance PGParameter "uuid" UUID.UUID where
   pgEncode _ = UUID.toASCIIBytes
   pgLiteral _ = pgQuoteUnsafe . UUID.toString
+#ifdef USE_BINARY
+  pgEncodeValue _ _ = PGBinaryValue . BinE.uuid
+#endif
 instance PGColumn "uuid" UUID.UUID where
   pgDecode _ u = fromMaybe (error $ "pgDecode uuid: " ++ BSC.unpack u) $ UUID.fromASCIIBytes u
 #endif
@@ -485,54 +542,36 @@ binDec :: KnownSymbol t => BinD.D a -> PGTypeName t -> PGBinaryValue -> a
 binDec d t = either (\e -> error $ "pgDecodeBinary " ++ pgTypeName t ++ ": " ++ show e) id . d
 
 instance PGBinaryType "oid"
-instance PGBinaryParameter "oid" OID where
-  pgEncodeBinary _ _ = BinE.int4 . Right
 instance PGBinaryColumn "oid" OID where
   pgDecodeBinary _ = binDec BinD.int
 
 instance PGBinaryType "smallint"
-instance PGBinaryParameter "smallint" Int16 where
-  pgEncodeBinary _ _ = BinE.int2 . Left
 instance PGBinaryColumn "smallint" Int16 where
   pgDecodeBinary _ = binDec BinD.int
 
 instance PGBinaryType "integer"
-instance PGBinaryParameter "integer" Int32 where
-  pgEncodeBinary _ _ = BinE.int4 . Left
 instance PGBinaryColumn "integer" Int32 where
   pgDecodeBinary _ = binDec BinD.int
 
 instance PGBinaryType "bigint"
-instance PGBinaryParameter "bigint" Int64 where
-  pgEncodeBinary _ _ = BinE.int8 . Left
 instance PGBinaryColumn "bigint" Int64 where
   pgDecodeBinary _ = binDec BinD.int
 
 instance PGBinaryType "real"
-instance PGBinaryParameter "real" Float where
-  pgEncodeBinary _ _ = BinE.float4
 instance PGBinaryColumn "real" Float where
   pgDecodeBinary _ = binDec BinD.float4
 
 instance PGBinaryType "double precision"
-instance PGBinaryParameter "double precision" Double where
-  pgEncodeBinary _ _ = BinE.float8
 instance PGBinaryColumn "double precision" Double where
   pgDecodeBinary _ = binDec BinD.float8
 
 instance PGBinaryType "numeric"
-instance PGBinaryParameter "numeric" Scientific where
-  pgEncodeBinary _ _ = BinE.numeric
 instance PGBinaryColumn "numeric" Scientific where
   pgDecodeBinary _ = binDec BinD.numeric
-instance PGBinaryParameter "numeric" Rational where
-  pgEncodeBinary _ _ = BinE.numeric . realToFrac
 instance PGBinaryColumn "numeric" Rational where
   pgDecodeBinary _ t = realToFrac . binDec BinD.numeric t
 
 instance PGBinaryType "\"char\""
-instance PGBinaryParameter "\"char\"" Char where
-  pgEncodeBinary _ _ = BinE.char
 instance PGBinaryColumn "\"char\"" Char where
   pgDecodeBinary _ = binDec BinD.char
 
@@ -540,72 +579,47 @@ instance PGBinaryType "text"
 instance PGBinaryType "character varying"
 instance PGBinaryType "bpchar"
 instance PGBinaryType "name" -- not strictly textsend, but essentially the same
-instance (PGStringType t, PGBinaryType t) => PGBinaryParameter t T.Text where
-  pgEncodeBinary _ _ = BinE.text . Left
 instance (PGStringType t, PGBinaryType t) => PGBinaryColumn t T.Text where
   pgDecodeBinary _ = binDec BinD.text
-instance (PGStringType t, PGBinaryType t) => PGBinaryParameter t TL.Text where
-  pgEncodeBinary _ _ = BinE.text . Right
 instance (PGStringType t, PGBinaryType t) => PGBinaryColumn t TL.Text where
   pgDecodeBinary _ t = TL.fromStrict . binDec BinD.text t
-instance (PGStringType t, PGBinaryType t) => PGBinaryParameter t BS.ByteString where
-  pgEncodeBinary _ _ = BinE.text . Left . TE.decodeUtf8
 instance (PGStringType t, PGBinaryType t) => PGBinaryColumn t BS.ByteString where
   pgDecodeBinary _ t = TE.encodeUtf8 . binDec BinD.text t
-instance (PGStringType t, PGBinaryType t) => PGBinaryParameter t BSL.ByteString where
-  pgEncodeBinary _ _ = BinE.text . Right . TLE.decodeUtf8
 instance (PGStringType t, PGBinaryType t) => PGBinaryColumn t BSL.ByteString where
   pgDecodeBinary _ t = BSL.fromStrict . TE.encodeUtf8 . binDec BinD.text t
-instance (PGStringType t, PGBinaryType t) => PGBinaryParameter t String where
-  pgEncodeBinary _ _ = BinE.text . Left . T.pack
 instance (PGStringType t, PGBinaryType t) => PGBinaryColumn t String where
   pgDecodeBinary _ t = T.unpack . binDec BinD.text t
 
 instance PGBinaryType "bytea"
-instance PGBinaryParameter "bytea" BS.ByteString where
-  pgEncodeBinary _ _ = BinE.bytea . Left
 instance PGBinaryColumn "bytea" BS.ByteString where
   pgDecodeBinary _ = binDec BinD.bytea
-instance PGBinaryParameter "bytea" BSL.ByteString where
-  pgEncodeBinary _ _ = BinE.bytea . Right
 instance PGBinaryColumn "bytea" BSL.ByteString where
   pgDecodeBinary _ t = BSL.fromStrict . binDec BinD.bytea t
 
+binDecDatetime :: KnownSymbol t => (Bool -> BinD.D a) -> PGTypeEnv -> PGTypeName t -> PGBinaryValue -> a
+binDecDatetime f e = binDec $ f $ fromMaybe (error "pgDecodeBinary: unknown integer_datetimes value") $ pgIntegerDatetimes e
+
 instance PGBinaryType "date"
-instance PGBinaryParameter "date" Time.Day where
-  pgEncodeBinary _ _ = BinE.date
 instance PGBinaryColumn "date" Time.Day where
   pgDecodeBinary _ = binDec BinD.date
 instance PGBinaryType "time without time zone"
-instance PGBinaryParameter "time without time zone" Time.TimeOfDay where
-  pgEncodeBinary e _ = BinE.time (pgIntegerDatetimes e)
 instance PGBinaryColumn "time without time zone" Time.TimeOfDay where
-  pgDecodeBinary e = binDec $ BinD.time (pgIntegerDatetimes e)
+  pgDecodeBinary = binDecDatetime BinD.time
 instance PGBinaryType "timestamp without time zone"
-instance PGBinaryParameter "timestamp without time zone" Time.LocalTime where
-  pgEncodeBinary e _ = BinE.timestamp (pgIntegerDatetimes e)
 instance PGBinaryColumn "timestamp without time zone" Time.LocalTime where
-  pgDecodeBinary e = binDec $ BinD.timestamp (pgIntegerDatetimes e)
+  pgDecodeBinary = binDecDatetime BinD.timestamp
 instance PGBinaryType "timestamp with time zone"
-instance PGBinaryParameter "timestamp with time zone" Time.UTCTime where
-  pgEncodeBinary e _ = BinE.timestamptz (pgIntegerDatetimes e)
 instance PGBinaryColumn "timestamp with time zone" Time.UTCTime where
-  pgDecodeBinary e = binDec $ BinD.timestamptz (pgIntegerDatetimes e)
+  pgDecodeBinary = binDecDatetime BinD.timestamptz
 instance PGBinaryType "interval"
-instance PGBinaryParameter "interval" Time.DiffTime where
-  pgEncodeBinary e _ = BinE.interval (pgIntegerDatetimes e)
 instance PGBinaryColumn "interval" Time.DiffTime where
-  pgDecodeBinary e = binDec $ BinD.interval (pgIntegerDatetimes e)
+  pgDecodeBinary = binDecDatetime BinD.interval
 
 instance PGBinaryType "boolean"
-instance PGBinaryParameter "boolean" Bool where
-  pgEncodeBinary _ _ = BinE.bool
 instance PGBinaryColumn "boolean" Bool where
   pgDecodeBinary _ = binDec BinD.bool
 
 instance PGBinaryType "uuid"
-instance PGBinaryParameter "uuid" UUID.UUID where
-  pgEncodeBinary _ _ = BinE.uuid
 instance PGBinaryColumn "uuid" UUID.UUID where
   pgDecodeBinary _ = binDec BinD.uuid
 

@@ -165,7 +165,7 @@ tpgDescribe sql types nulls = do
       )
 #ifdef USE_BINARY
   -- now that we're back in Q (and have given up the TPGState) we go back to fill in binary:
-  liftM2 (,) (fillBin pv) (fillBin rv)
+  (,) pv <$> fillBin rv
   where
   fillBin = mapM (\i -> do
     b <- tpgTypeIsBinary (tpgValueType i)
@@ -186,7 +186,7 @@ typeApply t f e v =
 tpgTypeEncoder :: Bool -> TPGValueInfo -> TH.Name -> TH.Name -> TH.Exp
 tpgTypeEncoder lit v = typeApply (tpgValueType v) $ if lit
   then 'pgEscapeParameter
-  else if tpgValueBinary v then 'pgEncodeBinaryParameter else 'pgEncodeParameter
+  else 'pgEncodeParameter
 
 -- |TH expression to decode a 'Maybe' 'L.ByteString' to a ('Maybe') 'PGColumn' value.
 tpgTypeDecoder :: TPGValueInfo -> TH.Name -> TH.Name -> TH.Exp

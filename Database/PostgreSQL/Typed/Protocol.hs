@@ -416,7 +416,7 @@ pgConnect db = do
   conn c = pgReceive c >>= msg c
   msg c (ReadyForQuery _) = return c
     { connTypeEnv = PGTypeEnv
-      { pgIntegerDatetimes = (connParameters c Map.! "integer_datetimes") == "on"
+      { pgIntegerDatetimes = fmap ("on" ==) $ Map.lookup "integer_datetimes" (connParameters c)
       }
     }
   msg c (BackendKeyData p k) = conn c{ connPid = p, connKey = k }

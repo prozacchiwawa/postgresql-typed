@@ -12,8 +12,6 @@ module Database.PostgreSQL.Typed.Enum
 import Control.Monad (when)
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.UTF8 as U
-import Data.Foldable (toList)
-import qualified Data.Sequence as Seq
 import qualified Language.Haskell.TH as TH
 
 import Database.PostgreSQL.Typed.Protocol
@@ -39,9 +37,9 @@ makePGEnum :: String -- ^ PostgreSQL enum type name
 makePGEnum name typs valnf = do
   (_, vals) <- TH.runIO $ withTPGConnection $ \c ->
     pgSimpleQuery c $ "SELECT enumlabel FROM pg_catalog.pg_enum JOIN pg_catalog.pg_type t ON enumtypid = t.oid WHERE typtype = 'e' AND format_type(t.oid, -1) = " ++ pgQuote name ++ " ORDER BY enumsortorder"
-  when (Seq.null vals) $ fail $ "makePGEnum: enum " ++ name ++ " not found"
+  when (null vals) $ fail $ "makePGEnum: enum " ++ name ++ " not found"
   let 
-    valn = map (\[PGTextValue v] -> (TH.StringL (BSC.unpack v), TH.mkName $ valnf (U.toString v))) $ toList vals
+    valn = map (\[PGTextValue v] -> (TH.StringL (BSC.unpack v), TH.mkName $ valnf (U.toString v))) vals
   dv <- TH.newName "x"
   ds <- TH.newName "s"
   return

@@ -45,7 +45,6 @@ import Data.Int (Int32, Int16)
 import qualified Data.Map.Lazy as Map
 import Data.Maybe (fromMaybe)
 import Data.Monoid (mempty, (<>))
-import qualified Data.Sequence as Seq
 import Data.Typeable (Typeable)
 import Data.Word (Word32)
 import Network (HostName, PortID(..), connectTo)
@@ -511,7 +510,7 @@ pgDescribe h sql types nulls = do
       -- In cases where the resulting field is tracable to the column of a
       -- table, we can check there.
       (_, r) <- pgPreparedQuery h "SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = $1 AND attnum = $2" [26, 21] [pgEncodeRep (oid :: OID), pgEncodeRep (col :: Int16)] []
-      case Fold.toList r of
+      case r of
         [[s]] -> return $ not $ pgDecodeRep s
         [] -> return True
         _ -> fail $ "Failed to determine nullability of column #" ++ show col
@@ -534,21 +533,21 @@ fixBinary _ l = l
 -- cannot bind parameters. Note that queries can return 0 results (an empty
 -- list).
 pgSimpleQuery :: PGConnection -> String -- ^ SQL string
-                   -> IO (Int, Seq.Seq PGValues) -- ^ The number of rows affected and a list of result rows
+                   -> IO (Int, [PGValues]) -- ^ The number of rows affected and a list of result rows
 pgSimpleQuery h sql = do
   pgSync h
   pgSend h $ SimpleQuery sql
   pgFlush h
   go start where 
   go = (pgReceive h >>=)
-  start (RowDescription rd) = go $ row (map colBinary rd) Seq.empty
-  start (CommandComplete c) = got c Seq.empty
-  start EmptyQueryResponse = return (0, Seq.empty)
+  start (RowDescription rd) = go (row (map colBinary rd))
+  start (CommandComplete c) = got c
+  start EmptyQueryResponse = return (0, [])
   start m = fail $ "pgSimpleQuery: unexpected response: " ++ show m
-  row bc s (DataRow fs) = go $ row bc (s Seq.|> fixBinary bc fs)
-  row _ s (CommandComplete c) = got c s
-  row _ _ m = fail $ "pgSimpleQuery: unexpected row: " ++ show m
-  got c s = return (rowsAffected c, s)
+  row bc (DataRow fs) = second (fixBinary bc fs :) <$> go (row bc)
+  row _ (CommandComplete c) = got c
+  row _ m = fail $ "pgSimpleQuery: unexpected row: " ++ show m
+  got c = return (rowsAffected c, [])
 
 pgPreparedBind :: PGConnection -> String -> [OID] -> PGValues -> [Bool] -> IO (IO ())
 pgPreparedBind c@PGConnection{ connPreparedStatements = psr } sql types bind bc = do
@@ -576,7 +575,7 @@ pgPreparedQuery :: PGConnection -> String -- ^ SQL statement with placeholders
   -> [OID] -- ^ Optional type specifications (only used for first call)
   -> PGValues -- ^ Paremeters to bind to placeholders
   -> [Bool] -- ^ Requested binary format for result columns
-  -> IO (Int, Seq.Seq PGValues)
+  -> IO (Int, [PGValues])
 pgPreparedQuery c sql types bind bc = do
   start <- pgPreparedBind c sql types bind bc
   pgSend c $ Execute 0
@@ -584,13 +583,13 @@ pgPreparedQuery c sql types bind bc = do
   pgSend c Sync
   pgFlush c
   start
-  go Seq.empty
+  go
   where
-  go = (pgReceive c >>=) . row
-  row s (DataRow fs) = go (s Seq.|> fixBinary bc fs)
-  row s (CommandComplete r) = return (rowsAffected r, s)
-  row s EmptyQueryResponse = return (0, s)
-  row _ m = fail $ "pgPreparedQuery: unexpected row: " ++ show m
+  go = pgReceive c >>= row
+  row (DataRow fs) = second (fixBinary bc fs :) <$> go
+  row (CommandComplete r) = return (rowsAffected r, [])
+  row EmptyQueryResponse = return (0, [])
+  row m = fail $ "pgPreparedQuery: unexpected row: " ++ show m
 
 -- |Like 'pgPreparedQuery' but requests results lazily in chunks of the given size.
 -- Does not use a named portal, so other requests may not intervene.
@@ -601,18 +600,18 @@ pgPreparedLazyQuery c sql types bind bc count = do
   unsafeInterleaveIO $ do
     execute
     start
-    go Seq.empty
+    go
   where
   execute = do
     pgSend c $ Execute count
     pgSend c $ Flush
     pgFlush c
-  go = (pgReceive c >>=) . row
-  row s (DataRow fs) = go (s Seq.|> fixBinary bc fs)
-  row s PortalSuspended = (Fold.toList s ++) <$> unsafeInterleaveIO (execute >> go Seq.empty)
-  row s (CommandComplete _) = return $ Fold.toList s
-  row s EmptyQueryResponse = return $ Fold.toList s
-  row _ m = fail $ "pgPreparedLazyQuery: unexpected row: " ++ show m
+  go = pgReceive c >>= row
+  row (DataRow fs) = (fixBinary bc fs :) <$> go
+  row PortalSuspended = unsafeInterleaveIO (execute >> go)
+  row (CommandComplete _) = return []
+  row EmptyQueryResponse = return []
+  row m = fail $ "pgPreparedLazyQuery: unexpected row: " ++ show m
 
 -- |Close a previously prepared query (if necessary).
 pgCloseStatement :: PGConnection -> String -> [OID] -> IO ()

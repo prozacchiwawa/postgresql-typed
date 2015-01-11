@@ -30,7 +30,9 @@ import qualified Language.Haskell.TH as TH
 import Language.Haskell.TH.Quote (QuasiQuoter(..))
 import Numeric (readDec)
 
+import Database.PostgreSQL.Typed.Internal
 import Database.PostgreSQL.Typed.Types
+import Database.PostgreSQL.Typed.Dynamic
 import Database.PostgreSQL.Typed.Protocol
 import Database.PostgreSQL.Typed.TH
 
@@ -110,28 +112,16 @@ sqlPlaceholders = sph (1 :: Int) where
 -- |Given a SQL statement with placeholders of the form @$N@ and a list of TH 'String' expressions, return a new 'String' expression that substitutes the expressions for the placeholders.
 -- This does not understand strings or other SQL syntax, so any literal occurrence of a string like @$N@ must be escaped as @$$N@.
 sqlSubstitute :: String -> [TH.Exp] -> TH.Exp
-sqlSubstitute sql exprl = se sql where
+sqlSubstitute sql exprl = ss sql where
   bnds = (1, length exprl)
   exprs = listArray bnds exprl
   expr n
     | inRange bnds n = exprs ! n
     | otherwise = error $ "SQL placeholder '$" ++ show n ++ "' out of range (not recognized by PostgreSQL); literal occurrences may need to be escaped with '$$'"
-
-  se = uncurry ((+$+) . stringL) . ss
-  ss ('$':'$':d:r) | isDigit d = first (('$':) . (d:)) $ ss r
-  ss ('$':s@(d:_)) | isDigit d, [(n, r)] <- readDec s = ("", expr n +$+ se r)
-  ss (c:r) = first (c:) $ ss r
-  ss "" = ("", stringL "")
-
-stringL :: String -> TH.Exp
-stringL = TH.LitE . TH.StringL
-
-(+$+) :: TH.Exp -> TH.Exp -> TH.Exp
-infixr 5 +$+
-TH.LitE (TH.StringL "") +$+ e = e
-e +$+ TH.LitE (TH.StringL "") = e
-TH.LitE (TH.StringL l) +$+ TH.LitE (TH.StringL r) = stringL (l ++ r)
-l +$+ r = TH.InfixE (Just l) (TH.VarE '(++)) (Just r)
+  ss ('$':'$':d:r) | isDigit d = ['$',d] ++$ ss r
+  ss ('$':s@(d:_)) | isDigit d, [(n, r)] <- readDec s = expr n $++$ ss r
+  ss (c:r) = [c] ++$ ss r
+  ss "" = stringE ""
 
 splitCommas :: String -> [String]
 splitCommas = spl where
@@ -145,16 +135,18 @@ trim = dropWhileEnd isSpace . dropWhile isSpace
 
 -- |Flags affecting how and what type of query to build with 'makePGQuery'.
 data QueryFlags = QueryFlags
-  { flagNullable :: Bool -- ^ Assume all results are nullable and don't try to guess.
+  { flagQuery :: Bool -- ^ Create a query -- otherwise just call 'pgSubstituteLiterals' to create a string (SQL fragment)
+  , flagNullable :: Bool -- ^ Assume all results are nullable and don't try to guess.
   , flagPrepare :: Maybe [String] -- ^ Prepare and re-use query, binding parameters of the given types (inferring the rest, like PREPARE).
   }
 
 -- |'QueryFlags' for a default (simple) query.
 simpleFlags :: QueryFlags
-simpleFlags = QueryFlags False Nothing
+simpleFlags = QueryFlags True False Nothing
 
 -- |Construct a 'PGQuery' from a SQL string.
 makePGQuery :: QueryFlags -> String -> TH.ExpQ
+makePGQuery QueryFlags{ flagQuery = False } sqle = pgSubstituteLiterals sqle
 makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
   (pt, rt) <- TH.runIO $ tpgDescribe sqlp (fromMaybe [] prep) (not nulls)
   when (length pt < length exprs) $ fail "Not all expression placeholders were recognized by PostgreSQL; literal occurrences of '${' may need to be escaped with '$${'"
@@ -178,7 +170,7 @@ makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
       then TH.ConE 'SimpleQuery
         `TH.AppE` sqlSubstitute sqlp vals
       else TH.ConE 'PreparedQuery
-        `TH.AppE` stringL sqlp 
+        `TH.AppE` stringE sqlp 
         `TH.AppE` TH.ListE (map (TH.LitE . TH.IntegerL . toInteger . tpgValueTypeOID) pt) 
         `TH.AppE` TH.ListE vals 
         `TH.AppE` TH.ListE 
@@ -195,9 +187,10 @@ makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
   parse e = either (fail . (++) ("Failed to parse expression {" ++ e ++ "}: ")) return $ parseExp e
 
 qqQuery :: QueryFlags -> String -> TH.ExpQ
-qqQuery f@QueryFlags{ flagNullable = False } ('?':q) = qqQuery f{ flagNullable = True } q
-qqQuery f@QueryFlags{ flagPrepare = Nothing } ('$':q) = qqQuery f{ flagPrepare = Just [] } q
-qqQuery f@QueryFlags{ flagPrepare = Just [] } ('(':s) = qqQuery f{ flagPrepare = Just args } =<< sql r where
+qqQuery f@QueryFlags{ flagQuery = True, flagPrepare = Nothing } ('#':q) = qqQuery f{ flagQuery = False } q
+qqQuery f@QueryFlags{ flagQuery = True, flagNullable = False } ('?':q) = qqQuery f{ flagNullable = True } q
+qqQuery f@QueryFlags{ flagQuery = True, flagPrepare = Nothing } ('$':q) = qqQuery f{ flagPrepare = Just [] } q
+qqQuery f@QueryFlags{ flagQuery = True, flagPrepare = Just [] } ('(':s) = qqQuery f{ flagPrepare = Just args } =<< sql r where
   args = map trim $ splitCommas arg
   (arg, r) = break (')' ==) s
   sql (')':q) = return q
@@ -218,6 +211,7 @@ qqTop err sql = do
 -- The statement may contain PostgreSQL-style placeholders (@$1@, @$2@, ...) or in-line placeholders (@${1+1}@) containing any valid Haskell expression (except @{}@).
 -- It will be replaced by a 'PGQuery' object that can be used to perform the SQL statement.
 -- If there are more @$N@ placeholders than expressions, it will instead be a function accepting the additional parameters and returning a 'PGQuery'.
+-- 
 -- Note that all occurrences of @$N@ or @${@ will be treated as placeholders, regardless of their context in the SQL (e.g., even within SQL strings or other places placeholders are disallowed by PostgreSQL), which may cause invalid SQL or other errors.
 -- If you need to pass a literal @$@ through in these contexts, you may double it to escape it as @$$N@ or @$${@.
 --
@@ -226,6 +220,7 @@ qqTop err sql = do
 -- [@?@] To disable nullability inference, treating all result values as nullable, thus returning 'Maybe' values regardless of inferred nullability.
 -- [@$@] To create a 'PGPreparedQuery' rather than a 'PGSimpleQuery', by default inferring parameter types.
 -- [@$(type,...)@] To specify specific types to a prepared query (see <http://www.postgresql.org/docs/current/static/sql-prepare.html> for details).
+-- [@#@] Only do literal @${}@ substitution using 'pgSubstituteLiterals' and return a string, not a query.
 -- 
 -- 'pgSQL' can also be used at the top-level to execute SQL statements at compile-time (without any parameters and ignoring results).
 -- Here the query can only be prefixed with @!@ to make errors non-fatal.

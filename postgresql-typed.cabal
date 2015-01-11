@@ -64,6 +64,8 @@ Library
     Database.PostgreSQL.Typed.Range
     Database.PostgreSQL.Typed.Dynamic
     Database.PostgreSQL.Typed.TemplatePG
+  Other-Modules:
+    Database.PostgreSQL.Typed.Internal
   GHC-Options: -Wall
   if flag(md5)
     Build-Depends: cryptohash >= 0.5

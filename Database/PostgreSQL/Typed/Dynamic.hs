@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP, FlexibleInstances, MultiParamTypeClasses, ScopedTypeVariables, FunctionalDependencies, UndecidableInstances, DataKinds, DefaultSignatures #-}
+{-# LANGUAGE CPP, FlexibleInstances, MultiParamTypeClasses, ScopedTypeVariables, FunctionalDependencies, UndecidableInstances, DataKinds, DefaultSignatures, PatternGuards, TemplateHaskell #-}
 -- |
 -- Module: Database.PostgreSQL.Typed.Dynamic
 -- Copyright: 2015 Dylan Simon
@@ -6,8 +6,13 @@
 -- Automatic (dynamic) marshalling of PostgreSQL values based on Haskell types (not SQL statements).
 -- This is intended for direct construction of queries and query data, bypassing the normal SQL type inference.
 
-module Database.PostgreSQL.Typed.Dynamic where
+module Database.PostgreSQL.Typed.Dynamic 
+  ( PGRep(..)
+  , pgSafeLiteral
+  , pgSubstituteLiterals
+  ) where
 
+import Control.Applicative ((<$>))
 import Data.Int
 #ifdef USE_SCIENTIFIC
 import Data.Scientific (Scientific)
@@ -19,7 +24,10 @@ import qualified Data.Time as Time
 #ifdef USE_UUID
 import qualified Data.UUID as UUID
 #endif
+import Language.Haskell.Meta.Parse (parseExp)
+import qualified Language.Haskell.TH as TH
 
+import Database.PostgreSQL.Typed.Internal
 import Database.PostgreSQL.Typed.Types
 
 -- |Represents canonical/default PostgreSQL representation for various Haskell types, allowing convenient type-driven marshalling.
@@ -78,3 +86,16 @@ instance PGRep "numeric" Scientific where
 #ifdef USE_UUID
 instance PGRep "uuid" UUID.UUID where
 #endif
+
+-- |Create an expression that literally substitutes each instance of @${expr}@ for the result of @pgSafeLiteral expr@.
+-- This lets you do safe, type-driven literal substitution into SQL fragments without needing a full query, bypassing placeholder inference and any prepared queries.
+-- Unlike most other TH functions, this does not require any database connection.
+pgSubstituteLiterals :: String -> TH.ExpQ
+pgSubstituteLiterals ('$':'$':'{':s) = (++$) "${" <$> pgSubstituteLiterals s
+pgSubstituteLiterals ('$':'{':s)
+  | (e, '}':r) <- break (\c -> c == '{' || c == '}') s = do
+    v <- either (fail . (++) ("Failed to parse expression {" ++ e ++ "}: ")) return $ parseExp e
+    ($++$) (TH.VarE 'pgSafeLiteral `TH.AppE` v) <$> pgSubstituteLiterals r
+  | otherwise = fail $ "Error parsing SQL: could not find end of expression: ${" ++ s
+pgSubstituteLiterals (c:r) = (++$) [c] <$> pgSubstituteLiterals r
+pgSubstituteLiterals "" = return $ stringE ""

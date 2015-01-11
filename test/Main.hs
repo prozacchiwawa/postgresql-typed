@@ -59,5 +59,7 @@ main = do
   [Just "line"] <- prepared c 628 "line"
   ["line"] <- preparedApply c 628
 
+  assert $ [pgSQL|#abc${f}def|] == "abc3.14::realdef"
+
   pgDisconnect c
   exitSuccess

@@ -24,7 +24,7 @@ import Database.PostgreSQL.Typed.Dynamic
 -- @makePGEnum \"foo\" \"Foo\" (\"Foo_\"++)@ will be equivalent to:
 -- 
 -- @
--- data Foo = Foo_abc | Foo_DEF deriving (Eq, Ord, Enum, Bounded)
+-- data Foo = Foo_abc | Foo_DEF deriving (Eq, Ord, Enum, Bounded, Show, Read)
 -- instance PGType Foo where ...
 -- registerPGType \"foo\" (ConT ''Foo)
 -- @
@@ -43,7 +43,7 @@ makePGEnum name typs valnf = do
   dv <- TH.newName "x"
   ds <- TH.newName "s"
   return
-    [ TH.DataD [] typn [] (map (\(_, n) -> TH.NormalC n []) valn) [''Eq, ''Ord, ''Enum, ''Bounded]
+    [ TH.DataD [] typn [] (map (\(_, n) -> TH.NormalC n []) valn) [''Eq, ''Ord, ''Enum, ''Bounded, ''Show, ''Read]
     , TH.InstanceD [] (TH.ConT ''PGType `TH.AppT` typl) []
     , TH.InstanceD [] (TH.ConT ''PGParameter `TH.AppT` typl `TH.AppT` typt)
       [ TH.FunD 'pgEncode $ map (\(l, n) -> TH.Clause [TH.WildP, TH.ConP n []]

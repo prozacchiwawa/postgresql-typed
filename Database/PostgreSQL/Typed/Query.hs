@@ -6,7 +6,7 @@ module Database.PostgreSQL.Typed.Query
   , rawPGSimpleQuery
   , rawPGPreparedQuery
   , QueryFlags(..)
-  , simpleFlags
+  , simpleQueryFlags
   , makePGQuery
   , pgSQL
   , pgExecute
@@ -139,8 +139,8 @@ data QueryFlags = QueryFlags
   }
 
 -- |'QueryFlags' for a default (simple) query.
-simpleFlags :: QueryFlags
-simpleFlags = QueryFlags True False Nothing
+simpleQueryFlags :: QueryFlags
+simpleQueryFlags = QueryFlags True False Nothing
 
 -- |Construct a 'PGQuery' from a SQL string.
 makePGQuery :: QueryFlags -> String -> TH.ExpQ
@@ -224,7 +224,7 @@ qqTop err sql = do
 -- Here the query can only be prefixed with @!@ to make errors non-fatal.
 pgSQL :: QuasiQuoter
 pgSQL = QuasiQuoter
-  { quoteExp = qqQuery simpleFlags
+  { quoteExp = qqQuery simpleQueryFlags
   , quoteType = const $ fail "pgSQL not supported in types"
   , quotePat = const $ fail "pgSQL not supported in patterns"
   , quoteDec = qqTop True

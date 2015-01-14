@@ -69,7 +69,7 @@ data PGState
 -- |Information for how to connect to a database, to be passed to 'pgConnect'.
 data PGDatabase = PGDatabase
   { pgDBHost :: HostName -- ^ The hostname (ignored if 'pgDBPort' is 'UnixSocket')
-  , pgDBPort :: PortID -- ^ The port, likely either @PortNumber 5432@ or @UnixSocket \"/tmp/.s.PGSQL.5432\"@
+  , pgDBPort :: PortID -- ^ The port, likely either @PortNumber 5432@ or @UnixSocket \"\/tmp\/.s.PGSQL.5432\"@
   , pgDBName :: String -- ^ The name of the database
   , pgDBUser, pgDBPass :: String
   , pgDBDebug :: Bool -- ^ Log all low-level server messages

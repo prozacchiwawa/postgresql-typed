@@ -20,6 +20,7 @@ import Control.Exception (try)
 import Control.Monad (when, mapAndUnzipM)
 import Data.Array (listArray, (!), inRange)
 import Data.Char (isDigit, isSpace)
+import qualified Data.Foldable as Fold
 import Data.List (dropWhileEnd)
 import Data.Maybe (fromMaybe, isNothing)
 import Data.Word (Word32)
@@ -133,20 +134,20 @@ trim = dropWhileEnd isSpace . dropWhile isSpace
 
 -- |Flags affecting how and what type of query to build with 'makePGQuery'.
 data QueryFlags = QueryFlags
-  { flagQuery :: Bool -- ^ Create a query -- otherwise just call 'pgSubstituteLiterals' to create a string (SQL fragment)
-  , flagNullable :: Bool -- ^ Assume all results are nullable and don't try to guess.
+  { flagQuery :: Bool -- ^ Create a query -- otherwise just call 'pgSubstituteLiterals' to create a string (SQL fragment).
+  , flagNullable :: Maybe Bool -- ^ Disable nullability inference, treating all values as nullable (if 'True') or not (if 'False').
   , flagPrepare :: Maybe [String] -- ^ Prepare and re-use query, binding parameters of the given types (inferring the rest, like PREPARE).
   }
 
 -- |'QueryFlags' for a default (simple) query.
 simpleQueryFlags :: QueryFlags
-simpleQueryFlags = QueryFlags True False Nothing
+simpleQueryFlags = QueryFlags True Nothing Nothing
 
 -- |Construct a 'PGQuery' from a SQL string.
 makePGQuery :: QueryFlags -> String -> TH.ExpQ
 makePGQuery QueryFlags{ flagQuery = False } sqle = pgSubstituteLiterals sqle
 makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
-  (pt, rt) <- TH.runIO $ tpgDescribe sqlp (fromMaybe [] prep) (not nulls)
+  (pt, rt) <- TH.runIO $ tpgDescribe sqlp (fromMaybe [] prep) (isNothing nulls)
   when (length pt < length exprs) $ fail "Not all expression placeholders were recognized by PostgreSQL; literal occurrences of '${' may need to be escaped with '$${'"
 
   e <- TH.newName "_tenv"
@@ -160,7 +161,7 @@ makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
     v <- TH.newName $ 'c':tpgValueName t
     return 
       ( TH.VarP v
-      , tpgTypeDecoder t e `TH.AppE` TH.VarE v
+      , tpgTypeDecoder (Fold.and nulls) t e `TH.AppE` TH.VarE v
       , tpgTypeBinary t e
       )) rt
   foldl TH.AppE (TH.LamE vars $ TH.ConE 'QueryParser
@@ -186,7 +187,8 @@ makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
 
 qqQuery :: QueryFlags -> String -> TH.ExpQ
 qqQuery f@QueryFlags{ flagQuery = True, flagPrepare = Nothing } ('#':q) = qqQuery f{ flagQuery = False } q
-qqQuery f@QueryFlags{ flagQuery = True, flagNullable = False } ('?':q) = qqQuery f{ flagNullable = True } q
+qqQuery f@QueryFlags{ flagQuery = True, flagNullable = Nothing } ('?':q) = qqQuery f{ flagNullable = Just True } q
+qqQuery f@QueryFlags{ flagQuery = True, flagNullable = Nothing } ('!':q) = qqQuery f{ flagNullable = Just False } q
 qqQuery f@QueryFlags{ flagQuery = True, flagPrepare = Nothing } ('$':q) = qqQuery f{ flagPrepare = Just [] } q
 qqQuery f@QueryFlags{ flagQuery = True, flagPrepare = Just [] } ('(':s) = qqQuery f{ flagPrepare = Just args } =<< sql r where
   args = map trim $ splitCommas arg
@@ -215,7 +217,8 @@ qqTop err sql = do
 --
 -- The statement may start with one of more special flags affecting the interpretation:
 --
--- [@?@] To disable nullability inference, treating all result values as nullable, thus returning 'Maybe' values regardless of inferred nullability.
+-- [@?@] To disable nullability inference, treating all result values as nullable, thus returning 'Maybe' values regardless of inferred nullability. This makes unexpected NULL errors impossible.
+-- [@!@] To disable nullability inference, treating all result values as /not/ nullable, thus only returning 'Maybe' where requested. This is makes unexpected NULL errors more likely.
 -- [@$@] To create a 'PGPreparedQuery' rather than a 'PGSimpleQuery', by default inferring parameter types.
 -- [@$(type,...)@] To specify specific types to a prepared query (see <http://www.postgresql.org/docs/current/static/sql-prepare.html> for details).
 -- [@#@] Only do literal @${}@ substitution using 'pgSubstituteLiterals' and return a string, not a query.

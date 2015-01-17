@@ -169,9 +169,9 @@ tpgTypeEncoder lit v = typeApply (tpgValueType v) $
     else 'pgEncodeParameter
 
 -- |TH expression to decode a 'Maybe' 'L.ByteString' to a ('Maybe') 'PGColumn' value.
-tpgTypeDecoder :: TPGValueInfo -> TH.Name -> TH.Exp
-tpgTypeDecoder v = typeApply (tpgValueType v) $
-  if tpgValueNullable v
+tpgTypeDecoder :: Bool -> TPGValueInfo -> TH.Name -> TH.Exp
+tpgTypeDecoder nulls v = typeApply (tpgValueType v) $
+  if nulls && tpgValueNullable v
     then 'pgDecodeColumn
     else 'pgDecodeColumnNotNull
 

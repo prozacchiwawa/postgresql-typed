@@ -540,14 +540,14 @@ pgSimpleQuery h sql = do
   pgFlush h
   go start where 
   go = (pgReceive h >>=)
-  start (RowDescription rd) = go (row (map colBinary rd))
-  start (CommandComplete c) = got c
+  start (RowDescription rd) = go $ row (map colBinary rd) id
+  start (CommandComplete c) = got c []
   start EmptyQueryResponse = return (0, [])
   start m = fail $ "pgSimpleQuery: unexpected response: " ++ show m
-  row bc (DataRow fs) = second (fixBinary bc fs :) <$> go (row bc)
-  row _ (CommandComplete c) = got c
-  row _ m = fail $ "pgSimpleQuery: unexpected row: " ++ show m
-  got c = return (rowsAffected c, [])
+  row bc r (DataRow fs) = go $ row bc (r . (fixBinary bc fs :))
+  row _ r (CommandComplete c) = got c (r [])
+  row _ _ m = fail $ "pgSimpleQuery: unexpected row: " ++ show m
+  got c r = return (rowsAffected c, r)
 
 pgPreparedBind :: PGConnection -> String -> [OID] -> PGValues -> [Bool] -> IO (IO ())
 pgPreparedBind c@PGConnection{ connPreparedStatements = psr } sql types bind bc = do
@@ -583,13 +583,13 @@ pgPreparedQuery c sql types bind bc = do
   pgSend c Sync
   pgFlush c
   start
-  go
+  go id
   where
-  go = pgReceive c >>= row
-  row (DataRow fs) = second (fixBinary bc fs :) <$> go
-  row (CommandComplete r) = return (rowsAffected r, [])
-  row EmptyQueryResponse = return (0, [])
-  row m = fail $ "pgPreparedQuery: unexpected row: " ++ show m
+  go r = pgReceive c >>= row r
+  row r (DataRow fs) = go (r . (fixBinary bc fs :))
+  row r (CommandComplete d) = return (rowsAffected d, r [])
+  row r EmptyQueryResponse = return (0, r [])
+  row _ m = fail $ "pgPreparedQuery: unexpected row: " ++ show m
 
 -- |Like 'pgPreparedQuery' but requests results lazily in chunks of the given size.
 -- Does not use a named portal, so other requests may not intervene.
@@ -600,18 +600,18 @@ pgPreparedLazyQuery c sql types bind bc count = do
   unsafeInterleaveIO $ do
     execute
     start
-    go
+    go id
   where
   execute = do
     pgSend c $ Execute count
     pgSend c $ Flush
     pgFlush c
-  go = pgReceive c >>= row
-  row (DataRow fs) = (fixBinary bc fs :) <$> go
-  row PortalSuspended = unsafeInterleaveIO (execute >> go)
-  row (CommandComplete _) = return []
-  row EmptyQueryResponse = return []
-  row m = fail $ "pgPreparedLazyQuery: unexpected row: " ++ show m
+  go r = pgReceive c >>= row r
+  row r (DataRow fs) = go (r . (fixBinary bc fs :))
+  row r PortalSuspended = r <$> unsafeInterleaveIO (execute >> go id)
+  row r (CommandComplete _) = return (r [])
+  row r EmptyQueryResponse = return (r [])
+  row _ m = fail $ "pgPreparedLazyQuery: unexpected row: " ++ show m
 
 -- |Close a previously prepared query (if necessary).
 pgCloseStatement :: PGConnection -> String -> [OID] -> IO ()

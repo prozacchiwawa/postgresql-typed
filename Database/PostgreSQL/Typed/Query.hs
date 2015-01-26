@@ -7,6 +7,7 @@ module Database.PostgreSQL.Typed.Query
   , rawPGPreparedQuery
   , QueryFlags(..)
   , simpleQueryFlags
+  , parseQueryFlags
   , makePGQuery
   , pgSQL
   , pgExecute
@@ -185,17 +186,22 @@ makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
   (sqlp, exprs) = sqlPlaceholders sqle
   parse e = either (fail . (++) ("Failed to parse expression {" ++ e ++ "}: ")) return $ parseExp e
 
-qqQuery :: QueryFlags -> String -> TH.ExpQ
-qqQuery f@QueryFlags{ flagQuery = True, flagPrepare = Nothing } ('#':q) = qqQuery f{ flagQuery = False } q
-qqQuery f@QueryFlags{ flagQuery = True, flagNullable = Nothing } ('?':q) = qqQuery f{ flagNullable = Just True } q
-qqQuery f@QueryFlags{ flagQuery = True, flagNullable = Nothing } ('!':q) = qqQuery f{ flagNullable = Just False } q
-qqQuery f@QueryFlags{ flagQuery = True, flagPrepare = Nothing } ('$':q) = qqQuery f{ flagPrepare = Just [] } q
-qqQuery f@QueryFlags{ flagQuery = True, flagPrepare = Just [] } ('(':s) = qqQuery f{ flagPrepare = Just args } =<< sql r where
-  args = map trim $ splitCommas arg
-  (arg, r) = break (')' ==) s
-  sql (')':q) = return q
-  sql _ = fail "pgSQL: unterminated argument list" 
-qqQuery f q = makePGQuery f q
+-- |Parse flags off the beginning of a query string, returning the flags and the remaining string.
+parseQueryFlags :: String -> (QueryFlags, String)
+parseQueryFlags = pqf simpleQueryFlags where
+  pqf f@QueryFlags{ flagQuery = True, flagPrepare = Nothing } ('#':q) = pqf f{ flagQuery = False } q
+  pqf f@QueryFlags{ flagQuery = True, flagNullable = Nothing } ('?':q) = pqf f{ flagNullable = Just True } q
+  pqf f@QueryFlags{ flagQuery = True, flagNullable = Nothing } ('!':q) = pqf f{ flagNullable = Just False } q
+  pqf f@QueryFlags{ flagQuery = True, flagPrepare = Nothing } ('$':q) = pqf f{ flagPrepare = Just [] } q
+  pqf f@QueryFlags{ flagQuery = True, flagPrepare = Just [] } ('(':s) = pqf f{ flagPrepare = Just args } (sql r) where
+    args = map trim $ splitCommas arg
+    (arg, r) = break (')' ==) s
+    sql (')':q) = q
+    sql _ = error "pgSQL: unterminated argument list" 
+  pqf f q = (f, q)
+
+qqQuery :: String -> TH.ExpQ
+qqQuery = uncurry makePGQuery . parseQueryFlags
 
 qqTop :: Bool -> String -> TH.DecsQ
 qqTop True ('!':sql) = qqTop False sql
@@ -227,7 +233,7 @@ qqTop err sql = do
 -- Here the query can only be prefixed with @!@ to make errors non-fatal.
 pgSQL :: QuasiQuoter
 pgSQL = QuasiQuoter
-  { quoteExp = qqQuery simpleQueryFlags
+  { quoteExp = qqQuery
   , quoteType = const $ fail "pgSQL not supported in types"
   , quotePat = const $ fail "pgSQL not supported in patterns"
   , quoteDec = qqTop True

@@ -24,6 +24,7 @@ import Data.Char (isDigit, isSpace)
 import qualified Data.Foldable as Fold
 import Data.List (dropWhileEnd)
 import Data.Maybe (fromMaybe, isNothing)
+import Data.String (IsString(..))
 import Data.Word (Word32)
 import Language.Haskell.Meta.Parse (parseExp)
 import qualified Language.Haskell.TH as TH
@@ -51,11 +52,13 @@ pgQuery :: PGQuery q a => PGConnection -> q -> IO [a]
 pgQuery c q = snd <$> pgRunQuery c q
 
 
-data SimpleQuery = SimpleQuery String
+newtype SimpleQuery = SimpleQuery String
 instance PGQuery SimpleQuery PGValues where
   pgRunQuery c (SimpleQuery sql) = pgSimpleQuery c sql
 instance PGRawQuery SimpleQuery where
 
+instance IsString SimpleQuery where
+  fromString = SimpleQuery
 
 data PreparedQuery = PreparedQuery String [OID] PGValues [Bool]
 instance PGQuery PreparedQuery PGValues where
@@ -81,6 +84,9 @@ type PGPreparedQuery = QueryParser PreparedQuery
 -- |Make a simple query directly from a query string, with no type inference
 rawPGSimpleQuery :: String -> PGSimpleQuery PGValues
 rawPGSimpleQuery = rawParser . SimpleQuery
+
+instance IsString (PGSimpleQuery PGValues) where
+  fromString = rawPGSimpleQuery
 
 -- |Make a prepared query directly from a query string and bind parameters, with no type inference
 rawPGPreparedQuery :: String -> PGValues -> PGPreparedQuery PGValues

@@ -51,19 +51,18 @@ pgExecute c q = fst <$> pgRunQuery c q
 pgQuery :: PGQuery q a => PGConnection -> q -> IO [a]
 pgQuery c q = snd <$> pgRunQuery c q
 
+instance PGQuery String PGValues where
+  pgRunQuery c sql = pgSimpleQuery c sql
 
 newtype SimpleQuery = SimpleQuery String
 instance PGQuery SimpleQuery PGValues where
   pgRunQuery c (SimpleQuery sql) = pgSimpleQuery c sql
-instance PGRawQuery SimpleQuery where
-
-instance IsString SimpleQuery where
-  fromString = SimpleQuery
+instance PGRawQuery SimpleQuery
 
 data PreparedQuery = PreparedQuery String [OID] PGValues [Bool]
 instance PGQuery PreparedQuery PGValues where
   pgRunQuery c (PreparedQuery sql types bind bc) = pgPreparedQuery c sql types bind bc
-instance PGRawQuery PreparedQuery where
+instance PGRawQuery PreparedQuery
 
 
 data QueryParser q a = QueryParser (PGTypeEnv -> q) (PGTypeEnv -> PGValues -> a)

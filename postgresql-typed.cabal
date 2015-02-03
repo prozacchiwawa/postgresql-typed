@@ -46,7 +46,11 @@ Flag scientific
 Library
   Build-Depends:
     base >= 4.7 && < 5,
-    array, binary, containers, old-locale, time,
+    array,
+    binary,
+    containers < 0.5.6,
+    old-locale,
+    time < 1.5,
     bytestring >= 0.10.2,
     template-haskell,
     haskell-src-meta,

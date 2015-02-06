@@ -40,6 +40,10 @@ import Database.PostgreSQL.Typed.TH
 class PGQuery q a | q -> a where
   -- |Execute a query and return the number of rows affected (or -1 if not known) and a list of results.
   pgRunQuery :: PGConnection -> q -> IO (Int, [a])
+  -- |Change the raw SQL query stored within this query.
+  -- This is unsafe because the query has already been type-checked, so any change must not change the number or type of results or placeholders (so adding additional static WHERE or ORDER BY clauses is generally safe).
+  -- This is useful in cases where you need to construct some part of the query dynamically, but still want to infer the result types.
+  unsafeModifyQuery :: q -> (String -> String) -> q
 class PGQuery q PGValues => PGRawQuery q
 
 -- |Execute a query that does not return results.
@@ -53,21 +57,25 @@ pgQuery c q = snd <$> pgRunQuery c q
 
 instance PGQuery String PGValues where
   pgRunQuery c sql = pgSimpleQuery c sql
+  unsafeModifyQuery q f = f q
 
 newtype SimpleQuery = SimpleQuery String
 instance PGQuery SimpleQuery PGValues where
   pgRunQuery c (SimpleQuery sql) = pgSimpleQuery c sql
+  unsafeModifyQuery (SimpleQuery sql) f = SimpleQuery $ f sql
 instance PGRawQuery SimpleQuery
 
 data PreparedQuery = PreparedQuery String [OID] PGValues [Bool]
 instance PGQuery PreparedQuery PGValues where
   pgRunQuery c (PreparedQuery sql types bind bc) = pgPreparedQuery c sql types bind bc
+  unsafeModifyQuery (PreparedQuery sql types bind bc) f = PreparedQuery (f sql) types bind bc
 instance PGRawQuery PreparedQuery
 
 
 data QueryParser q a = QueryParser (PGTypeEnv -> q) (PGTypeEnv -> PGValues -> a)
 instance PGRawQuery q => PGQuery (QueryParser q a) a where
   pgRunQuery c (QueryParser q p) = second (fmap $ p e) <$> pgRunQuery c (q e) where e = pgTypeEnv c
+  unsafeModifyQuery (QueryParser q p) f = QueryParser (\e -> unsafeModifyQuery (q e) f) p
 
 instance Functor (QueryParser q) where
   fmap f (QueryParser q p) = QueryParser q (\e -> f . p e)

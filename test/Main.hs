@@ -1,4 +1,4 @@
-{-# LANGUAGE FlexibleInstances, MultiParamTypeClasses, DataKinds #-}
+{-# LANGUAGE FlexibleInstances, MultiParamTypeClasses, DataKinds, DeriveDataTypeable #-}
 -- {-# OPTIONS_GHC -ddump-splices #-}
 module Main (main) where
 
@@ -60,6 +60,8 @@ main = do
   ["line"] <- preparedApply c 628
 
   assert $ [pgSQL|#abc${f}def|] == "abc3.14::realdef"
+
+  assert $ pgEnumValues == [(MyEnum_abc, "abc"), (MyEnum_DEF, "DEF"), (MyEnum_XX_ye, "XX_ye")]
 
   pgDisconnect c
   exitSuccess

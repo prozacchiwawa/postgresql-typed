@@ -12,6 +12,7 @@ module Database.PostgreSQL.Typed.Enum
 import Control.Monad (when)
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.UTF8 as U
+import Data.Typeable (Typeable)
 import qualified Language.Haskell.TH as TH
 
 import Database.PostgreSQL.Typed.Protocol
@@ -24,14 +25,14 @@ import Database.PostgreSQL.Typed.Dynamic
 -- @makePGEnum \"foo\" \"Foo\" (\"Foo_\"++)@ will be equivalent to:
 -- 
 -- @
--- data Foo = Foo_abc | Foo_DEF deriving (Eq, Ord, Enum, Bounded, Show, Read)
+-- data Foo = Foo_abc | Foo_DEF deriving (Eq, Ord, Enum, Bounded, Show, Read, Typeable)
 -- instance PGType \"foo\"
 -- instance PGParameter \"foo\" Foo where ...
 -- instance PGColumn \"foo\" Foo where ...
 -- instance PGRep \"foo\" Foo
 -- @
 --
--- Requires language extensions: TemplateHaskell, FlexibleInstances, MultiParamTypeClasses, DataKinds
+-- Requires language extensions: TemplateHaskell, FlexibleInstances, MultiParamTypeClasses, DeriveDataTypeable, DataKinds
 makePGEnum :: String -- ^ PostgreSQL enum type name
   -> String -- ^ Haskell type to create
   -> (String -> String) -- ^ How to generate constructor names from enum values, e.g. @(\"Type_\"++)@
@@ -45,7 +46,7 @@ makePGEnum name typs valnf = do
   dv <- TH.newName "x"
   ds <- TH.newName "s"
   return
-    [ TH.DataD [] typn [] (map (\(_, n) -> TH.NormalC n []) valn) [''Eq, ''Ord, ''Enum, ''Bounded, ''Show, ''Read]
+    [ TH.DataD [] typn [] (map (\(_, n) -> TH.NormalC n []) valn) [''Eq, ''Ord, ''Enum, ''Bounded, ''Show, ''Read, ''Typeable]
     , TH.InstanceD [] (TH.ConT ''PGType `TH.AppT` typl) []
     , TH.InstanceD [] (TH.ConT ''PGParameter `TH.AppT` typl `TH.AppT` typt)
       [ TH.FunD 'pgEncode $ map (\(l, n) -> TH.Clause [TH.WildP, TH.ConP n []]

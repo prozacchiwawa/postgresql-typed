@@ -25,8 +25,10 @@ import Database.PostgreSQL.Typed.Dynamic
 -- 
 -- @
 -- data Foo = Foo_abc | Foo_DEF deriving (Eq, Ord, Enum, Bounded, Show, Read)
--- instance PGType Foo where ...
--- registerPGType \"foo\" (ConT ''Foo)
+-- instance PGType \"foo\"
+-- instance PGParameter \"foo\" Foo where ...
+-- instance PGColumn \"foo\" Foo where ...
+-- instance PGRep \"foo\" Foo
 -- @
 --
 -- Requires language extensions: TemplateHaskell, FlexibleInstances, MultiParamTypeClasses, DataKinds

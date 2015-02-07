@@ -62,17 +62,17 @@ instance PGRep t a => PGRep t (Maybe a) where
   pgDecodeRep PGNullValue = Nothing
   pgDecodeRep v = Just (pgDecodeRep v)
 
-instance PGRep "boolean" Bool where
-instance PGRep "oid" OID where
-instance PGRep "smallint" Int16 where
-instance PGRep "integer" Int32 where
-instance PGRep "bigint" Int64 where
-instance PGRep "real" Float where
-instance PGRep "double precision" Double where
-instance PGRep "\"char\"" Char where
-instance PGRep "text" String where
+instance PGRep "boolean" Bool
+instance PGRep "oid" OID
+instance PGRep "smallint" Int16
+instance PGRep "integer" Int32
+instance PGRep "bigint" Int64
+instance PGRep "real" Float
+instance PGRep "double precision" Double
+instance PGRep "\"char\"" Char
+instance PGRep "text" String
 #ifdef USE_TEXT
-instance PGRep "text" T.Text where
+instance PGRep "text" T.Text
 #endif
 instance PGRep "date" Time.Day
 instance PGRep "time without time zone" Time.TimeOfDay
@@ -81,10 +81,10 @@ instance PGRep "timestamp with time zone" Time.UTCTime
 instance PGRep "interval" Time.DiffTime
 instance PGRep "numeric" Rational
 #ifdef USE_SCIENTIFIC
-instance PGRep "numeric" Scientific where
+instance PGRep "numeric" Scientific
 #endif
 #ifdef USE_UUID
-instance PGRep "uuid" UUID.UUID where
+instance PGRep "uuid" UUID.UUID
 #endif
 
 -- |Create an expression that literally substitutes each instance of @${expr}@ for the result of @pgSafeLiteral expr@.

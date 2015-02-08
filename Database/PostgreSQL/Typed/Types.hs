@@ -14,6 +14,7 @@ module Database.PostgreSQL.Typed.Types
   , PGTypeName(..)
   , PGTypeEnv(..)
   , unknownPGTypeEnv
+  , PGRecord(..)
 
   -- * Marshalling classes
   , PGType(..)
@@ -543,14 +544,15 @@ instance PGColumn "uuid" UUID.UUID where
 #endif
 
 -- |Generic class of composite (row or record) types.
+newtype PGRecord = PGRecord [Maybe PGTextValue]
 class PGType t => PGRecordType t
-instance PGRecordType t => PGParameter t [Maybe PGTextValue] where
-  pgEncode _ l =
+instance PGRecordType t => PGParameter t PGRecord where
+  pgEncode _ (PGRecord l) =
     buildPGValue $ BSB.char7 '(' <> mconcat (intersperse (BSB.char7 ',') $ map (maybe mempty (pgDQuote "(),")) l) <> BSB.char7 ')' where
-  pgLiteral _ l =
+  pgLiteral _ (PGRecord l) =
     "ROW(" ++ intercalate "," (map (maybe "NULL" (pgQuote . BSU.toString)) l) ++ ")" where
-instance PGRecordType t => PGColumn t [Maybe PGTextValue] where
-  pgDecode _ a = either (error . ("pgDecode record: " ++) . show) id $ P.parse pa (BSC.unpack a) a where
+instance PGRecordType t => PGColumn t PGRecord where
+  pgDecode _ a = either (error . ("pgDecode record: " ++) . show) PGRecord $ P.parse pa (BSC.unpack a) a where
     pa = do
       l <- P.between (P.char '(') (P.char ')') $
         P.sepBy el (P.char ',')

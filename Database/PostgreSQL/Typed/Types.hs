@@ -455,7 +455,7 @@ instance PGParameter "interval" Time.DiffTime where
 -- PostgreSQL stores months and days separately in intervals, but DiffTime does not.
 -- We collapse all interval fields into seconds
 instance PGColumn "interval" Time.DiffTime where
-  pgDecode _ = either (error . ("pgDecode interval: " ++) . show) id . P.parse ps "interval" where
+  pgDecode _ a = either (error . ("pgDecode interval: " ++) . show) id $ P.parse ps (BSC.unpack a) a where
     ps = do
       _ <- P.char 'P'
       d <- units [('Y', 12*month), ('M', month), ('W', 7*day), ('D', day)]
@@ -547,7 +547,7 @@ instance PGRecordType t => PGParameter t [Maybe PGTextValue] where
   pgLiteral _ l =
     "ROW(" ++ intercalate "," (map (maybe "NULL" (pgQuote . BSU.toString)) l) ++ ")" where
 instance PGRecordType t => PGColumn t [Maybe PGTextValue] where
-  pgDecode _ = either (error . ("pgDecode record: " ++) . show) id . P.parse pa "record" where
+  pgDecode _ a = either (error . ("pgDecode record: " ++) . show) id $ P.parse pa (BSC.unpack a) a where
     pa = do
       l <- P.between (P.char '(') (P.char ')') $
         P.sepBy nel (P.char ',')

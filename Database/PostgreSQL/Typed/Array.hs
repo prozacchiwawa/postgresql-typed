@@ -38,7 +38,7 @@ instance (PGArrayType ta t, PGParameter t a) => PGParameter ta (PGArray a) where
     el Nothing = BSB.string7 "null"
     el (Just e) = pgDQuote (pgArrayDelim ta : "{}") $ pgEncode (pgArrayElementType ta) e
 instance (PGArrayType ta t, PGColumn t a) => PGColumn ta (PGArray a) where
-  pgDecode ta = either (error . ("pgDecode array: " ++) . show) id . P.parse pa "array" where
+  pgDecode ta a = either (error . ("pgDecode array: " ++) . show) id $ P.parse pa (BSC.unpack a) a where
     pa = do
       l <- P.between (P.char '{') (P.char '}') $
         P.sepBy nel (P.char (pgArrayDelim ta))

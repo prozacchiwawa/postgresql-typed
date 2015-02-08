@@ -45,7 +45,7 @@ main = do
       d = Time.localDay t
       p = -34881559 :: Time.DiffTime
       s = "\"hel\\o'"
-      l = [Just "a\\\"b,c", Nothing]
+      l = [Just "a\\\"b,c", Nothing, Just "null", Just "nullish"]
       r = Range.normal (Just (-2 :: Int32)) Nothing
       e = MyEnum_XX_ye
   [(Just b', Just i', Just f', Just s', Just d', Just t', Just z', Just p', Just l', Just r', Just e')] <- pgQuery c

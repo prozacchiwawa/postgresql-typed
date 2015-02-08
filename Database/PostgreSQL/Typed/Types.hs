@@ -192,11 +192,14 @@ pgDQuote unsafe s
   bs = BSBP.liftFixedToBounded $ ((,) '\\') BSBP.>$< (BSBP.char7 BSBP.>*< BSBP.word8)
 
 -- |Parse double-quoted values ala 'pgDQuote'.
-parsePGDQuote :: P.Stream s m Char => String -> P.ParsecT s u m String
-parsePGDQuote unsafe = (q P.<|> uq) where
+parsePGDQuote :: P.Stream s m Char => String -> (String -> Bool) -> P.ParsecT s u m (Maybe String)
+parsePGDQuote unsafe isnul = (Just <$> q P.<|> mnul <$> uq) where
   q = P.between (P.char '"') (P.char '"') $
     P.many $ (P.char '\\' >> P.anyChar) P.<|> P.noneOf "\\\""
-  uq = P.many1 (P.noneOf ('"':'\\':unsafe))
+  uq = P.many (P.noneOf ('"':'\\':unsafe))
+  mnul s
+    | isnul s = Nothing
+    | otherwise = Just s
 
 #ifdef USE_BINARY
 binDec :: PGType t => BinD.D a -> PGTypeName t -> PGBinaryValue -> a
@@ -550,11 +553,10 @@ instance PGRecordType t => PGColumn t [Maybe PGTextValue] where
   pgDecode _ a = either (error . ("pgDecode record: " ++) . show) id $ P.parse pa (BSC.unpack a) a where
     pa = do
       l <- P.between (P.char '(') (P.char ')') $
-        P.sepBy nel (P.char ',')
+        P.sepBy el (P.char ',')
       _ <- P.eof
       return l
-    nel = P.optionMaybe $ P.between P.spaces P.spaces el
-    el = BSC.pack <$> parsePGDQuote "(),"
+    el = fmap BSC.pack <$> parsePGDQuote "()," null
 
 instance PGType "record"
 -- |The generic anonymous record type, as created by @ROW@.

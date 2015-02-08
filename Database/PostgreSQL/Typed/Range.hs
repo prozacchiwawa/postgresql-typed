@@ -170,9 +170,8 @@ instance (PGRangeType tr t, PGColumn t a) => PGColumn tr (Range a) where
   pgDecode tr a = either (error . ("pgDecode range: " ++) . show) id $ P.parse per (BSC.unpack a) a where
     per = Empty <$ pe P.<|> pr
     pe = P.oneOf "Ee" >> P.oneOf "Mm" >> P.oneOf "Pp" >> P.oneOf "Tt" >> P.oneOf "Yy"
-    pp = pgDecode (pgRangeElementType tr) . BSC.pack <$> parsePGDQuote "(),[]"
+    pb = fmap (pgDecode (pgRangeElementType tr) . BSC.pack) <$> parsePGDQuote "(),[]" null
     pc c o = True <$ P.char c P.<|> False <$ P.char o
-    pb = P.optionMaybe $ P.between P.spaces P.spaces $ pp
     mb = maybe Unbounded . Bounded
     pr = do
       lc <- pc '[' '('

@@ -10,9 +10,10 @@
 
 module Database.PostgreSQL.Typed.Array where
 
-import Control.Applicative ((<$>), (<$))
+import Control.Applicative ((<$>))
 import qualified Data.ByteString.Builder as BSB
 import qualified Data.ByteString.Char8 as BSC
+import Data.Char (toLower)
 import Data.List (intersperse)
 import Data.Monoid ((<>), mconcat)
 import qualified Text.Parsec as P
@@ -41,12 +42,11 @@ instance (PGArrayType ta t, PGColumn t a) => PGColumn ta (PGArray a) where
   pgDecode ta a = either (error . ("pgDecode array: " ++) . show) id $ P.parse pa (BSC.unpack a) a where
     pa = do
       l <- P.between (P.char '{') (P.char '}') $
-        P.sepBy nel (P.char (pgArrayDelim ta))
+        P.sepBy el (P.char (pgArrayDelim ta))
       _ <- P.eof
       return l
-    nel = P.between P.spaces P.spaces $ Nothing <$ nul P.<|> Just <$> el
-    nul = P.oneOf "Nn" >> P.oneOf "Uu" >> P.oneOf "Ll" >> P.oneOf "Ll"
-    el = pgDecode (pgArrayElementType ta) . BSC.pack <$> parsePGDQuote (pgArrayDelim ta : "{}")
+    el = P.between P.spaces P.spaces $ fmap (pgDecode (pgArrayElementType ta) . BSC.pack) <$>
+      parsePGDQuote (pgArrayDelim ta : "{}") (("null" ==) . map toLower)
 
 -- Just a dump of pg_type:
 instance PGType "boolean" => PGType "boolean[]"

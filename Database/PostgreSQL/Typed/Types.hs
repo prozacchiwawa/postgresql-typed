@@ -36,6 +36,10 @@ module Database.PostgreSQL.Typed.Types
 
 import Control.Applicative ((<$>), (<$))
 import Control.Monad (mzero)
+#ifdef USE_AESON
+import qualified Data.Aeson as JSON
+import qualified Data.Attoparsec.ByteString as JSONP
+#endif
 import Data.Bits (shiftL, (.|.))
 import Data.ByteString.Internal (w2c)
 import qualified Data.ByteString as BS
@@ -565,8 +569,21 @@ instance PGType "record"
 -- In this case we can not know the types, and in fact, PostgreSQL does not accept values of this type regardless (except as literals).
 instance PGRecordType "record"
 
+#ifdef USE_AESON
+instance PGType "json"
+instance PGParameter "json" JSON.Value where
+  pgEncode _ = BSL.toStrict . JSON.encode
+instance PGColumn "json" JSON.Value where
+  pgDecode _ j = either (error . ("pgDecode json: " ++)) id $ JSONP.parseOnly JSON.json j
+
+instance PGType "jsonb"
+instance PGParameter "jsonb" JSON.Value where
+  pgEncode _ = BSL.toStrict . JSON.encode
+instance PGColumn "jsonb" JSON.Value where
+  pgDecode _ j = either (error . ("pgDecode json: " ++)) id $ JSONP.parseOnly JSON.json j
+#endif
+
 {-
---, ( 114,  199, "json",        ?)
 --, ( 142,  143, "xml",         ?)
 --, ( 600, 1017, "point",       ?)
 --, ( 650,  651, "cidr",        ?)

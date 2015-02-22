@@ -1,5 +1,5 @@
 Name:          postgresql-typed
-Version:       0.3.2
+Version:       0.3.3
 Cabal-Version: >= 1.8
 License:       BSD3
 License-File:  COPYING
@@ -41,6 +41,10 @@ Flag uuid
 
 Flag scientific
   Description: Support decoding numeric via scientific (implied by binary).
+  Default: True
+
+Flag aeson
+  Description: Support decoding json via aeson.
   Default: True
 
 Library
@@ -88,6 +92,9 @@ Library
     if flag(scientific)
       Build-Depends: scientific >= 0.3
       CPP-options: -DUSE_SCIENTIFIC
+  if flag(aeson)
+    Build-Depends: aeson >= 0.7, attoparsec >= 0.10
+    CPP-options: -DUSE_AESON
 
 test-suite test
   build-depends: base, network, time, postgresql-typed

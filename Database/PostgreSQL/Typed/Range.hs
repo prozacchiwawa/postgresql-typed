@@ -1,4 +1,4 @@
-{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, UndecidableInstances, FunctionalDependencies, DataKinds #-}
+{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, UndecidableInstances, FunctionalDependencies, DataKinds, GeneralizedNewtypeDeriving #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 -- |
 -- Module: Database.PostgreSQL.Typed.Range
@@ -28,10 +28,7 @@ instance Functor Bound where
   fmap _ Unbounded = Unbounded
   fmap f (Bounded c a) = Bounded c (f a)
 
-newtype LowerBound a = Lower (Bound a) deriving (Eq)
-
-instance Functor LowerBound where
-  fmap f (Lower b) = Lower (fmap f b)
+newtype LowerBound a = Lower { boundLower :: Bound a } deriving (Eq, Functor)
 
 instance Ord a => Ord (LowerBound a) where
   compare (Lower Unbounded) (Lower Unbounded) = EQ
@@ -39,10 +36,7 @@ instance Ord a => Ord (LowerBound a) where
   compare _ (Lower Unbounded) = GT
   compare (Lower (Bounded ac a)) (Lower (Bounded bc b)) = compare a b <> compare bc ac
 
-newtype UpperBound a = Upper (Bound a) deriving (Eq)
-
-instance Functor UpperBound where
-  fmap f (Upper b) = Upper (fmap f b)
+newtype UpperBound a = Upper { boundUpper :: Bound a } deriving (Eq, Functor)
 
 instance Ord a => Ord (UpperBound a) where
   compare (Upper Unbounded) (Upper Unbounded) = EQ
@@ -52,7 +46,10 @@ instance Ord a => Ord (UpperBound a) where
 
 data Range a
   = Empty
-  | Range (LowerBound a) (UpperBound a)
+  | Range
+    { lower :: LowerBound a
+    , upper :: UpperBound a
+    }
   deriving (Eq)
 
 instance Functor Range where
@@ -78,6 +75,14 @@ makeBound :: Bool -> Maybe a -> Bound a
 makeBound c (Just a) = Bounded c a
 makeBound False Nothing = Unbounded
 makeBound True Nothing = error "makeBound: unbounded may not be closed"
+
+lowerBound :: Range a -> Bound a
+lowerBound Empty = Unbounded
+lowerBound (Range (Lower b) _) = b
+
+upperBound :: Range a -> Bound a
+upperBound Empty = Unbounded
+upperBound (Range _ (Upper b)) = b
 
 lowerClosed :: Range a -> Bool
 lowerClosed Empty = False

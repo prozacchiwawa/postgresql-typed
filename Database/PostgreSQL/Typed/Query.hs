@@ -94,6 +94,8 @@ rawPGSimpleQuery = rawParser . SimpleQuery
 
 instance IsString (PGSimpleQuery PGValues) where
   fromString = rawPGSimpleQuery
+instance IsString (PGSimpleQuery ()) where
+  fromString = fmap (const ()) . rawPGSimpleQuery
 
 -- |Make a prepared query directly from a query string and bind parameters, with no type inference
 rawPGPreparedQuery :: String -> PGValues -> PGPreparedQuery PGValues

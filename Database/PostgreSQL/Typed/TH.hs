@@ -151,7 +151,7 @@ tpgDescribe sql types nulls = withTPGState $ \tpg -> do
       { tpgValueName = c
       , tpgValueTypeOID = o
       , tpgValueType = tpgType tpg o
-      , tpgValueNullable = n
+      , tpgValueNullable = n && o /= 2278 -- "void"
       }) rt
     )
 

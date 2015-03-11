@@ -219,6 +219,12 @@ binDec d t = either (\e -> error $ "pgDecodeBinary " ++ pgTypeName t ++ ": " ++ 
 #define BIN_DEC(F)
 #endif
 
+instance PGType "void"
+instance PGColumn "void" () where
+  pgDecode _ _ = ()
+  pgDecodeBinary _ _ _ = ()
+  pgDecodeValue _ _ _ = ()
+
 instance PGType "boolean" where BIN_COL
 instance PGParameter "boolean" Bool where
   pgEncode _ False = BSC.singleton 'f'

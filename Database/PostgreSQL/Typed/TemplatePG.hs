@@ -87,7 +87,7 @@ rollback h = void $ PG.pgSimpleQuery h "ROLLBACK"
 -- |Ignore duplicate key errors. This is also limited to the 'IO' Monad.
 insertIgnore :: IO () -> IO ()
 insertIgnore q = catchJust uniquenessError q (\ _ -> return ()) where
-  uniquenessError (PG.PGError m) = guard (PG.pgMessageCode m == "23505")
+  uniquenessError e = guard (PG.pgErrorCode e == "23505")
 
 type PGException = PG.PGError
 

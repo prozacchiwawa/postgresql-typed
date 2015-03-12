@@ -11,7 +11,7 @@ module Database.PostgreSQL.Typed.Protocol (
   , defaultPGDatabase
   , PGConnection
   , PGError(..)
-  , pgMessageCode
+  , pgErrorCode
   , pgTypeEnv
   , pgConnect
   , pgDisconnect
@@ -170,7 +170,7 @@ data PGBackendMessage
 
 -- |PGException is thrown upon encountering an 'ErrorResponse' with severity of
 --  ERROR, FATAL, or PANIC. It holds the message of the error.
-data PGError = PGError MessageFields
+data PGError = PGError { pgErrorFields :: MessageFields }
   deriving (Typeable)
 
 instance Show PGError where
@@ -188,8 +188,8 @@ makeMessage m d = Map.fromAscList [('D', d), ('M', m)]
 
 -- |Message SQLState code.
 --  See <http://www.postgresql.org/docs/current/static/errcodes-appendix.html>.
-pgMessageCode :: MessageFields -> String
-pgMessageCode = Map.findWithDefault "" 'C'
+pgErrorCode :: PGError -> String
+pgErrorCode (PGError e) = Map.findWithDefault "" 'C' e
 
 defaultLogMessage :: MessageFields -> IO ()
 defaultLogMessage = hPutStrLn stderr . displayMessage

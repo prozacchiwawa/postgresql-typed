@@ -100,6 +100,9 @@ upperClosed :: Range a -> Bool
 upperClosed Empty = False
 upperClosed (Range _ (Upper b)) = boundClosed b
 
+empty :: Range a
+empty = Empty
+
 isEmpty :: Ord a => Range a -> Bool
 isEmpty Empty = True
 isEmpty (Range l u)

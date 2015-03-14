@@ -1,4 +1,4 @@
-{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, UndecidableInstances, FunctionalDependencies, DataKinds, GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, UndecidableInstances, FunctionalDependencies, DataKinds, GeneralizedNewtypeDeriving, PatternGuards #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 -- |
 -- Module: Database.PostgreSQL.Typed.Range
@@ -14,7 +14,7 @@ import Control.Applicative ((<$>), (<$))
 import Control.Monad (guard)
 import qualified Data.ByteString.Builder as BSB
 import qualified Data.ByteString.Char8 as BSC
-import Data.Monoid ((<>), mempty)
+import Data.Monoid (Monoid(..), (<>))
 import qualified Text.Parsec as P
 
 import Database.PostgreSQL.Typed.Types
@@ -43,6 +43,14 @@ instance Ord a => Ord (UpperBound a) where
   compare (Upper Unbounded) _ = GT
   compare _ (Upper Unbounded) = LT
   compare (Upper (Bounded ac a)) (Upper (Bounded bc b)) = compare a b <> compare ac bc
+
+compareBounds :: Ord a => LowerBound a -> UpperBound a -> Bound Bool
+compareBounds (Lower (Bounded lc l)) (Upper (Bounded uc u)) =
+  case compare l u of
+    LT -> Bounded True True
+    EQ -> Bounded (lc /= uc) (lc && uc)
+    GT -> Bounded False False
+compareBounds _ _ = Unbounded
 
 data Range a
   = Empty
@@ -94,9 +102,9 @@ upperClosed (Range _ (Upper b)) = boundClosed b
 
 isEmpty :: Ord a => Range a -> Bool
 isEmpty Empty = True
-isEmpty (Range (Lower (Bounded True l)) (Upper (Bounded True u))) = l > u
-isEmpty (Range (Lower (Bounded _ l)) (Upper (Bounded _ u))) = l >= u
-isEmpty _ = False
+isEmpty (Range l u)
+  | Bounded _ n <- compareBounds l u = not n
+  | otherwise = False
 
 full :: Range a
 full = Range (Lower Unbounded) (Upper Unbounded)
@@ -151,6 +159,18 @@ r @>. a = r @> point a
 intersect :: Ord a => Range a -> Range a -> Range a
 intersect (Range la ua) (Range lb ub) = normalize $ Range (max la lb) (min ua ub)
 intersect _ _ = Empty
+
+instance Ord a => Monoid (Range a) where
+  mempty = Empty
+  -- |Union ranges.  Fails if ranges are disjoint.
+  mappend Empty r = r
+  mappend r Empty = r
+  mappend _ra@(Range la ua) _rb@(Range lb ub)
+    -- | isEmpty _ra = _rb
+    -- | isEmpty _rb = _ra
+    | Bounded False False <- compareBounds lb ua = error "mappend: disjoint Ranges"
+    | Bounded False False <- compareBounds la ub = error "mappend: disjoint Ranges"
+    | otherwise = Range (min la lb) (max ua ub)
 
 
 -- |Class indicating that the first PostgreSQL type is a range of the second.

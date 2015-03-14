@@ -124,11 +124,11 @@ range :: Ord a => Bound a -> Bound a -> Range a
 range l u = normalize $ Range (Lower l) (Upper u)
 
 normal :: Ord a => Maybe a -> Maybe a -> Range a
-normal l u = range (mb True l) (mb False u) where
+normal l u = range (mb True l) (mb (l == u) u) where
   mb = maybe Unbounded . Bounded
 
 bounded :: Ord a => a -> a -> Range a
-bounded l u = range (Bounded True l) (Bounded False u)
+bounded l u = normal (Just l) (Just u)
 
 normalize :: Ord a => Range a -> Range a
 normalize r

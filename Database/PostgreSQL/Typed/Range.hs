@@ -202,8 +202,8 @@ instance Ord a => Monoid (Range a) where
   mappend Empty r = r
   mappend r Empty = r
   mappend _ra@(Range la ua) _rb@(Range lb ub)
-    -- | isEmpty _ra = _rb
-    -- | isEmpty _rb = _ra
+    -- isEmpty _ra = _rb
+    -- isEmpty _rb = _ra
     | Bounded False False <- compareBounds lb ua = error "mappend: disjoint Ranges"
     | Bounded False False <- compareBounds la ub = error "mappend: disjoint Ranges"
     | otherwise = Range (min la lb) (max ua ub)

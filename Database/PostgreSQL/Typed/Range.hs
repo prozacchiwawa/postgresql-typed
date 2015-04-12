@@ -178,14 +178,19 @@ normalize' (Range (Lower l) (Upper u)) = normalize $ range l' u'
     Bounded True b -> Bounded False (succ b)
     _ -> l
 
+-- |Contains range
 (@>), (<@) :: Ord a => Range a -> Range a -> Bool
 _ @> Empty = True
 Empty @> r = isEmpty r
 Range la ua @> Range lb ub = la <= lb && ua >= ub
 a <@ b = b @> a
 
+-- |Contains element
 (@>.) :: Ord a => Range a -> a -> Bool
 r @>. a = r @> point a
+
+overlaps :: Ord a => Range a -> Range a -> Bool
+overlaps a b = intersect a b /= Empty
 
 intersect :: Ord a => Range a -> Range a -> Range a
 intersect (Range la ua) (Range lb ub) = normalize $ Range (max la lb) (min ua ub)

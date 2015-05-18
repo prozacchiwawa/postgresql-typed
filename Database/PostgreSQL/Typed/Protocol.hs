@@ -18,6 +18,7 @@ module Database.PostgreSQL.Typed.Protocol (
   , pgReconnect
   , pgDescribe
   , pgSimpleQuery
+  , pgSimpleQueries_
   , pgPreparedQuery
   , pgPreparedLazyQuery
   , pgCloseStatement
@@ -548,6 +549,22 @@ pgSimpleQuery h sql = do
   row _ r (CommandComplete c) = got c (r [])
   row _ _ m = fail $ "pgSimpleQuery: unexpected row: " ++ show m
   got c r = return (rowsAffected c, r)
+
+-- |A simple query which may contain multiple queries (separated by semi-colons) whose results are all ignored.
+pgSimpleQueries_ :: PGConnection -> String -- ^ SQL string
+                   -> IO ()
+pgSimpleQueries_ h sql = do
+  pgSync h
+  pgSend h $ SimpleQuery sql
+  pgFlush h
+  go where
+  go = pgReceive h >>= res
+  res (RowDescription _) = go
+  res (CommandComplete _) = go
+  res EmptyQueryResponse = go
+  res (DataRow _) = go
+  res (ReadyForQuery _) = return ()
+  res m = fail $ "pgSimpleQueries_: unexpected response: " ++ show m
 
 pgPreparedBind :: PGConnection -> String -> [OID] -> PGValues -> [Bool] -> IO (IO ())
 pgPreparedBind c@PGConnection{ connPreparedStatements = psr } sql types bind bc = do

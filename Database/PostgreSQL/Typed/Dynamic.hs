@@ -8,7 +8,9 @@
 
 module Database.PostgreSQL.Typed.Dynamic 
   ( PGRep(..)
+  , pgLiteralString
   , pgSafeLiteral
+  , pgSafeLiteralString
   , pgSubstituteLiterals
   ) where
 
@@ -54,9 +56,15 @@ class PGType t => PGRep t a | a -> t where
   pgDecodeRep (PGTextValue v) = pgDecode (PGTypeProxy :: PGTypeName t) v
   pgDecodeRep _ = error $ "pgDecodeRep " ++ pgTypeName (PGTypeProxy :: PGTypeName t) ++ ": unsupported PGValue"
 
+pgLiteralString :: PGRep t a => a -> String
+pgLiteralString = BSC.unpack . pgLiteralRep
+
 -- |Produce a safely type-cast literal value for interpolation in a SQL statement.
 pgSafeLiteral :: PGRep t a => a -> BS.ByteString
 pgSafeLiteral x = pgLiteralRep x <> BSC.pack "::" <> fromString (pgTypeName (pgTypeOf x))
+
+pgSafeLiteralString :: PGRep t a => a -> String
+pgSafeLiteralString x = pgLiteralString x ++ "::" ++ pgTypeName (pgTypeOf x)
 
 instance PGRep t a => PGRep t (Maybe a) where
   pgEncodeRep Nothing = PGNullValue

@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 module Connect where
 
 import Database.PostgreSQL.Typed (PGDatabase(..), defaultPGDatabase)

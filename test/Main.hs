@@ -1,7 +1,8 @@
-{-# LANGUAGE FlexibleInstances, MultiParamTypeClasses, DataKinds, DeriveDataTypeable #-}
+{-# LANGUAGE OverloadedStrings, FlexibleInstances, MultiParamTypeClasses, DataKinds, DeriveDataTypeable #-}
 -- {-# OPTIONS_GHC -ddump-splices #-}
 module Main (main) where
 
+import Data.ByteString (ByteString)
 import Data.Int (Int32)
 import qualified Data.Time as Time
 import System.Exit (exitSuccess, exitFailure)
@@ -44,8 +45,8 @@ main = do
       t = Time.zonedTimeToLocalTime z
       d = Time.localDay t
       p = -34881559 :: Time.DiffTime
-      s = "\"hel\\o'"
-      l = [Just "a\\\"b,c", Nothing, Just "null", Just "nullish"]
+      s = "\"hel\\o'" :: String
+      l = [Just "a\\\"b,c", Nothing, Just "null", Just "nullish" :: Maybe ByteString]
       r = Range.normal (Just (-2 :: Int32)) Nothing
       e = MyEnum_XX_ye
   [(Just b', Just i', Just f', Just s', Just d', Just t', Just z', Just p', Just l', Just r', Just e')] <- pgQuery c

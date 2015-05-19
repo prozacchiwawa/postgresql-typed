@@ -22,6 +22,10 @@ import Control.Applicative ((<$>), (<$), (<|>))
 import Control.Concurrent.MVar (MVar, newMVar, takeMVar, putMVar, modifyMVar_)
 import Control.Exception (onException, finally)
 import Control.Monad (liftM2)
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as BSL
+import qualified Data.ByteString.Lazy.Char8 as BSLC
+import qualified Data.ByteString.UTF8 as BSU
 import qualified Data.Foldable as Fold
 import qualified Data.IntMap.Lazy as IntMap
 import Data.List (find)
@@ -53,9 +57,9 @@ getTPGDatabase = do
   return $ defaultPGDatabase
     { pgDBHost = host
     , pgDBPort = port
-    , pgDBName = db
-    , pgDBUser = user
-    , pgDBPass = pass
+    , pgDBName = BSU.fromString db
+    , pgDBUser = BSU.fromString user
+    , pgDBPass = BSU.fromString pass
     , pgDBDebug = debug
     }
 
@@ -73,7 +77,7 @@ data TPGState = TPGState
 tpgLoadTypes :: TPGState -> IO TPGState
 tpgLoadTypes tpg = do
   -- defer loading types until they're needed
-  tl <- unsafeInterleaveIO $ pgSimpleQuery (tpgConnection tpg) "SELECT typ.oid, format_type(CASE WHEN typtype = 'd' THEN typbasetype ELSE typ.oid END, -1) FROM pg_catalog.pg_type typ JOIN pg_catalog.pg_namespace nsp ON typnamespace = nsp.oid WHERE nspname <> 'pg_toast' AND nspname <> 'information_schema' ORDER BY typ.oid"
+  tl <- unsafeInterleaveIO $ pgSimpleQuery (tpgConnection tpg) $ BSLC.pack "SELECT typ.oid, format_type(CASE WHEN typtype = 'd' THEN typbasetype ELSE typ.oid END, -1) FROM pg_catalog.pg_type typ JOIN pg_catalog.pg_namespace nsp ON typnamespace = nsp.oid WHERE nspname <> 'pg_toast' AND nspname <> 'information_schema' ORDER BY typ.oid"
   return $ tpg{ tpgTypes = IntMap.fromAscList $ map (\[to, tn] ->
     (fromIntegral (pgDecodeRep to :: OID), pgDecodeRep tn)) $ snd tl
   }
@@ -129,20 +133,20 @@ getTPGTypeOID TPGState{ tpgTypes = types } t =
     $ find ((==) t . snd) $ IntMap.toList types
 
 data TPGValueInfo = TPGValueInfo
-  { tpgValueName :: String
+  { tpgValueName :: BS.ByteString
   , tpgValueTypeOID :: !OID
   , tpgValueType :: TPGType
   , tpgValueNullable :: Bool
   }
 
 -- |A type-aware wrapper to 'pgDescribe'
-tpgDescribe :: String -> [String] -> Bool -> IO ([TPGValueInfo], [TPGValueInfo])
+tpgDescribe :: BS.ByteString -> [String] -> Bool -> IO ([TPGValueInfo], [TPGValueInfo])
 tpgDescribe sql types nulls = withTPGState $ \tpg -> do
   at <- mapM (getTPGTypeOID tpg) types
-  (pt, rt) <- pgDescribe (tpgConnection tpg) sql at nulls
+  (pt, rt) <- pgDescribe (tpgConnection tpg) (BSL.fromStrict sql) at nulls
   return
     ( map (\o -> TPGValueInfo
-      { tpgValueName = ""
+      { tpgValueName = BS.empty
       , tpgValueTypeOID = o
       , tpgValueType = tpgType tpg o
       , tpgValueNullable = True

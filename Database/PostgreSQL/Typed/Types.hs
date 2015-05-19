@@ -51,7 +51,7 @@ import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.UTF8 as BSU
 import Data.Char (isSpace, isDigit, digitToInt, intToDigit, toLower)
 import Data.Int
-import Data.List (intersperse, intercalate)
+import Data.List (intersperse)
 import Data.Maybe (fromMaybe)
 import Data.Monoid ((<>), mconcat, mempty)
 import Data.Ratio ((%), numerator, denominator)
@@ -123,8 +123,8 @@ class PGType t => PGParameter t a where
   pgEncode :: PGTypeName t -> a -> PGTextValue
   -- |Encode a value to a (quoted) literal value for use in SQL statements.
   -- Defaults to a quoted version of 'pgEncode'
-  pgLiteral :: PGTypeName t -> a -> String
-  pgLiteral t = pgQuote . BSU.toString . pgEncode t
+  pgLiteral :: PGTypeName t -> a -> BS.ByteString
+  pgLiteral t = pgQuote . pgEncode t
   -- |Encode a value to a PostgreSQL representation.
   -- Defaults to the text representation by pgEncode
   pgEncodeValue :: PGTypeEnv -> PGTypeName t -> a -> PGValue
@@ -145,7 +145,7 @@ class PGType t => PGColumn t a where
 
 instance PGParameter t a => PGParameter t (Maybe a) where
   pgEncode t = maybe (error $ "pgEncode " ++ pgTypeName t ++ ": Nothing") (pgEncode t)
-  pgLiteral = maybe "NULL" . pgLiteral
+  pgLiteral = maybe (BSC.pack "NULL") . pgLiteral
   pgEncodeValue e = maybe PGNullValue . pgEncodeValue e
 
 instance PGColumn t a => PGColumn t (Maybe a) where
@@ -160,7 +160,7 @@ pgEncodeParameter :: PGParameter t a => PGTypeEnv -> PGTypeName t -> a -> PGValu
 pgEncodeParameter = pgEncodeValue
 
 -- |Final parameter escaping function used when a (nullable) parameter is passed to be substituted into a simple query.
-pgEscapeParameter :: PGParameter t a => PGTypeEnv -> PGTypeName t -> a -> String
+pgEscapeParameter :: PGParameter t a => PGTypeEnv -> PGTypeName t -> a -> BS.ByteString
 pgEscapeParameter _ = pgLiteral
 
 -- |Final column decoding function used for a nullable result value.
@@ -172,15 +172,12 @@ pgDecodeColumnNotNull :: PGColumn t a => PGTypeEnv -> PGTypeName t -> PGValue ->
 pgDecodeColumnNotNull = pgDecodeValue
 
 
-pgQuoteUnsafe :: String -> String
-pgQuoteUnsafe s = '\'' : s ++ "'"
+pgQuoteUnsafe :: BS.ByteString -> BS.ByteString
+pgQuoteUnsafe = (`BSC.snoc` '\'') . BSC.cons '\''
 
 -- |Produce a SQL string literal by wrapping (and escaping) a string with single quotes.
-pgQuote :: String -> String
-pgQuote = ('\'':) . es where
-  es "" = "'"
-  es (c@'\'':r) = c:c:es r
-  es (c:r) = c:es r
+pgQuote :: BS.ByteString -> BS.ByteString
+pgQuote = pgQuoteUnsafe . BSC.intercalate (BSC.pack "''") . BSC.split '\''
 
 buildPGValue :: BSB.Builder -> BS.ByteString
 buildPGValue = BSL.toStrict . BSB.toLazyByteString
@@ -229,8 +226,8 @@ instance PGType "boolean" where BIN_COL
 instance PGParameter "boolean" Bool where
   pgEncode _ False = BSC.singleton 'f'
   pgEncode _ True = BSC.singleton 't'
-  pgLiteral _ False = "false"
-  pgLiteral _ True = "true"
+  pgLiteral _ False = BSC.pack "false"
+  pgLiteral _ True = BSC.pack "true"
   BIN_ENC(BinE.bool)
 instance PGColumn "boolean" Bool where
   pgDecode _ s = case BSC.head s of
@@ -243,7 +240,7 @@ type OID = Word32
 instance PGType "oid" where BIN_COL
 instance PGParameter "oid" OID where
   pgEncode _ = BSC.pack . show
-  pgLiteral _ = show
+  pgLiteral = pgEncode
   BIN_ENC(BinE.int4 . Right)
 instance PGColumn "oid" OID where
   pgDecode _ = read . BSC.unpack
@@ -252,7 +249,7 @@ instance PGColumn "oid" OID where
 instance PGType "smallint" where BIN_COL
 instance PGParameter "smallint" Int16 where
   pgEncode _ = BSC.pack . show
-  pgLiteral _ = show
+  pgLiteral = pgEncode
   BIN_ENC(BinE.int2. Left)
 instance PGColumn "smallint" Int16 where
   pgDecode _ = read . BSC.unpack
@@ -261,7 +258,7 @@ instance PGColumn "smallint" Int16 where
 instance PGType "integer" where BIN_COL
 instance PGParameter "integer" Int32 where
   pgEncode _ = BSC.pack . show
-  pgLiteral _ = show
+  pgLiteral = pgEncode
   BIN_ENC(BinE.int4 . Left)
 instance PGColumn "integer" Int32 where
   pgDecode _ = read . BSC.unpack
@@ -270,7 +267,7 @@ instance PGColumn "integer" Int32 where
 instance PGType "bigint" where BIN_COL
 instance PGParameter "bigint" Int64 where
   pgEncode _ = BSC.pack . show
-  pgLiteral _ = show
+  pgLiteral = pgEncode
   BIN_ENC(BinE.int8 . Left)
 instance PGColumn "bigint" Int64 where
   pgDecode _ = read . BSC.unpack
@@ -279,7 +276,7 @@ instance PGColumn "bigint" Int64 where
 instance PGType "real" where BIN_COL
 instance PGParameter "real" Float where
   pgEncode _ = BSC.pack . show
-  pgLiteral _ = show
+  pgLiteral = pgEncode
   BIN_ENC(BinE.float4)
 instance PGColumn "real" Float where
   pgDecode _ = read . BSC.unpack
@@ -288,7 +285,7 @@ instance PGColumn "real" Float where
 instance PGType "double precision" where BIN_COL
 instance PGParameter "double precision" Double where
   pgEncode _ = BSC.pack . show
-  pgLiteral _ = show
+  pgLiteral = pgEncode
   BIN_ENC(BinE.float8)
 instance PGColumn "double precision" Double where
   pgDecode _ = read . BSC.unpack
@@ -369,14 +366,14 @@ decodeBytea s
 instance PGType "bytea" where BIN_COL
 instance PGParameter "bytea" BSL.ByteString where
   pgEncode _ = encodeBytea . BSB.lazyByteStringHex
-  pgLiteral t = pgQuoteUnsafe . BSC.unpack . pgEncode t
+  pgLiteral t = pgQuoteUnsafe . pgEncode t
   BIN_ENC(BinE.bytea . Right)
 instance PGColumn "bytea" BSL.ByteString where
   pgDecode _ = BSL.pack . decodeBytea
   BIN_DEC((BSL.fromStrict .) . binDec BinD.bytea)
 instance PGParameter "bytea" BS.ByteString where
   pgEncode _ = encodeBytea . BSB.byteStringHex
-  pgLiteral t = pgQuoteUnsafe . BSC.unpack . pgEncode t
+  pgLiteral t = pgQuoteUnsafe . pgEncode t
   BIN_ENC(BinE.bytea . Left)
 instance PGColumn "bytea" BS.ByteString where
   pgDecode _ = BS.pack . decodeBytea
@@ -385,7 +382,7 @@ instance PGColumn "bytea" BS.ByteString where
 instance PGType "date" where BIN_COL
 instance PGParameter "date" Time.Day where
   pgEncode _ = BSC.pack . Time.showGregorian
-  pgLiteral _ = pgQuoteUnsafe . Time.showGregorian
+  pgLiteral t = pgQuoteUnsafe . pgEncode t
   BIN_ENC(BinE.date)
 instance PGColumn "date" Time.Day where
   pgDecode _ = Time.readTime defaultTimeLocale "%F" . BSC.unpack
@@ -409,7 +406,7 @@ instance PGType "time without time zone" where
   pgBinaryColumn = binColDatetime
 instance PGParameter "time without time zone" Time.TimeOfDay where
   pgEncode _ = BSC.pack . Time.formatTime defaultTimeLocale "%T%Q"
-  pgLiteral _ = pgQuoteUnsafe . Time.formatTime defaultTimeLocale "%T%Q"
+  pgLiteral t = pgQuoteUnsafe . pgEncode t
 #ifdef USE_BINARY
   pgEncodeValue = binEncDatetime BinE.time
 #endif
@@ -423,7 +420,7 @@ instance PGType "timestamp without time zone" where
   pgBinaryColumn = binColDatetime
 instance PGParameter "timestamp without time zone" Time.LocalTime where
   pgEncode _ = BSC.pack . Time.formatTime defaultTimeLocale "%F %T%Q"
-  pgLiteral _ = pgQuoteUnsafe . Time.formatTime defaultTimeLocale "%F %T%Q"
+  pgLiteral t = pgQuoteUnsafe . pgEncode t
 #ifdef USE_BINARY
   pgEncodeValue = binEncDatetime BinE.timestamp
 #endif
@@ -447,7 +444,7 @@ instance PGType "timestamp with time zone" where
   pgBinaryColumn = binColDatetime
 instance PGParameter "timestamp with time zone" Time.UTCTime where
   pgEncode _ = BSC.pack . fixTZ . Time.formatTime defaultTimeLocale "%F %T%Q%z"
-  pgLiteral _ = pgQuote{-Unsafe-} . fixTZ . Time.formatTime defaultTimeLocale "%F %T%Q%z"
+  -- pgLiteral t = pgQuoteUnsafe . pgEncode t
 #ifdef USE_BINARY
   pgEncodeValue = binEncDatetime BinE.timestamptz
 #endif
@@ -461,7 +458,7 @@ instance PGType "interval" where
   pgBinaryColumn = binColDatetime
 instance PGParameter "interval" Time.DiffTime where
   pgEncode _ = BSC.pack . show
-  pgLiteral _ = pgQuoteUnsafe . show
+  pgLiteral t = pgQuoteUnsafe . pgEncode t
 #ifdef USE_BINARY
   pgEncodeValue = binEncDatetime BinE.interval
 #endif
@@ -510,8 +507,8 @@ instance PGParameter "numeric" Rational where
     | otherwise = BSC.pack $ take 30 (showRational (r / (10 ^^ e))) ++ 'e' : show e where
     e = floor $ logBase (10 :: Double) $ fromRational $ abs r :: Int -- not great, and arbitrarily truncate somewhere
   pgLiteral _ r
-    | denominator r == 0 = "'NaN'" -- this can't happen
-    | otherwise = '(' : show (numerator r) ++ '/' : show (denominator r) ++ "::numeric)"
+    | denominator r == 0 = BSC.pack "'NaN'" -- this can't happen
+    | otherwise = BSC.pack $ '(' : show (numerator r) ++ '/' : show (denominator r) ++ "::numeric)"
   BIN_ENC(BinE.numeric . realToFrac)
 -- |High-precision representation of Rational as numeric.
 -- Unfortunately, numeric has an NaN, while Rational does not.
@@ -535,7 +532,7 @@ showRational r = show (ri :: Integer) ++ '.' : frac (abs rf) where
 #ifdef USE_SCIENTIFIC
 instance PGParameter "numeric" Scientific where
   pgEncode _ = BSC.pack . show
-  pgLiteral _ = show
+  pgLiteral = pgEncode
   BIN_ENC(BinE.numeric)
 instance PGColumn "numeric" Scientific where
   pgDecode _ = read . BSC.unpack
@@ -546,7 +543,7 @@ instance PGColumn "numeric" Scientific where
 instance PGType "uuid" where BIN_COL
 instance PGParameter "uuid" UUID.UUID where
   pgEncode _ = UUID.toASCIIBytes
-  pgLiteral _ = pgQuoteUnsafe . UUID.toString
+  pgLiteral t = pgQuoteUnsafe . pgEncode t
   BIN_ENC(BinE.uuid)
 instance PGColumn "uuid" UUID.UUID where
   pgDecode _ u = fromMaybe (error $ "pgDecode uuid: " ++ BSC.unpack u) $ UUID.fromASCIIBytes u
@@ -558,9 +555,9 @@ newtype PGRecord = PGRecord [Maybe PGTextValue]
 class PGType t => PGRecordType t
 instance PGRecordType t => PGParameter t PGRecord where
   pgEncode _ (PGRecord l) =
-    buildPGValue $ BSB.char7 '(' <> mconcat (intersperse (BSB.char7 ',') $ map (maybe mempty (pgDQuote "(),")) l) <> BSB.char7 ')' where
+    buildPGValue $ BSB.char7 '(' <> mconcat (intersperse (BSB.char7 ',') $ map (maybe mempty (pgDQuote "(),")) l) <> BSB.char7 ')'
   pgLiteral _ (PGRecord l) =
-    "ROW(" ++ intercalate "," (map (maybe "NULL" (pgQuote . BSU.toString)) l) ++ ")" where
+    BSC.pack "ROW(" <> BS.intercalate (BSC.singleton ',') (map (maybe (BSC.pack "NULL") pgQuote) l) `BSC.snoc` ')'
 instance PGRecordType t => PGColumn t PGRecord where
   pgDecode _ a = either (error . ("pgDecode record: " ++) . show) PGRecord $ P.parse pa (BSC.unpack a) a where
     pa = do

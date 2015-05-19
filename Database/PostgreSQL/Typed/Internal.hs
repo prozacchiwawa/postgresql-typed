@@ -1,33 +1,45 @@
-{-# LANGUAGE PatternSynonyms, TemplateHaskell #-}
+{-# LANGUAGE PatternSynonyms, PatternGuards, TemplateHaskell, GADTs, KindSignatures, DataKinds #-}
 module Database.PostgreSQL.Typed.Internal
   ( stringE
   , pattern StringE
-  , ($++$)
-  , (++$)
+  , SQLSplit(..)
+  , sqlSplitExprs
+  , sqlSplitParams
   ) where
 
+import Data.Char (isDigit)
 import Data.String (IsString(..))
 import qualified Language.Haskell.TH as TH
+import Numeric (readDec)
 
 stringE :: String -> TH.Exp
 stringE = TH.LitE . TH.StringL
 
 pattern StringE s = TH.LitE (TH.StringL s)
-pattern InfixE l o r = TH.InfixE (Just l) (TH.VarE o) (Just r)
 
 instance IsString TH.Exp where
   fromString = stringE
 
-($++$) :: TH.Exp -> TH.Exp -> TH.Exp
-infixr 5 $++$
-StringE s $++$ r = s ++$ r
-l $++$ StringE "" = l
-InfixE ll pp (StringE lr) $++$ StringE r | pp == '(++) = ll $++$ StringE (lr ++ r)
-l $++$ r = InfixE l '(++) r
+data SQLSplit a (literal :: Bool) where
+  SQLLiteral :: String -> SQLSplit a False -> SQLSplit a True
+  SQLPlaceholder :: a -> SQLSplit a True -> SQLSplit a False
+  SQLSplitEnd :: SQLSplit a any
 
-(++$) :: String -> TH.Exp -> TH.Exp
-infixr 5 ++$
-"" ++$ r = r
-l ++$ StringE r = StringE (l ++ r)
-l ++$ InfixE (StringE rl) pp rr | pp == '(++) = (l ++ rl) ++$ rr
-l ++$ r = InfixE (StringE l) '(++) r
+sqlCons :: Char -> SQLSplit a True -> SQLSplit a True
+sqlCons c (SQLLiteral s l) = SQLLiteral (c : s) l
+sqlCons c SQLSplitEnd = SQLLiteral [c] SQLSplitEnd
+
+sqlSplitExprs :: String -> SQLSplit String True
+sqlSplitExprs ('$':'$':'{':s) = sqlCons '$' $ sqlCons '{' $ sqlSplitExprs s
+sqlSplitExprs ('$':'{':s)
+  | (e, '}':r) <- break (\c -> c == '{' || c == '}') s = SQLLiteral "" $ SQLPlaceholder e $ sqlSplitExprs r
+  | otherwise = error $ "Error parsing SQL: could not find end of expression: ${" ++ s
+sqlSplitExprs (c:s) = sqlCons c $ sqlSplitExprs s
+sqlSplitExprs [] = SQLSplitEnd
+
+sqlSplitParams :: String -> SQLSplit Int True
+sqlSplitParams ('$':'$':d:s) | isDigit d = sqlCons '$' $ sqlCons d $ sqlSplitParams s
+sqlSplitParams ('$':s@(d:_)) | isDigit d, [(n, r)] <- readDec s = SQLLiteral "" $ SQLPlaceholder n $ sqlSplitParams r
+sqlSplitParams (c:s) = sqlCons c $ sqlSplitParams s
+sqlSplitParams [] = SQLSplitEnd
+

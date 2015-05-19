@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP, PatternGuards, MultiParamTypeClasses, FunctionalDependencies, TypeSynonymInstances, FlexibleInstances, FlexibleContexts, TemplateHaskell #-}
+{-# LANGUAGE CPP, PatternGuards, MultiParamTypeClasses, FunctionalDependencies, TypeSynonymInstances, FlexibleInstances, FlexibleContexts, GADTs, DataKinds, TemplateHaskell #-}
 module Database.PostgreSQL.Typed.Query
   ( PGQuery(..)
   , PGSimpleQuery
@@ -18,9 +18,12 @@ module Database.PostgreSQL.Typed.Query
 import Control.Applicative ((<$>))
 import Control.Arrow ((***), first, second)
 import Control.Exception (try)
-import Control.Monad (when, mapAndUnzipM)
+import Control.Monad (void, when, mapAndUnzipM)
 import Data.Array (listArray, (!), inRange)
-import Data.Char (isDigit, isSpace)
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BSC
+import qualified Data.ByteString.Lazy as BSL
+import Data.Char (isSpace)
 import qualified Data.Foldable as Fold
 import Data.List (dropWhileEnd)
 import Data.Maybe (fromMaybe, isNothing)
@@ -29,7 +32,6 @@ import Data.Word (Word32)
 import Language.Haskell.Meta.Parse (parseExp)
 import qualified Language.Haskell.TH as TH
 import Language.Haskell.TH.Quote (QuasiQuoter(..))
-import Numeric (readDec)
 
 import Database.PostgreSQL.Typed.Internal
 import Database.PostgreSQL.Typed.Types
@@ -43,7 +45,7 @@ class PGQuery q a | q -> a where
   -- |Change the raw SQL query stored within this query.
   -- This is unsafe because the query has already been type-checked, so any change must not change the number or type of results or placeholders (so adding additional static WHERE or ORDER BY clauses is generally safe).
   -- This is useful in cases where you need to construct some part of the query dynamically, but still want to infer the result types.
-  unsafeModifyQuery :: q -> (String -> String) -> q
+  unsafeModifyQuery :: q -> (BS.ByteString -> BS.ByteString) -> q
 class PGQuery q PGValues => PGRawQuery q
 
 -- |Execute a query that does not return results.
@@ -55,17 +57,17 @@ pgExecute c q = fst <$> pgRunQuery c q
 pgQuery :: PGQuery q a => PGConnection -> q -> IO [a]
 pgQuery c q = snd <$> pgRunQuery c q
 
-instance PGQuery String PGValues where
-  pgRunQuery c sql = pgSimpleQuery c sql
+instance PGQuery BS.ByteString PGValues where
+  pgRunQuery c sql = pgSimpleQuery c (BSL.fromStrict sql)
   unsafeModifyQuery q f = f q
 
-newtype SimpleQuery = SimpleQuery String
+newtype SimpleQuery = SimpleQuery BS.ByteString
 instance PGQuery SimpleQuery PGValues where
-  pgRunQuery c (SimpleQuery sql) = pgSimpleQuery c sql
+  pgRunQuery c (SimpleQuery sql) = pgSimpleQuery c (BSL.fromStrict sql)
   unsafeModifyQuery (SimpleQuery sql) f = SimpleQuery $ f sql
 instance PGRawQuery SimpleQuery
 
-data PreparedQuery = PreparedQuery String [OID] PGValues [Bool]
+data PreparedQuery = PreparedQuery BS.ByteString [OID] PGValues [Bool]
 instance PGQuery PreparedQuery PGValues where
   pgRunQuery c (PreparedQuery sql types bind bc) = pgPreparedQuery c sql types bind bc
   unsafeModifyQuery (PreparedQuery sql types bind bc) f = PreparedQuery (f sql) types bind bc
@@ -89,16 +91,16 @@ type PGSimpleQuery = QueryParser SimpleQuery
 type PGPreparedQuery = QueryParser PreparedQuery
 
 -- |Make a simple query directly from a query string, with no type inference
-rawPGSimpleQuery :: String -> PGSimpleQuery PGValues
+rawPGSimpleQuery :: BS.ByteString -> PGSimpleQuery PGValues
 rawPGSimpleQuery = rawParser . SimpleQuery
 
 instance IsString (PGSimpleQuery PGValues) where
-  fromString = rawPGSimpleQuery
+  fromString = rawPGSimpleQuery . fromString
 instance IsString (PGSimpleQuery ()) where
-  fromString = fmap (const ()) . rawPGSimpleQuery
+  fromString = void . rawPGSimpleQuery . fromString
 
 -- |Make a prepared query directly from a query string and bind parameters, with no type inference
-rawPGPreparedQuery :: String -> PGValues -> PGPreparedQuery PGValues
+rawPGPreparedQuery :: BS.ByteString -> PGValues -> PGPreparedQuery PGValues
 rawPGPreparedQuery sql bind = rawParser $ PreparedQuery sql [] bind []
 
 -- |Run a prepared query in lazy mode, where only chunk size rows are requested at a time.
@@ -115,28 +117,27 @@ pgLazyQuery c (QueryParser q p) count =
 -- This does not understand strings or other SQL syntax, so any literal occurrence of the string @${@ must be escaped as @$${@.
 -- Embedded expressions may not contain @{@ or @}@.
 sqlPlaceholders :: String -> (String, [String])
-sqlPlaceholders = sph (1 :: Int) where
-  sph n ('$':'$':'{':s) = first (('$':) . ('{':)) $ sph n s
-  sph n ('$':'{':s)
-    | (e, '}':r) <- break (\c -> c == '{' || c == '}') s =
-      (('$':show n) ++) *** (e :) $ sph (succ n) r
-    | otherwise = error $ "Error parsing SQL statement: could not find end of expression: ${" ++ s
-  sph n (c:s) = first (c:) $ sph n s
-  sph _ "" = ("", [])
+sqlPlaceholders = ssl 1 . sqlSplitExprs where
+  ssl :: Int -> SQLSplit String True -> (String, [String])
+  ssl n (SQLLiteral s l) = first (s ++) $ ssp n l
+  ssl _ SQLSplitEnd = ("", [])
+  ssp :: Int -> SQLSplit String False -> (String, [String])
+  ssp n (SQLPlaceholder e l) = (('$':show n) ++) *** (e :) $ ssl (succ n) l
+  ssp _ SQLSplitEnd = ("", [])
 
--- |Given a SQL statement with placeholders of the form @$N@ and a list of TH 'String' expressions, return a new 'String' expression that substitutes the expressions for the placeholders.
+-- |Given a SQL statement with placeholders of the form @$N@ and a list of TH 'ByteString' expressions, return a new 'ByteString' expression that substitutes the expressions for the placeholders.
 -- This does not understand strings or other SQL syntax, so any literal occurrence of a string like @$N@ must be escaped as @$$N@.
 sqlSubstitute :: String -> [TH.Exp] -> TH.Exp
-sqlSubstitute sql exprl = ss sql where
+sqlSubstitute sql exprl = TH.AppE (TH.VarE 'BS.concat) $ TH.ListE $ ssl $ sqlSplitParams sql where
   bnds = (1, length exprl)
   exprs = listArray bnds exprl
   expr n
     | inRange bnds n = exprs ! n
     | otherwise = error $ "SQL placeholder '$" ++ show n ++ "' out of range (not recognized by PostgreSQL); literal occurrences may need to be escaped with '$$'"
-  ss ('$':'$':d:r) | isDigit d = ['$',d] ++$ ss r
-  ss ('$':s@(d:_)) | isDigit d, [(n, r)] <- readDec s = expr n $++$ ss r
-  ss (c:r) = [c] ++$ ss r
-  ss "" = stringE ""
+  ssl (SQLLiteral s l) = TH.VarE 'fromString `TH.AppE` stringE s : ssp l
+  ssl SQLSplitEnd = []
+  ssp (SQLPlaceholder n l) = expr n : ssl l
+  ssp SQLSplitEnd = []
 
 splitCommas :: String -> [String]
 splitCommas = spl where
@@ -163,18 +164,18 @@ simpleQueryFlags = QueryFlags True Nothing Nothing
 makePGQuery :: QueryFlags -> String -> TH.ExpQ
 makePGQuery QueryFlags{ flagQuery = False } sqle = pgSubstituteLiterals sqle
 makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
-  (pt, rt) <- TH.runIO $ tpgDescribe sqlp (fromMaybe [] prep) (isNothing nulls)
+  (pt, rt) <- TH.runIO $ tpgDescribe (fromString sqlp) (fromMaybe [] prep) (isNothing nulls)
   when (length pt < length exprs) $ fail "Not all expression placeholders were recognized by PostgreSQL; literal occurrences of '${' may need to be escaped with '$${'"
 
   e <- TH.newName "_tenv"
   (vars, vals) <- mapAndUnzipM (\t -> do
-    v <- TH.newName $ 'p':tpgValueName t
+    v <- TH.newName $ 'p':BSC.unpack (tpgValueName t)
     return 
       ( TH.VarP v
       , tpgTypeEncoder (isNothing prep) t e `TH.AppE` TH.VarE v
       )) pt
   (pats, conv, bins) <- unzip3 <$> mapM (\t -> do
-    v <- TH.newName $ 'c':tpgValueName t
+    v <- TH.newName $ 'c':BSC.unpack (tpgValueName t)
     return 
       ( TH.VarP v
       , tpgTypeDecoder (Fold.and nulls) t e `TH.AppE` TH.VarE v
@@ -185,7 +186,7 @@ makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
       then TH.ConE 'SimpleQuery
         `TH.AppE` sqlSubstitute sqlp vals
       else TH.ConE 'PreparedQuery
-        `TH.AppE` stringE sqlp 
+        `TH.AppE` (TH.VarE 'fromString `TH.AppE` stringE sqlp)
         `TH.AppE` TH.ListE (map (TH.LitE . TH.IntegerL . toInteger . tpgValueTypeOID) pt) 
         `TH.AppE` TH.ListE vals 
         `TH.AppE` TH.ListE 
@@ -222,7 +223,7 @@ qqTop :: Bool -> String -> TH.DecsQ
 qqTop True ('!':sql) = qqTop False sql
 qqTop err sql = do
   r <- TH.runIO $ try $ withTPGConnection $ \c ->
-    pgSimpleQuery c sql
+    pgSimpleQuery c (fromString sql)
   either ((if err then TH.reportError else TH.reportWarning) . (show :: PGError -> String)) (const $ return ()) r
   return []
 

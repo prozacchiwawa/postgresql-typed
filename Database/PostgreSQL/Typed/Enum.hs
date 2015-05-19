@@ -14,7 +14,8 @@ module Database.PostgreSQL.Typed.Enum
 import Control.Monad (when)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
-import qualified Data.ByteString.UTF8 as U
+import qualified Data.ByteString.Lazy as BSL
+import Data.String (fromString)
 import Data.Typeable (Typeable)
 import qualified Language.Haskell.TH as TH
 
@@ -49,10 +50,10 @@ makePGEnum :: String -- ^ PostgreSQL enum type name
   -> TH.DecsQ
 makePGEnum name typs valnf = do
   (_, vals) <- TH.runIO $ withTPGConnection $ \c ->
-    pgSimpleQuery c $ "SELECT enumlabel FROM pg_catalog.pg_enum JOIN pg_catalog.pg_type t ON enumtypid = t.oid WHERE typtype = 'e' AND format_type(t.oid, -1) = " ++ pgQuote name ++ " ORDER BY enumsortorder"
+    pgSimpleQuery c $ BSL.fromChunks [BSC.pack "SELECT enumlabel FROM pg_catalog.pg_enum JOIN pg_catalog.pg_type t ON enumtypid = t.oid WHERE typtype = 'e' AND format_type(t.oid, -1) = ", pgQuote (fromString name), BSC.pack " ORDER BY enumsortorder"]
   when (null vals) $ fail $ "makePGEnum: enum " ++ name ++ " not found"
   let 
-    valn = map (\[PGTextValue v] -> let u = U.toString v in (TH.mkName $ valnf u, map (TH.IntegerL . fromIntegral) $ BS.unpack v, TH.StringL u)) vals
+    valn = map (\[PGTextValue v] -> let u = BSC.unpack v in (TH.mkName $ valnf u, map (TH.IntegerL . fromIntegral) $ BS.unpack v, TH.StringL u)) vals
   dv <- TH.newName "x"
   return
     [ TH.DataD [] typn [] (map (\(n, _, _) -> TH.NormalC n []) valn) [''Eq, ''Ord, ''Enum, ''Bounded, ''Typeable]

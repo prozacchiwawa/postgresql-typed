@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP, FlexibleInstances, MultiParamTypeClasses, ScopedTypeVariables, FunctionalDependencies, UndecidableInstances, DataKinds, DefaultSignatures, PatternGuards, TemplateHaskell #-}
+{-# LANGUAGE CPP, FlexibleInstances, MultiParamTypeClasses, ScopedTypeVariables, FunctionalDependencies, UndecidableInstances, DataKinds, DefaultSignatures, PatternGuards, GADTs, TemplateHaskell #-}
 -- |
 -- Module: Database.PostgreSQL.Typed.Dynamic
 -- Copyright: 2015 Dylan Simon
@@ -13,10 +13,14 @@ module Database.PostgreSQL.Typed.Dynamic
   ) where
 
 import Control.Applicative ((<$>))
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BSC
+import Data.Monoid ((<>))
 import Data.Int
 #ifdef USE_SCIENTIFIC
 import Data.Scientific (Scientific)
 #endif
+import Data.String (fromString)
 #ifdef USE_TEXT
 import qualified Data.Text as T
 #endif
@@ -37,8 +41,8 @@ class PGType t => PGRep t a | a -> t where
   pgEncodeRep :: a -> PGValue
   default pgEncodeRep :: PGParameter t a => a -> PGValue
   pgEncodeRep x = pgEncodeValue unknownPGTypeEnv (pgTypeOf x) x
-  pgLiteralRep :: a -> String
-  default pgLiteralRep :: PGParameter t a => a -> String
+  pgLiteralRep :: a -> BS.ByteString
+  default pgLiteralRep :: PGParameter t a => a -> BS.ByteString
   pgLiteralRep x = pgLiteral (pgTypeOf x) x
   pgDecodeRep :: PGValue -> a
 #ifdef USE_BINARY_XXX
@@ -51,13 +55,13 @@ class PGType t => PGRep t a | a -> t where
   pgDecodeRep _ = error $ "pgDecodeRep " ++ pgTypeName (PGTypeProxy :: PGTypeName t) ++ ": unsupported PGValue"
 
 -- |Produce a safely type-cast literal value for interpolation in a SQL statement.
-pgSafeLiteral :: PGRep t a => a -> String
-pgSafeLiteral x = pgLiteralRep x ++ "::" ++ pgTypeName (pgTypeOf x)
+pgSafeLiteral :: PGRep t a => a -> BS.ByteString
+pgSafeLiteral x = pgLiteralRep x <> BSC.pack "::" <> fromString (pgTypeName (pgTypeOf x))
 
 instance PGRep t a => PGRep t (Maybe a) where
   pgEncodeRep Nothing = PGNullValue
   pgEncodeRep (Just x) = pgEncodeRep x
-  pgLiteralRep Nothing = "NULL"
+  pgLiteralRep Nothing = BSC.pack "NULL"
   pgLiteralRep (Just x) = pgLiteralRep x
   pgDecodeRep PGNullValue = Nothing
   pgDecodeRep v = Just (pgDecodeRep v)
@@ -71,6 +75,7 @@ instance PGRep "real" Float
 instance PGRep "double precision" Double
 instance PGRep "\"char\"" Char
 instance PGRep "text" String
+instance PGRep "text" BS.ByteString
 #ifdef USE_TEXT
 instance PGRep "text" T.Text
 #endif
@@ -91,11 +96,12 @@ instance PGRep "uuid" UUID.UUID
 -- This lets you do safe, type-driven literal substitution into SQL fragments without needing a full query, bypassing placeholder inference and any prepared queries.
 -- Unlike most other TH functions, this does not require any database connection.
 pgSubstituteLiterals :: String -> TH.ExpQ
-pgSubstituteLiterals ('$':'$':'{':s) = (++$) "${" <$> pgSubstituteLiterals s
-pgSubstituteLiterals ('$':'{':s)
-  | (e, '}':r) <- break (\c -> c == '{' || c == '}') s = do
+pgSubstituteLiterals sql = TH.AppE (TH.VarE 'BS.concat) . TH.ListE <$> ssl (sqlSplitExprs sql) where
+  ssl :: SQLSplit String True -> TH.Q [TH.Exp]
+  ssl (SQLLiteral s l) = (TH.VarE 'fromString `TH.AppE` stringE s :) <$> ssp l
+  ssl SQLSplitEnd = return []
+  ssp :: SQLSplit String False -> TH.Q [TH.Exp]
+  ssp (SQLPlaceholder e l) = do
     v <- either (fail . (++) ("Failed to parse expression {" ++ e ++ "}: ")) return $ parseExp e
-    ($++$) (TH.VarE 'pgSafeLiteral `TH.AppE` v) <$> pgSubstituteLiterals r
-  | otherwise = fail $ "Error parsing SQL: could not find end of expression: ${" ++ s
-pgSubstituteLiterals (c:r) = (++$) [c] <$> pgSubstituteLiterals r
-pgSubstituteLiterals "" = return $ stringE ""
+    (TH.VarE 'pgSafeLiteral `TH.AppE` v :) <$> ssl l
+  ssp SQLSplitEnd = return []

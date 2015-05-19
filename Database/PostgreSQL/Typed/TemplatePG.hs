@@ -24,6 +24,9 @@ module Database.PostgreSQL.Typed.TemplatePG
 
 import Control.Exception (onException, catchJust)
 import Control.Monad (liftM, void, guard)
+import Data.ByteString (ByteString)
+import qualified Data.ByteString.Char8 as BSC
+import qualified Data.ByteString.Lazy.Char8 as BSLC
 import Data.Maybe (listToMaybe, isJust)
 import qualified Language.Haskell.TH as TH
 import Network (HostName, PortID(..))
@@ -74,28 +77,28 @@ execute sql = [| \c -> void $ pgExecute c $(makePGQuery simpleQueryFlags $ query
 -- 'MonadPeelIO' version.
 withTransaction :: PG.PGConnection -> IO a -> IO a
 withTransaction h a =
-  onException (do void $ PG.pgSimpleQuery h "BEGIN"
+  onException (do void $ PG.pgSimpleQuery h $ BSLC.pack "BEGIN"
                   c <- a
-                  void $ PG.pgSimpleQuery h "COMMIT"
+                  void $ PG.pgSimpleQuery h $ BSLC.pack "COMMIT"
                   return c)
-              (void $ PG.pgSimpleQuery h "ROLLBACK")
+              (void $ PG.pgSimpleQuery h $ BSLC.pack "ROLLBACK")
 
 -- |Roll back a transaction.
 rollback :: PG.PGConnection -> IO ()
-rollback h = void $ PG.pgSimpleQuery h "ROLLBACK"
+rollback h = void $ PG.pgSimpleQuery h $ BSLC.pack "ROLLBACK"
 
 -- |Ignore duplicate key errors. This is also limited to the 'IO' Monad.
 insertIgnore :: IO () -> IO ()
 insertIgnore q = catchJust uniquenessError q (\ _ -> return ()) where
-  uniquenessError e = guard (PG.pgErrorCode e == "23505")
+  uniquenessError e = guard (PG.pgErrorCode e == BSC.pack "23505")
 
 type PGException = PG.PGError
 
-pgConnect :: HostName  -- ^ the host to connect to
-          -> PortID    -- ^ the port to connect on
-          -> String    -- ^ the database to connect to
-          -> String    -- ^ the username to connect as
-          -> String    -- ^ the password to connect with
+pgConnect :: HostName   -- ^ the host to connect to
+          -> PortID     -- ^ the port to connect on
+          -> ByteString -- ^ the database to connect to
+          -> ByteString -- ^ the username to connect as
+          -> ByteString -- ^ the password to connect with
           -> IO PG.PGConnection -- ^ a handle to communicate with the PostgreSQL server on
 pgConnect h n d u p = do
   debug <- isJust `liftM` lookupEnv "TPG_DEBUG"

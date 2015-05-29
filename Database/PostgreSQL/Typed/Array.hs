@@ -46,7 +46,7 @@ instance (PGArrayType ta t, PGColumn t a) => PGColumn ta (PGArray a) where
       _ <- P.eof
       return l
     el = P.between P.spaces P.spaces $ fmap (pgDecode (pgArrayElementType ta) . BSC.pack) <$>
-      parsePGDQuote (pgArrayDelim ta : "{}") (("null" ==) . map toLower)
+      parsePGDQuote False (pgArrayDelim ta : "{}") (("null" ==) . map toLower)
 
 -- Just a dump of pg_type:
 instance PGType "boolean" => PGType "boolean[]"

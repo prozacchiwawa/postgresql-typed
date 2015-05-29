@@ -194,11 +194,11 @@ pgDQuote unsafe s
   bs = BSBP.liftFixedToBounded $ ((,) '\\') BSBP.>$< (BSBP.char7 BSBP.>*< BSBP.word8)
 
 -- |Parse double-quoted values ala 'pgDQuote'.
-parsePGDQuote :: P.Stream s m Char => String -> (String -> Bool) -> P.ParsecT s u m (Maybe String)
-parsePGDQuote unsafe isnul = (Just <$> q P.<|> mnul <$> uq) where
+parsePGDQuote :: P.Stream s m Char => Bool -> String -> (String -> Bool) -> P.ParsecT s u m (Maybe String)
+parsePGDQuote blank unsafe isnul = (Just <$> q P.<|> mnul <$> uq) where
   q = P.between (P.char '"') (P.char '"') $
     P.many $ (P.char '\\' >> P.anyChar) P.<|> P.noneOf "\\\""
-  uq = P.many (P.noneOf ('"':'\\':unsafe))
+  uq = (if blank then P.many else P.many1) (P.noneOf ('"':'\\':unsafe))
   mnul s
     | isnul s = Nothing
     | otherwise = Just s
@@ -565,7 +565,7 @@ instance PGRecordType t => PGColumn t PGRecord where
         P.sepBy el (P.char ',')
       _ <- P.eof
       return l
-    el = fmap BSC.pack <$> parsePGDQuote "()," null
+    el = fmap BSC.pack <$> parsePGDQuote True "()," null
 
 instance PGType "record"
 -- |The generic anonymous record type, as created by @ROW@.

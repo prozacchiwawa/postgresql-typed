@@ -52,14 +52,14 @@ Library
     base >= 4.7 && < 5,
     array,
     binary,
-    containers < 0.5.6,
+    containers,
     old-locale,
-    time < 1.5,
+    time,
     bytestring >= 0.10.2,
     template-haskell,
     haskell-src-meta,
     network,
-    parsec,
+    attoparsec >= 0.10,
     utf8-string
   Exposed-Modules:
     Database.PostgreSQL.Typed
@@ -93,7 +93,7 @@ Library
       Build-Depends: scientific >= 0.3
       CPP-options: -DUSE_SCIENTIFIC
   if flag(aeson)
-    Build-Depends: aeson >= 0.7, attoparsec >= 0.10
+    Build-Depends: aeson >= 0.7
     CPP-options: -DUSE_AESON
 
 test-suite test

@@ -34,12 +34,12 @@ module Database.PostgreSQL.Typed.Types
   , buildPGValue
   ) where
 
-import Control.Applicative ((<$>), (<$))
-import Control.Monad (mzero)
+import Control.Applicative ((<$>), (<$), (<*), (*>))
 #ifdef USE_AESON
 import qualified Data.Aeson as JSON
-import qualified Data.Attoparsec.ByteString as JSONP
 #endif
+import qualified Data.Attoparsec.ByteString as P (anyWord8)
+import qualified Data.Attoparsec.ByteString.Char8 as P
 import Data.Bits (shiftL, (.|.))
 import Data.ByteString.Internal (w2c)
 import qualified Data.ByteString as BS
@@ -65,6 +65,11 @@ import qualified Data.Text.Lazy as TL
 import qualified Data.Text.Lazy.Encoding as TLE
 #endif
 import qualified Data.Time as Time
+#if MIN_VERSION_time(1,5,0)
+import Data.Time (defaultTimeLocale)
+#else
+import System.Locale (defaultTimeLocale)
+#endif
 #ifdef USE_UUID
 import qualified Data.UUID as UUID
 #endif
@@ -76,9 +81,6 @@ import Numeric (readFloat)
 import qualified PostgreSQLBinary.Decoder as BinD
 import qualified PostgreSQLBinary.Encoder as BinE
 #endif
-import System.Locale (defaultTimeLocale)
-import qualified Text.Parsec as P
-import Text.Parsec.Token (naturalOrFloat, makeTokenParser, GenLanguageDef(..))
 
 type PGTextValue = BS.ByteString
 type PGBinaryValue = BS.ByteString
@@ -184,7 +186,7 @@ buildPGValue = BSL.toStrict . BSB.toLazyByteString
 
 -- |Double-quote a value if it's \"\", \"null\", or contains any whitespace, \'\"\', \'\\\', or the characters given in the first argument.
 -- Checking all these things may not be worth it.  We could just double-quote everything.
-pgDQuote :: String -> BS.ByteString -> BSB.Builder
+pgDQuote :: [Char] -> BS.ByteString -> BSB.Builder
 pgDQuote unsafe s
   | BS.null s || BSC.any (\c -> isSpace c || c == '"' || c == '\\' || c `elem` unsafe) s || BSC.map toLower s == BSC.pack "null" =
     dq <> BSBP.primMapByteStringBounded ec s <> dq
@@ -194,11 +196,18 @@ pgDQuote unsafe s
   bs = BSBP.liftFixedToBounded $ ((,) '\\') BSBP.>$< (BSBP.char7 BSBP.>*< BSBP.word8)
 
 -- |Parse double-quoted values ala 'pgDQuote'.
-parsePGDQuote :: P.Stream s m Char => Bool -> String -> (String -> Bool) -> P.ParsecT s u m (Maybe String)
-parsePGDQuote blank unsafe isnul = (Just <$> q P.<|> mnul <$> uq) where
-  q = P.between (P.char '"') (P.char '"') $
-    P.many $ (P.char '\\' >> P.anyChar) P.<|> P.noneOf "\\\""
-  uq = (if blank then P.many else P.many1) (P.noneOf ('"':'\\':unsafe))
+parsePGDQuote :: Bool -> [Char] -> (BS.ByteString -> Bool) -> P.Parser (Maybe BS.ByteString)
+parsePGDQuote blank unsafe isnul = (Just <$> q) <> (mnul <$> uq) where
+  q = P.char '"' *> (BS.concat <$> qs)
+  qs = do
+    p <- P.takeTill (\c -> c == '"' || c == '\\')
+    e <- P.anyChar
+    if e == '"'
+      then return [p]
+      else do
+        c <- P.anyWord8
+        (p :) . (BS.singleton c :) <$> qs
+  uq = (if blank then P.takeWhile else P.takeWhile1) (`notElem` ('"':'\\':unsafe))
   mnul s
     | isnul s = Nothing
     | otherwise = Just s
@@ -466,36 +475,25 @@ instance PGParameter "interval" Time.DiffTime where
 -- PostgreSQL stores months and days separately in intervals, but DiffTime does not.
 -- We collapse all interval fields into seconds
 instance PGColumn "interval" Time.DiffTime where
-  pgDecode _ a = either (error . ("pgDecode interval: " ++) . show) id $ P.parse ps (BSC.unpack a) a where
+  pgDecode _ a = either (error . ("pgDecode interval (" ++) . (++ ("): " ++ BSC.unpack a))) id $ P.parseOnly ps a where
     ps = do
       _ <- P.char 'P'
       d <- units [('Y', 12*month), ('M', month), ('W', 7*day), ('D', day)]
-      (d +) <$> pt P.<|> d <$ P.eof
+      ((d +) <$> pt) <> (d <$ P.endOfInput)
     pt = do
       _ <- P.char 'T'
       t <- units [('H', 3600), ('M', 60), ('S', 1)]
-      _ <- P.eof
+      P.endOfInput
       return t
-    units l = fmap sum $ P.many $ do
-      s <- negate <$ P.char '-' P.<|> id <$ P.char '+' P.<|> return id
-      x <- num
+    units l = fmap sum $ P.many' $ do
+      s <- (negate <$ P.char '-') <> (id <$ P.char '+') <> return id
+      x <- P.number
       u <- P.choice $ map (\(c, u) -> s u <$ P.char c) l
-      return $ either (Time.secondsToDiffTime . (* u)) (realToFrac . (* fromInteger u)) x
+      return $ case x of
+        P.I i -> Time.secondsToDiffTime (i * u)
+        P.D d -> realToFrac (d * fromInteger u)
     day = 86400
     month = 2629746
-    num = naturalOrFloat $ makeTokenParser $ LanguageDef
-      { commentStart   = ""
-      , commentEnd     = ""
-      , commentLine    = ""
-      , nestedComments = False
-      , identStart     = mzero
-      , identLetter    = mzero
-      , opStart        = mzero
-      , opLetter       = mzero
-      , reservedOpNames= []
-      , reservedNames  = []
-      , caseSensitive  = True
-      }
 #ifdef USE_BINARY
   pgDecodeBinary = binDecDatetime BinD.interval
 #endif
@@ -559,13 +557,9 @@ instance PGRecordType t => PGParameter t PGRecord where
   pgLiteral _ (PGRecord l) =
     BSC.pack "ROW(" <> BS.intercalate (BSC.singleton ',') (map (maybe (BSC.pack "NULL") pgQuote) l) `BSC.snoc` ')'
 instance PGRecordType t => PGColumn t PGRecord where
-  pgDecode _ a = either (error . ("pgDecode record: " ++) . show) PGRecord $ P.parse pa (BSC.unpack a) a where
-    pa = do
-      l <- P.between (P.char '(') (P.char ')') $
-        P.sepBy el (P.char ',')
-      _ <- P.eof
-      return l
-    el = fmap BSC.pack <$> parsePGDQuote True "()," null
+  pgDecode _ a = either (error . ("pgDecode record (" ++) . (++ ("): " ++ BSC.unpack a))) PGRecord $ P.parseOnly pa a where
+    pa = P.char '(' *> P.sepBy el (P.char ',') <* P.char ')' <* P.endOfInput
+    el = parsePGDQuote True "()," BS.null
 
 instance PGType "record"
 -- |The generic anonymous record type, as created by @ROW@.
@@ -577,13 +571,13 @@ instance PGType "json"
 instance PGParameter "json" JSON.Value where
   pgEncode _ = BSL.toStrict . JSON.encode
 instance PGColumn "json" JSON.Value where
-  pgDecode _ j = either (error . ("pgDecode json: " ++)) id $ JSONP.parseOnly JSON.json j
+  pgDecode _ j = either (error . ("pgDecode json (" ++) . (++ ("): " ++ BSC.unpack j))) id $ P.parseOnly JSON.json j
 
 instance PGType "jsonb"
 instance PGParameter "jsonb" JSON.Value where
   pgEncode _ = BSL.toStrict . JSON.encode
 instance PGColumn "jsonb" JSON.Value where
-  pgDecode _ j = either (error . ("pgDecode json: " ++)) id $ JSONP.parseOnly JSON.json j
+  pgDecode _ j = either (error . ("pgDecode jsonb (" ++) . (++ ("): " ++ BSC.unpack j))) id $ P.parseOnly JSON.json j
 #endif
 
 {-

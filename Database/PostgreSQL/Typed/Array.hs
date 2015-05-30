@@ -1,4 +1,4 @@
-{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, FunctionalDependencies, UndecidableInstances, DataKinds #-}
+{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, FunctionalDependencies, UndecidableInstances, DataKinds, OverloadedStrings #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 -- |
 -- Module: Database.PostgreSQL.Typed.Array
@@ -10,13 +10,13 @@
 
 module Database.PostgreSQL.Typed.Array where
 
-import Control.Applicative ((<$>))
+import Control.Applicative ((<$>), (*>), (<*))
+import qualified Data.Attoparsec.ByteString.Char8 as P
 import qualified Data.ByteString.Builder as BSB
 import qualified Data.ByteString.Char8 as BSC
 import Data.Char (toLower)
 import Data.List (intersperse)
 import Data.Monoid ((<>), mconcat)
-import qualified Text.Parsec as P
 
 import Database.PostgreSQL.Typed.Types
 
@@ -39,14 +39,10 @@ instance (PGArrayType ta t, PGParameter t a) => PGParameter ta (PGArray a) where
     el Nothing = BSB.string7 "null"
     el (Just e) = pgDQuote (pgArrayDelim ta : "{}") $ pgEncode (pgArrayElementType ta) e
 instance (PGArrayType ta t, PGColumn t a) => PGColumn ta (PGArray a) where
-  pgDecode ta a = either (error . ("pgDecode array: " ++) . show) id $ P.parse pa (BSC.unpack a) a where
-    pa = do
-      l <- P.between (P.char '{') (P.char '}') $
-        P.sepBy el (P.char (pgArrayDelim ta))
-      _ <- P.eof
-      return l
-    el = P.between P.spaces P.spaces $ fmap (pgDecode (pgArrayElementType ta) . BSC.pack) <$>
-      parsePGDQuote False (pgArrayDelim ta : "{}") (("null" ==) . map toLower)
+  pgDecode ta a = either (error . ("pgDecode array (" ++) . (++ ("): " ++ BSC.unpack a))) id $ P.parseOnly pa a where
+    pa = P.char '{' *> P.sepBy (P.skipSpace *> el <* P.skipSpace) (P.char (pgArrayDelim ta)) <* P.char '}' <* P.endOfInput
+    el = fmap (pgDecode (pgArrayElementType ta)) <$>
+      parsePGDQuote False (pgArrayDelim ta : "{}") (("null" ==) . BSC.map toLower)
 
 -- Just a dump of pg_type:
 instance PGType "boolean" => PGType "boolean[]"

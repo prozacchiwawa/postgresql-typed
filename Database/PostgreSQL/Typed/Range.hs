@@ -1,4 +1,4 @@
-{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, UndecidableInstances, FunctionalDependencies, DataKinds, GeneralizedNewtypeDeriving, PatternGuards #-}
+{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, UndecidableInstances, FunctionalDependencies, DataKinds, GeneralizedNewtypeDeriving, PatternGuards, OverloadedStrings #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 -- |
 -- Module: Database.PostgreSQL.Typed.Range
@@ -12,10 +12,10 @@ module Database.PostgreSQL.Typed.Range where
 
 import Control.Applicative ((<$>), (<$))
 import Control.Monad (guard)
+import qualified Data.Attoparsec.ByteString.Char8 as P
 import qualified Data.ByteString.Builder as BSB
 import qualified Data.ByteString.Char8 as BSC
 import Data.Monoid (Monoid(..), (<>))
-import qualified Text.Parsec as P
 
 import Database.PostgreSQL.Typed.Types
 
@@ -228,11 +228,11 @@ instance (PGRangeType tr t, PGParameter t a) => PGParameter tr (Range a) where
     pb (Just b) = pgDQuote "(),[]" $ pgEncode (pgRangeElementType tr) b
     pc c o b = BSB.char7 $ if boundClosed b then c else o
 instance (PGRangeType tr t, PGColumn t a) => PGColumn tr (Range a) where
-  pgDecode tr a = either (error . ("pgDecode range: " ++) . show) id $ P.parse per (BSC.unpack a) a where
-    per = Empty <$ pe P.<|> pr
-    pe = P.oneOf "Ee" >> P.oneOf "Mm" >> P.oneOf "Pp" >> P.oneOf "Tt" >> P.oneOf "Yy"
-    pb = fmap (pgDecode (pgRangeElementType tr) . BSC.pack) <$> parsePGDQuote True "(),[]" null
-    pc c o = True <$ P.char c P.<|> False <$ P.char o
+  pgDecode tr a = either (error . ("pgDecode range (" ++) . (++ ("): " ++ BSC.unpack a))) id $ P.parseOnly per a where
+    per = (Empty <$ pe) <> pr
+    pe = P.stringCI "empty"
+    pb = fmap (pgDecode (pgRangeElementType tr)) <$> parsePGDQuote True "(),[]" BSC.null
+    pc c o = (True <$ P.char c) <> (False <$ P.char o)
     mb = maybe Unbounded . Bounded
     pr = do
       lc <- pc '[' '('

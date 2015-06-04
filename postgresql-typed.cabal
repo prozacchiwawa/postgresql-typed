@@ -59,7 +59,7 @@ Library
     template-haskell,
     haskell-src-meta,
     network,
-    attoparsec >= 0.10,
+    attoparsec >= 0.10 && < 0.14,
     utf8-string
   Exposed-Modules:
     Database.PostgreSQL.Typed

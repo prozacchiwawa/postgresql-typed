@@ -475,7 +475,7 @@ instance PGParameter "interval" Time.DiffTime where
 -- PostgreSQL stores months and days separately in intervals, but DiffTime does not.
 -- We collapse all interval fields into seconds
 instance PGColumn "interval" Time.DiffTime where
-  pgDecode _ a = either (error . ("pgDecode interval (" ++) . (++ ("): " ++ BSC.unpack a))) id $ P.parseOnly ps a where
+  pgDecode _ a = either (error . ("pgDecode interval (" ++) . (++ ("): " ++ BSC.unpack a))) realToFrac $ P.parseOnly ps a where
     ps = do
       _ <- P.char 'P'
       d <- units [('Y', 12*month), ('M', month), ('W', 7*day), ('D', day)]
@@ -486,12 +486,9 @@ instance PGColumn "interval" Time.DiffTime where
       P.endOfInput
       return t
     units l = fmap sum $ P.many' $ do
-      s <- (negate <$ P.char '-') <> (id <$ P.char '+') <> return id
-      x <- P.number
-      u <- P.choice $ map (\(c, u) -> s u <$ P.char c) l
-      return $ case x of
-        P.I i -> Time.secondsToDiffTime (i * u)
-        P.D d -> realToFrac (d * fromInteger u)
+      x <- P.signed P.scientific
+      u <- P.choice $ map (\(c, u) -> u <$ P.char c) l
+      return $ x * u
     day = 86400
     month = 2629746
 #ifdef USE_BINARY

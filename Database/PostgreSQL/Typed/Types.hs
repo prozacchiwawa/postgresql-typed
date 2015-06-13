@@ -98,7 +98,7 @@ type PGValues = [PGValue]
 -- Nothing values represent unknown.
 data PGTypeEnv = PGTypeEnv
   { pgIntegerDatetimes :: Maybe Bool -- ^ If @integer_datetimes@ is @on@; only relevant for binary encoding.
-  }
+  } deriving (Show)
 
 unknownPGTypeEnv :: PGTypeEnv
 unknownPGTypeEnv = PGTypeEnv

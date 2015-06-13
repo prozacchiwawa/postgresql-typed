@@ -39,7 +39,7 @@ import Data.ByteString.Internal (w2c)
 import qualified Data.ByteString.Lazy as BSL
 import Data.ByteString.Lazy.Internal (smallChunkSize)
 import qualified Data.Foldable as Fold
-import Data.IORef (IORef, newIORef, writeIORef, readIORef, atomicModifyIORef, atomicModifyIORef', modifyIORef)
+import Data.IORef (IORef, newIORef, writeIORef, readIORef, atomicModifyIORef, atomicModifyIORef', modifyIORef, modifyIORef')
 import Data.Int (Int32, Int16)
 import qualified Data.Map.Lazy as Map
 import Data.Maybe (fromMaybe)
@@ -56,6 +56,7 @@ import Database.PostgreSQL.Typed.Dynamic
 
 data PGState
   = StateUnknown -- no Sync
+  | StateCommand -- was Sync, sent command
   | StatePending -- Sync sent
   -- ReadyForQuery received:
   | StateIdle
@@ -257,11 +258,17 @@ messageBody Terminate = (Just 'X', mempty)
 -- |Send a message to PostgreSQL (low-level).
 pgSend :: PGConnection -> PGFrontendMessage -> IO ()
 pgSend c@PGConnection{ connHandle = h, connState = sr } msg = do
-  writeIORef sr (case msg of Sync -> StatePending ; _ -> StateUnknown)
+  modifyIORef' sr $ state msg
   when (connDebug c) $ putStrLn $ "> " ++ show msg
   B.hPutBuilder h $ Fold.foldMap B.char7 t <> B.word32BE (fromIntegral $ 4 + BS.length b)
   BS.hPut h b -- or B.hPutBuilder? But we've already had to convert to BS to get length
-  where (t, b) = second (BSL.toStrict . B.toLazyByteString) $ messageBody msg
+  where
+  (t, b) = second (BSL.toStrict . B.toLazyByteString) $ messageBody msg
+  state _ StateClosed = StateClosed
+  state Sync _ = StatePending
+  state Terminate _ = StateClosed
+  state _ StateUnknown = StateUnknown
+  state _ _ = StateCommand
 
 pgFlush :: PGConnection -> IO ()
 pgFlush = hFlush . connHandle
@@ -341,25 +348,27 @@ getMessage = G.runGetIncremental $ do
   return msg
 
 pgRecv :: Bool -> PGConnection -> IO (Maybe PGBackendMessage)
-pgRecv block c@PGConnection{ connHandle = h, connInput = dr } =
+pgRecv block c@PGConnection{ connHandle = h, connInput = dr, connState = sr } =
   go =<< readIORef dr where
   next = writeIORef dr
-  state s d = writeIORef (connState c) s >> next d
+  state s d = writeIORef sr s >> next d
   new = G.pushChunk getMessage
   go (G.Done b _ m) = do
     when (connDebug c) $ putStrLn $ "< " ++ show m
-    got (new b) m
+    got (new b) m =<< readIORef sr
   go (G.Fail _ _ r) = next (new BS.empty) >> fail r -- not clear how can recover
   go d@(G.Partial r) = do
     b <- (if block then BS.hGetSome else BS.hGetNonBlocking) h smallChunkSize
     if BS.null b
       then Nothing <$ next d
       else go $ r (Just b)
-  got :: G.Decoder PGBackendMessage -> PGBackendMessage -> IO (Maybe PGBackendMessage)
-  got d (NoticeResponse m) = connLogMessage c m >> go d
-  got d m@(ReadyForQuery s) = Just m <$ state s d
-  got d m@(ErrorResponse _) = Just m <$ state StateUnknown d
-  got d m                   = Just m <$ next d
+  got :: G.Decoder PGBackendMessage -> PGBackendMessage -> PGState -> IO (Maybe PGBackendMessage)
+  got d (NoticeResponse m) _ = connLogMessage c m >> go d
+  got d (ReadyForQuery _) StateCommand = go d
+  got d m@(ReadyForQuery s) _ = Just m <$ state s d
+  got d m@(ErrorResponse _) _ = Just m <$ state StateUnknown d
+  got d m StateCommand = Just m <$ state StateUnknown d
+  got d m _ = Just m <$ next d
 
 -- |Receive the next message from PostgreSQL (low-level). Note that this will
 -- block until it gets a message.
@@ -427,9 +436,8 @@ pgConnect db = do
 -- |Disconnect cleanly from the PostgreSQL server.
 pgDisconnect :: PGConnection -- ^ a handle from 'pgConnect'
              -> IO ()
-pgDisconnect c@PGConnection{ connHandle = h, connState = s } = do
+pgDisconnect c@PGConnection{ connHandle = h } = do
   pgSend c Terminate
-  writeIORef s StateClosed
   hClose h
 
 -- |Possibly re-open a connection to a different database, either reusing the connection if the given database is already connected or closing it and opening a new one.

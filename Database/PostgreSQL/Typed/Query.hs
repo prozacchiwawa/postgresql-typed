@@ -182,12 +182,12 @@ makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
       , tpgTypeBinary t e
       )) rt
   foldl TH.AppE (TH.LamE vars $ TH.ConE 'QueryParser
-    `TH.AppE` TH.LamE [TH.VarP e] (if isNothing prep
-      then TH.ConE 'SimpleQuery
-        `TH.AppE` sqlSubstitute sqlp vals
-      else TH.ConE 'PreparedQuery
+    `TH.AppE` TH.LamE [TH.VarP e] (maybe
+      (TH.ConE 'SimpleQuery
+        `TH.AppE` sqlSubstitute sqlp vals)
+      (\p -> TH.ConE 'PreparedQuery
         `TH.AppE` (TH.VarE 'fromString `TH.AppE` stringE sqlp)
-        `TH.AppE` TH.ListE (map (TH.LitE . TH.IntegerL . toInteger . tpgValueTypeOID) pt) 
+        `TH.AppE` TH.ListE (map (TH.LitE . TH.IntegerL . toInteger . tpgValueTypeOID . snd) $ zip p pt)
         `TH.AppE` TH.ListE vals 
         `TH.AppE` TH.ListE 
 #ifdef USE_BINARY
@@ -196,6 +196,7 @@ makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
           []
 #endif
       )
+      prep)
     `TH.AppE` TH.LamE [TH.VarP e, TH.ListP pats] (TH.TupE conv))
     <$> mapM parse exprs
   where

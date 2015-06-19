@@ -47,7 +47,7 @@ import Data.Monoid (mempty, (<>))
 import Data.Typeable (Typeable)
 import Data.Word (Word32)
 import Network (HostName, PortID(..), connectTo)
-import System.IO (Handle, hFlush, hClose, stderr, hPutStrLn)
+import System.IO (Handle, hFlush, hClose, stderr, hPutStrLn, hSetBuffering, BufferMode(BlockBuffering))
 import System.IO.Unsafe (unsafeInterleaveIO)
 import Text.Read (readMaybe)
 
@@ -389,6 +389,7 @@ pgConnect db = do
   prep <- newIORef (0, Map.empty)
   input <- newIORef getMessage
   h <- connectTo (pgDBHost db) (pgDBPort db)
+  hSetBuffering h (BlockBuffering Nothing)
   let c = PGConnection
         { connHandle = h
         , connDatabase = db

@@ -6,7 +6,7 @@ License-File:  COPYING
 Copyright:     2010-2013 Chris Forno, 2014-2015 Dylan Simon
 Author:        Dylan Simon
 Maintainer:    Dylan Simon <dylan-pgtyped@dylex.net>
-Stability:     alpha
+Stability:     beta
 Bug-Reports:   https://github.com/dylex/postgresql-typed/issues
 Homepage:      https://github.com/dylex/postgresql-typed
 Category:      Database

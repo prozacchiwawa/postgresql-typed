@@ -105,10 +105,10 @@ instance PGRep "uuid" UUID.UUID
 -- Unlike most other TH functions, this does not require any database connection.
 pgSubstituteLiterals :: String -> TH.ExpQ
 pgSubstituteLiterals sql = TH.AppE (TH.VarE 'BS.concat) . TH.ListE <$> ssl (sqlSplitExprs sql) where
-  ssl :: SQLSplit String True -> TH.Q [TH.Exp]
+  ssl :: SQLSplit String 'True -> TH.Q [TH.Exp]
   ssl (SQLLiteral s l) = (TH.VarE 'fromString `TH.AppE` stringE s :) <$> ssp l
   ssl SQLSplitEnd = return []
-  ssp :: SQLSplit String False -> TH.Q [TH.Exp]
+  ssp :: SQLSplit String 'False -> TH.Q [TH.Exp]
   ssp (SQLPlaceholder e l) = do
     v <- either (fail . (++) ("Failed to parse expression {" ++ e ++ "}: ")) return $ parseExp e
     (TH.VarE 'pgSafeLiteral `TH.AppE` v :) <$> ssl l

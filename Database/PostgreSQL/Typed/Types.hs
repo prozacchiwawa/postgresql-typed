@@ -318,17 +318,17 @@ instance PGStringType t => PGColumn t String where
   pgDecode _ = BSU.toString
   BIN_DEC((T.unpack .) . binDec BinD.text)
 
-instance PGStringType t => PGParameter t BS.ByteString where
+instance {-# OVERLAPPABLE #-} PGStringType t => PGParameter t BS.ByteString where
   pgEncode _ = id
   BIN_ENC(BinE.text . Left . TE.decodeUtf8)
-instance PGStringType t => PGColumn t BS.ByteString where
+instance {-# OVERLAPPABLE #-} PGStringType t => PGColumn t BS.ByteString where
   pgDecode _ = id
   BIN_DEC((TE.encodeUtf8 .) . binDec BinD.text)
 
-instance PGStringType t => PGParameter t BSL.ByteString where
+instance {-# OVERLAPPABLE #-} PGStringType t => PGParameter t BSL.ByteString where
   pgEncode _ = BSL.toStrict
   BIN_ENC(BinE.text . Right . TLE.decodeUtf8)
-instance PGStringType t => PGColumn t BSL.ByteString where
+instance {-# OVERLAPPABLE #-} PGStringType t => PGColumn t BSL.ByteString where
   pgDecode _ = BSL.fromStrict
   BIN_DEC((BSL.fromStrict .) . (TE.encodeUtf8 .) . binDec BinD.text)
 
@@ -373,18 +373,18 @@ decodeBytea s
   unhex = fromIntegral . digitToInt . w2c
 
 instance PGType "bytea" where BIN_COL
-instance PGParameter "bytea" BSL.ByteString where
+instance {-# OVERLAPPING #-} PGParameter "bytea" BSL.ByteString where
   pgEncode _ = encodeBytea . BSB.lazyByteStringHex
   pgLiteral t = pgQuoteUnsafe . pgEncode t
   BIN_ENC(BinE.bytea . Right)
-instance PGColumn "bytea" BSL.ByteString where
+instance {-# OVERLAPPING #-} PGColumn "bytea" BSL.ByteString where
   pgDecode _ = BSL.pack . decodeBytea
   BIN_DEC((BSL.fromStrict .) . binDec BinD.bytea)
-instance PGParameter "bytea" BS.ByteString where
+instance {-# OVERLAPPING #-} PGParameter "bytea" BS.ByteString where
   pgEncode _ = encodeBytea . BSB.byteStringHex
   pgLiteral t = pgQuoteUnsafe . pgEncode t
   BIN_ENC(BinE.bytea . Left)
-instance PGColumn "bytea" BS.ByteString where
+instance {-# OVERLAPPING #-} PGColumn "bytea" BS.ByteString where
   pgDecode _ = BS.pack . decodeBytea
   BIN_DEC(binDec BinD.bytea)
 

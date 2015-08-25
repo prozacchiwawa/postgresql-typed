@@ -118,10 +118,10 @@ pgLazyQuery c (QueryParser q p) count =
 -- Embedded expressions may not contain @{@ or @}@.
 sqlPlaceholders :: String -> (String, [String])
 sqlPlaceholders = ssl 1 . sqlSplitExprs where
-  ssl :: Int -> SQLSplit String True -> (String, [String])
+  ssl :: Int -> SQLSplit String 'True -> (String, [String])
   ssl n (SQLLiteral s l) = first (s ++) $ ssp n l
   ssl _ SQLSplitEnd = ("", [])
-  ssp :: Int -> SQLSplit String False -> (String, [String])
+  ssp :: Int -> SQLSplit String 'False -> (String, [String])
   ssp n (SQLPlaceholder e l) = (('$':show n) ++) *** (e :) $ ssl (succ n) l
   ssp _ SQLSplitEnd = ("", [])
 

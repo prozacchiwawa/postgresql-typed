@@ -76,11 +76,9 @@ data TPGState = TPGState
 
 tpgLoadTypes :: TPGState -> IO TPGState
 tpgLoadTypes tpg = do
-  -- defer loading types until they're needed
-  tl <- unsafeInterleaveIO $ pgSimpleQuery (tpgConnection tpg) $ BSLC.pack "SELECT typ.oid, format_type(CASE WHEN typtype = 'd' THEN typbasetype ELSE typ.oid END, -1) FROM pg_catalog.pg_type typ JOIN pg_catalog.pg_namespace nsp ON typnamespace = nsp.oid WHERE nspname <> 'pg_toast' AND nspname <> 'information_schema' ORDER BY typ.oid"
-  return $ tpg{ tpgTypes = IntMap.fromAscList $ map (\[to, tn] ->
-    (fromIntegral (pgDecodeRep to :: OID), pgDecodeRep tn)) $ snd tl
-  }
+  t <- IntMap.fromAscList . map (\[to, tn] -> (fromIntegral (pgDecodeRep to :: OID), pgDecodeRep tn)) .
+    snd <$> pgSimpleQuery (tpgConnection tpg) (BSLC.pack "SELECT typ.oid, format_type(CASE WHEN typtype = 'd' THEN typbasetype ELSE typ.oid END, -1) FROM pg_catalog.pg_type typ JOIN pg_catalog.pg_namespace nsp ON typnamespace = nsp.oid WHERE nspname <> 'pg_toast' AND nspname <> 'information_schema' ORDER BY typ.oid")
+  return tpg{ tpgTypes = t }
 
 tpgInit :: PGConnection -> IO TPGState
 tpgInit c = tpgLoadTypes TPGState{ tpgConnection = c, tpgTypes = undefined }

@@ -23,7 +23,7 @@ import Data.Array (listArray, (!), inRange)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BSL
-import Data.Char (isSpace)
+import Data.Char (isSpace, isAlphaNum)
 import qualified Data.Foldable as Fold
 import Data.List (dropWhileEnd)
 import Data.Maybe (fromMaybe, isNothing)
@@ -160,6 +160,9 @@ data QueryFlags = QueryFlags
 simpleQueryFlags :: QueryFlags
 simpleQueryFlags = QueryFlags True Nothing Nothing
 
+newName :: BS.ByteString -> TH.Q TH.Name
+newName = TH.newName . filter (\c -> isAlphaNum c || c == '_') . BSC.unpack
+
 -- |Construct a 'PGQuery' from a SQL string.
 makePGQuery :: QueryFlags -> String -> TH.ExpQ
 makePGQuery QueryFlags{ flagQuery = False } sqle = pgSubstituteLiterals sqle
@@ -169,13 +172,13 @@ makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
 
   e <- TH.newName "_tenv"
   (vars, vals) <- mapAndUnzipM (\t -> do
-    v <- TH.newName $ 'p':BSC.unpack (tpgValueName t)
+    v <- newName $ 'p' `BSC.cons` tpgValueName t
     return 
       ( TH.VarP v
       , tpgTypeEncoder (isNothing prep) t e `TH.AppE` TH.VarE v
       )) pt
   (pats, conv, bins) <- unzip3 <$> mapM (\t -> do
-    v <- TH.newName $ 'c':BSC.unpack (tpgValueName t)
+    v <- newName $ 'c' `BSC.cons` tpgValueName t
     return 
       ( TH.VarP v
       , tpgTypeDecoder (Fold.and nulls) t e `TH.AppE` TH.VarE v

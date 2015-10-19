@@ -18,7 +18,10 @@ module Database.PostgreSQL.Typed.TH
   , tpgTypeBinary
   ) where
 
-import Control.Applicative ((<$>), (<$), (<|>))
+#if !MIN_VERSION_base(4,8,0)
+import Control.Applicative ((<$>), (<$))
+#endif
+import Control.Applicative ((<|>))
 import Control.Concurrent.MVar (MVar, newMVar, takeMVar, putMVar, modifyMVar_)
 import Control.Exception (onException, finally)
 import Control.Monad (liftM2)

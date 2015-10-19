@@ -24,7 +24,9 @@ module Database.PostgreSQL.Typed.Protocol (
   , pgCloseStatement
   ) where
 
+#if !MIN_VERSION_base(4,8,0)
 import Control.Applicative ((<$>), (<$))
+#endif
 import Control.Arrow (second)
 import Control.Exception (Exception, throwIO)
 import Control.Monad (liftM2, replicateM, when, unless)
@@ -43,7 +45,10 @@ import Data.IORef (IORef, newIORef, writeIORef, readIORef, atomicModifyIORef, at
 import Data.Int (Int32, Int16)
 import qualified Data.Map.Lazy as Map
 import Data.Maybe (fromMaybe)
-import Data.Monoid (mempty, (<>))
+import Data.Monoid ((<>))
+#if !MIN_VERSION_base(4,8,0)
+import Data.Monoid (mempty)
+#endif
 import Data.Typeable (Typeable)
 import Data.Word (Word32)
 import Network (HostName, PortID(..), connectTo)

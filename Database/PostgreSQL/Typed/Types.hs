@@ -1,4 +1,7 @@
-{-# LANGUAGE CPP, FlexibleInstances, OverlappingInstances, ScopedTypeVariables, MultiParamTypeClasses, FunctionalDependencies, FlexibleContexts, DataKinds, KindSignatures, TypeFamilies, UndecidableInstances #-}
+{-# LANGUAGE CPP, FlexibleInstances, ScopedTypeVariables, MultiParamTypeClasses, FunctionalDependencies, FlexibleContexts, DataKinds, KindSignatures, TypeFamilies, UndecidableInstances #-}
+#if __GLASGOW_HASKELL__ < 710
+{-# LANGUAGE OverlappingInstances #-}
+#endif
 -- |
 -- Module: Database.PostgreSQL.Typed.Types
 -- Copyright: 2015 Dylan Simon
@@ -34,7 +37,9 @@ module Database.PostgreSQL.Typed.Types
   , buildPGValue
   ) where
 
+#if !MIN_VERSION_base(4,8,0)
 import Control.Applicative ((<$>), (<$), (<*), (*>))
+#endif
 #ifdef USE_AESON
 import qualified Data.Aeson as JSON
 #endif
@@ -53,7 +58,10 @@ import Data.Char (isSpace, isDigit, digitToInt, intToDigit, toLower)
 import Data.Int
 import Data.List (intersperse)
 import Data.Maybe (fromMaybe)
-import Data.Monoid ((<>), mconcat, mempty)
+import Data.Monoid ((<>))
+#if !MIN_VERSION_base(4,8,0)
+import Data.Monoid (mconcat, mempty)
+#endif
 import Data.Ratio ((%), numerator, denominator)
 #ifdef USE_SCIENTIFIC
 import Data.Scientific (Scientific)
@@ -388,13 +396,22 @@ instance {-# OVERLAPPING #-} PGColumn "bytea" BS.ByteString where
   pgDecode _ = BS.pack . decodeBytea
   BIN_DEC(binDec BinD.bytea)
 
+readTime :: Time.ParseTime t => String -> String -> t
+readTime =
+#if MIN_VERSION_time(1,5,0)
+  Time.parseTimeOrError False
+#else
+  Time.readTime
+#endif
+    defaultTimeLocale 
+
 instance PGType "date" where BIN_COL
 instance PGParameter "date" Time.Day where
   pgEncode _ = BSC.pack . Time.showGregorian
   pgLiteral t = pgQuoteUnsafe . pgEncode t
   BIN_ENC(BinE.date)
 instance PGColumn "date" Time.Day where
-  pgDecode _ = Time.readTime defaultTimeLocale "%F" . BSC.unpack
+  pgDecode _ = readTime "%F" . BSC.unpack
   BIN_DEC(binDec BinD.date)
 
 binColDatetime :: PGTypeEnv -> PGTypeName t -> Bool
@@ -420,7 +437,7 @@ instance PGParameter "time without time zone" Time.TimeOfDay where
   pgEncodeValue = binEncDatetime BinE.time
 #endif
 instance PGColumn "time without time zone" Time.TimeOfDay where
-  pgDecode _ = Time.readTime defaultTimeLocale "%T%Q" . BSC.unpack
+  pgDecode _ = readTime "%T%Q" . BSC.unpack
 #ifdef USE_BINARY
   pgDecodeBinary = binDecDatetime BinD.time
 #endif
@@ -434,7 +451,7 @@ instance PGParameter "timestamp without time zone" Time.LocalTime where
   pgEncodeValue = binEncDatetime BinE.timestamp
 #endif
 instance PGColumn "timestamp without time zone" Time.LocalTime where
-  pgDecode _ = Time.readTime defaultTimeLocale "%F %T%Q" . BSC.unpack
+  pgDecode _ = readTime "%F %T%Q" . BSC.unpack
 #ifdef USE_BINARY
   pgDecodeBinary = binDecDatetime BinD.timestamp
 #endif
@@ -458,7 +475,7 @@ instance PGParameter "timestamp with time zone" Time.UTCTime where
   pgEncodeValue = binEncDatetime BinE.timestamptz
 #endif
 instance PGColumn "timestamp with time zone" Time.UTCTime where
-  pgDecode _ = Time.readTime defaultTimeLocale "%F %T%Q%z" . fixTZ . BSC.unpack
+  pgDecode _ = readTime "%F %T%Q%z" . fixTZ . BSC.unpack
 #ifdef USE_BINARY
   pgDecodeBinary = binDecDatetime BinD.timestamptz
 #endif

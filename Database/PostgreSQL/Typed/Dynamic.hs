@@ -14,7 +14,9 @@ module Database.PostgreSQL.Typed.Dynamic
   , pgSubstituteLiterals
   ) where
 
+#if !MIN_VERSION_base(4,8,0)
 import Control.Applicative ((<$>))
+#endif
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import Data.Monoid ((<>))

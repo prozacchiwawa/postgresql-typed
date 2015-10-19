@@ -1,4 +1,4 @@
-{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, UndecidableInstances, FunctionalDependencies, DataKinds, GeneralizedNewtypeDeriving, PatternGuards, OverloadedStrings #-}
+{-# LANGUAGE CPP, MultiParamTypeClasses, FlexibleInstances, UndecidableInstances, FunctionalDependencies, DataKinds, GeneralizedNewtypeDeriving, PatternGuards, OverloadedStrings #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 -- |
 -- Module: Database.PostgreSQL.Typed.Range
@@ -10,12 +10,17 @@
 
 module Database.PostgreSQL.Typed.Range where
 
+#if !MIN_VERSION_base(4,8,0)
 import Control.Applicative ((<$>), (<$))
+#endif
 import Control.Monad (guard)
 import qualified Data.Attoparsec.ByteString.Char8 as P
 import qualified Data.ByteString.Builder as BSB
 import qualified Data.ByteString.Char8 as BSC
-import Data.Monoid (Monoid(..), (<>))
+import Data.Monoid ((<>))
+#if !MIN_VERSION_base(4,8,0)
+import Data.Monoid (Monoid(..))
+#endif
 
 import Database.PostgreSQL.Typed.Types
 

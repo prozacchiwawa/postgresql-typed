@@ -1,4 +1,5 @@
 {-# LANGUAGE PatternSynonyms, PatternGuards, TemplateHaskell, GADTs, KindSignatures, DataKinds #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 module Database.PostgreSQL.Typed.Internal
   ( stringE
   , pattern StringE

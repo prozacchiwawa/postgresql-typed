@@ -1,4 +1,4 @@
-{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, FunctionalDependencies, UndecidableInstances, DataKinds, OverloadedStrings #-}
+{-# LANGUAGE CPP, MultiParamTypeClasses, FlexibleInstances, FunctionalDependencies, UndecidableInstances, DataKinds, OverloadedStrings #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 -- |
 -- Module: Database.PostgreSQL.Typed.Array
@@ -10,13 +10,18 @@
 
 module Database.PostgreSQL.Typed.Array where
 
+#if !MIN_VERSION_base(4,8,0)
 import Control.Applicative ((<$>), (*>), (<*))
+#endif
 import qualified Data.Attoparsec.ByteString.Char8 as P
 import qualified Data.ByteString.Builder as BSB
 import qualified Data.ByteString.Char8 as BSC
 import Data.Char (toLower)
 import Data.List (intersperse)
-import Data.Monoid ((<>), mconcat)
+import Data.Monoid ((<>))
+#if !MIN_VERSION_base(4,8,0)
+import Data.Monoid (mconcat)
+#endif
 
 import Database.PostgreSQL.Typed.Types
 

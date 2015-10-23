@@ -16,20 +16,26 @@ module Database.PostgreSQL.Typed.Protocol (
   , pgConnect
   , pgDisconnect
   , pgReconnect
+  -- * Query operations
   , pgDescribe
   , pgSimpleQuery
   , pgSimpleQueries_
   , pgPreparedQuery
   , pgPreparedLazyQuery
   , pgCloseStatement
+  -- * Transactions
+  , pgBegin
+  , pgCommit
+  , pgRollback
+  , pgTransaction
   ) where
 
 #if !MIN_VERSION_base(4,8,0)
 import Control.Applicative ((<$>), (<$))
 #endif
-import Control.Arrow (second)
-import Control.Exception (Exception, throwIO)
-import Control.Monad (liftM2, replicateM, when, unless)
+import Control.Arrow ((&&&), second)
+import Control.Exception (Exception, throwIO, onException)
+import Control.Monad (void, liftM2, replicateM, when, unless)
 #ifdef USE_MD5
 import qualified Crypto.Hash as Hash
 #endif
@@ -39,6 +45,7 @@ import qualified Data.ByteString.Builder as B
 import qualified Data.ByteString.Char8 as BSC
 import Data.ByteString.Internal (w2c)
 import qualified Data.ByteString.Lazy as BSL
+import qualified Data.ByteString.Lazy.Char8 as BSLC
 import Data.ByteString.Lazy.Internal (smallChunkSize)
 import qualified Data.Foldable as Fold
 import Data.IORef (IORef, newIORef, writeIORef, readIORef, atomicModifyIORef, atomicModifyIORef', modifyIORef, modifyIORef')
@@ -50,7 +57,7 @@ import Data.Monoid ((<>))
 import Data.Monoid (mempty)
 #endif
 import Data.Typeable (Typeable)
-import Data.Word (Word32)
+import Data.Word (Word, Word32)
 import Network (HostName, PortID(..), connectTo)
 import System.IO (Handle, hFlush, hClose, stderr, hPutStrLn, hSetBuffering, BufferMode(BlockBuffering))
 import System.IO.Unsafe (unsafeInterleaveIO)
@@ -97,6 +104,7 @@ data PGConnection = PGConnection
   , connPreparedStatements :: IORef (Integer, Map.Map (BS.ByteString, [OID]) Integer)
   , connState :: IORef PGState
   , connInput :: IORef (G.Decoder PGBackendMessage)
+  , connTransaction :: IORef Word
   }
 
 data ColDescription = ColDescription
@@ -393,6 +401,7 @@ pgConnect db = do
   state <- newIORef StateUnknown
   prep <- newIORef (0, Map.empty)
   input <- newIORef getMessage
+  tr <- newIORef 0
   h <- connectTo (pgDBHost db) (pgDBPort db)
   hSetBuffering h (BlockBuffering Nothing)
   let c = PGConnection
@@ -405,6 +414,7 @@ pgConnect db = do
         , connState = state
         , connTypeEnv = unknownPGTypeEnv
         , connInput = input
+        , connTransaction = tr
         }
   pgSend c $ StartupMessage
     [ (BSC.pack "user", pgDBUser db)
@@ -645,3 +655,35 @@ pgCloseStatement c@PGConnection{ connPreparedStatements = psr } sql types = do
     pgFlush c
     CloseComplete <- pgReceive c
     return ()
+
+-- |Begin a new transaction. If there is already a transaction in progress (created with 'pgBegin' or 'pgTransaction') instead creates a savepoint.
+pgBegin :: PGConnection -> IO ()
+pgBegin c@PGConnection{ connTransaction = tr } = do
+  t <- atomicModifyIORef' tr (succ &&& id)
+  void $ pgSimpleQuery c $ BSLC.pack $ if t == 0 then "BEGIN" else "SAVEPOINT pgt" ++ show t
+
+predTransaction :: Word -> (Word, Word)
+predTransaction 0 = (0, error "pgTransaction: no transactions")
+predTransaction x = (x', x') where x' = pred x
+
+-- |Rollback to the most recent 'pgBegin'.
+pgRollback :: PGConnection -> IO ()
+pgRollback c@PGConnection{ connTransaction = tr } = do
+  t <- atomicModifyIORef' tr predTransaction
+  void $ pgSimpleQuery c $ BSLC.pack $ if t == 0 then "ROLLBACK" else "ROLLBACK TO SAVEPOINT pgt" ++ show t
+
+-- |Commit the most recent 'pgBegin'.
+pgCommit :: PGConnection -> IO ()
+pgCommit c@PGConnection{ connTransaction = tr } = do
+  t <- atomicModifyIORef' tr predTransaction
+  void $ pgSimpleQuery c $ BSLC.pack $ if t == 0 then "COMMIT" else "RELEASE SAVEPOINT pgt" ++ show t
+
+-- |Wrap a computation in a 'pgBegin', 'pgCommit' block, or 'pgRollback' on exception.
+pgTransaction :: PGConnection -> IO a -> IO a
+pgTransaction c f = do
+  pgBegin c
+  onException (do
+    r <- f
+    pgCommit c
+    return r)
+    (pgRollback c)

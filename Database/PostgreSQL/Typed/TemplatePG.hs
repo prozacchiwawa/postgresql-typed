@@ -22,7 +22,7 @@ module Database.PostgreSQL.Typed.TemplatePG
   , PG.pgDisconnect
   ) where
 
-import Control.Exception (onException, catchJust)
+import Control.Exception (catchJust)
 import Control.Monad (liftM, void, guard)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BSC
@@ -76,12 +76,7 @@ execute sql = [| \c -> void $ pgExecute c $(makePGQuery simpleQueryFlags $ query
 -- Monad for now due to the use of 'onException'. I'm debating adding a
 -- 'MonadPeelIO' version.
 withTransaction :: PG.PGConnection -> IO a -> IO a
-withTransaction h a =
-  onException (do void $ PG.pgSimpleQuery h $ BSLC.pack "BEGIN"
-                  c <- a
-                  void $ PG.pgSimpleQuery h $ BSLC.pack "COMMIT"
-                  return c)
-              (void $ PG.pgSimpleQuery h $ BSLC.pack "ROLLBACK")
+withTransaction = PG.pgTransaction
 
 -- |Roll back a transaction.
 rollback :: PG.PGConnection -> IO ()

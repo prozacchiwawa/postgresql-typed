@@ -57,7 +57,10 @@ import Data.Monoid ((<>))
 import Data.Monoid (mempty)
 #endif
 import Data.Typeable (Typeable)
-import Data.Word (Word, Word32)
+#if !MIN_VERSION_base(4,8,0)
+import Data.Word (Word)
+#endif
+import Data.Word (Word32)
 import Network (HostName, PortID(..), connectTo)
 import System.IO (Handle, hFlush, hClose, stderr, hPutStrLn, hSetBuffering, BufferMode(BlockBuffering))
 import System.IO.Unsafe (unsafeInterleaveIO)

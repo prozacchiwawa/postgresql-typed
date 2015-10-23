@@ -29,6 +29,9 @@ import Data.Char (isSpace, isAlphaNum)
 import qualified Data.Foldable as Fold
 import Data.List (dropWhileEnd)
 import Data.Maybe (fromMaybe, isNothing)
+#if !MIN_VERSION_base(4,8,0)
+import Data.Monoid (mempty)
+#endif
 import Data.String (IsString(..))
 import Data.Word (Word32)
 import Language.Haskell.Meta.Parse (parseExp)
@@ -64,12 +67,14 @@ instance PGQuery BS.ByteString PGValues where
   unsafeModifyQuery q f = f q
 
 newtype SimpleQuery = SimpleQuery BS.ByteString
+  deriving (Show)
 instance PGQuery SimpleQuery PGValues where
   pgRunQuery c (SimpleQuery sql) = pgSimpleQuery c (BSL.fromStrict sql)
   unsafeModifyQuery (SimpleQuery sql) f = SimpleQuery $ f sql
 instance PGRawQuery SimpleQuery
 
 data PreparedQuery = PreparedQuery BS.ByteString [OID] PGValues [Bool]
+  deriving (Show)
 instance PGQuery PreparedQuery PGValues where
   pgRunQuery c (PreparedQuery sql types bind bc) = pgPreparedQuery c sql types bind bc
   unsafeModifyQuery (PreparedQuery sql types bind bc) f = PreparedQuery (f sql) types bind bc
@@ -83,6 +88,10 @@ instance PGRawQuery q => PGQuery (QueryParser q a) a where
 
 instance Functor (QueryParser q) where
   fmap f (QueryParser q p) = QueryParser q (\e -> f . p e)
+
+instance Show q => Show (QueryParser q a) where
+  showsPrec p (QueryParser q _) = showParen (p > 10) $
+    showString "QueryParser " . showsPrec 11 (q mempty)
 
 rawParser :: q -> QueryParser q PGValues
 rawParser q = QueryParser (const q) (const id)

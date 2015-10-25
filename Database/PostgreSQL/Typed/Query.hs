@@ -29,9 +29,6 @@ import Data.Char (isSpace, isAlphaNum)
 import qualified Data.Foldable as Fold
 import Data.List (dropWhileEnd)
 import Data.Maybe (fromMaybe, isNothing)
-#if !MIN_VERSION_base(4,8,0)
-import Data.Monoid (mempty)
-#endif
 import Data.String (IsString(..))
 import Data.Word (Word32)
 import Language.Haskell.Meta.Parse (parseExp)
@@ -91,7 +88,7 @@ instance Functor (QueryParser q) where
 
 instance Show q => Show (QueryParser q a) where
   showsPrec p (QueryParser q _) = showParen (p > 10) $
-    showString "QueryParser " . showsPrec 11 (q mempty)
+    showString "QueryParser " . showsPrec 11 (q unknownPGTypeEnv)
 
 rawParser :: q -> QueryParser q PGValues
 rawParser q = QueryParser (const q) (const id)

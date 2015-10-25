@@ -40,7 +40,6 @@ module Database.PostgreSQL.Typed.Types
 #if !MIN_VERSION_base(4,8,0)
 import Control.Applicative ((<$>), (<$), (<*), (*>))
 #endif
-import Control.Applicative ((<|>))
 #ifdef USE_AESON
 import qualified Data.Aeson as JSON
 #endif
@@ -61,7 +60,7 @@ import Data.List (intersperse)
 import Data.Maybe (fromMaybe)
 import Data.Monoid ((<>))
 #if !MIN_VERSION_base(4,8,0)
-import Data.Monoid (Monoid(..), mconcat)
+import Data.Monoid (mempty, mconcat)
 #endif
 import Data.Ratio ((%), numerator, denominator)
 #ifdef USE_SCIENTIFIC
@@ -108,10 +107,6 @@ type PGValues = [PGValue]
 data PGTypeEnv = PGTypeEnv
   { pgIntegerDatetimes :: Maybe Bool -- ^ If @integer_datetimes@ is @on@; only relevant for binary encoding.
   } deriving (Show)
-
-instance Monoid PGTypeEnv where
-  mempty = PGTypeEnv Nothing
-  mappend (PGTypeEnv i1) (PGTypeEnv i2) = PGTypeEnv (i1 <|> i2)
 
 unknownPGTypeEnv :: PGTypeEnv
 unknownPGTypeEnv = PGTypeEnv
@@ -194,6 +189,7 @@ pgQuoteUnsafe = (`BSC.snoc` '\'') . BSC.cons '\''
 pgQuote :: BS.ByteString -> BS.ByteString
 pgQuote = pgQuoteUnsafe . BSC.intercalate (BSC.pack "''") . BSC.split '\''
 
+-- |Shorthand for @'BSL.toStrict' . 'BSB.toLazyByteString'@
 buildPGValue :: BSB.Builder -> BS.ByteString
 buildPGValue = BSL.toStrict . BSB.toLazyByteString
 

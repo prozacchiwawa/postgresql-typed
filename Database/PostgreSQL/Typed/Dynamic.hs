@@ -58,6 +58,7 @@ class PGType t => PGRep t a | a -> t where
   pgDecodeRep (PGTextValue v) = pgDecode (PGTypeProxy :: PGTypeName t) v
   pgDecodeRep _ = error $ "pgDecodeRep " ++ pgTypeName (PGTypeProxy :: PGTypeName t) ++ ": unsupported PGValue"
 
+-- |Produce a raw SQL literal from a value. Using 'pgSafeLiteral' is usually safer when interpolating in a SQL statement.
 pgLiteralString :: PGRep t a => a -> String
 pgLiteralString = BSC.unpack . pgLiteralRep
 
@@ -65,6 +66,7 @@ pgLiteralString = BSC.unpack . pgLiteralRep
 pgSafeLiteral :: PGRep t a => a -> BS.ByteString
 pgSafeLiteral x = pgLiteralRep x <> BSC.pack "::" <> fromString (pgTypeName (pgTypeOf x))
 
+-- |Identical to @'BSC.unpack' . 'pgSafeLiteral'@ but more efficient.
 pgSafeLiteralString :: PGRep t a => a -> String
 pgSafeLiteralString x = pgLiteralString x ++ "::" ++ pgTypeName (pgTypeOf x)
 

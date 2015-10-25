@@ -32,6 +32,7 @@ module Database.PostgreSQL.Typed
   -- $run
   , pgQuery
   , pgExecute
+  , pgTransaction
 
   -- **TemplatePG compatibility
   -- $templatepg

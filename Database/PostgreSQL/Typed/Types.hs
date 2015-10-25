@@ -440,7 +440,7 @@ readTime =
 #else
   Time.readTime
 #endif
-    defaultTimeLocale 
+    defaultTimeLocale
 
 instance PGType "date" where BIN_COL
 instance PGParameter "date" Time.Day where

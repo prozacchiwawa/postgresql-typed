@@ -15,6 +15,7 @@ import Control.Monad (when)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BSL
+import Data.Ix (Ix)
 import Data.String (fromString)
 import Data.Typeable (Typeable)
 import qualified Language.Haskell.TH as TH
@@ -56,7 +57,7 @@ makePGEnum name typs valnf = do
     valn = map (\[PGTextValue v] -> let u = BSC.unpack v in (TH.mkName $ valnf u, map (TH.IntegerL . fromIntegral) $ BS.unpack v, TH.StringL u)) vals
   dv <- TH.newName "x"
   return
-    [ TH.DataD [] typn [] (map (\(n, _, _) -> TH.NormalC n []) valn) [''Eq, ''Ord, ''Enum, ''Bounded, ''Typeable]
+    [ TH.DataD [] typn [] (map (\(n, _, _) -> TH.NormalC n []) valn) [''Eq, ''Ord, ''Enum, ''Ix, ''Bounded, ''Typeable]
     , TH.InstanceD [] (TH.ConT ''Show `TH.AppT` typt)
       [ TH.FunD 'show $ map (\(n, _, v) -> TH.Clause [TH.ConP n []]
         (TH.NormalB $ TH.LitE v) []) valn

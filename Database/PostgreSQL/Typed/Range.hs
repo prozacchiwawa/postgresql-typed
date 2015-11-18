@@ -79,7 +79,7 @@ data Range a
     { lower :: LowerBound a
     , upper :: UpperBound a
     }
-  deriving (Eq)
+  deriving (Eq, Ord)
 
 instance Functor Range where
   fmap _ Empty = Empty

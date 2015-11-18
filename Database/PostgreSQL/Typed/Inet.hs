@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP, MultiParamTypeClasses, FlexibleInstances, FunctionalDependencies, DataKinds #-}
+{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, FunctionalDependencies, DataKinds #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 -- |
 -- Module: Database.PostgreSQL.Typed.Inet
@@ -35,6 +35,7 @@ data PGInet
     { pgInetAddr6 :: !Net.HostAddress6
     , pgInetMask :: !Word8
     }
+  deriving (Eq)
 
 sockAddrPGInet :: Net.SockAddr -> Maybe PGInet
 sockAddrPGInet (Net.SockAddrInet _ a) = Just $ PGInet a 32

@@ -1,5 +1,5 @@
 Name:          postgresql-typed
-Version:       0.4.2.1
+Version:       0.4.2.2
 Cabal-Version: >= 1.8
 License:       BSD3
 License-File:  COPYING
@@ -97,7 +97,7 @@ Library
     CPP-options: -DUSE_AESON
 
 test-suite test
-  build-depends: base, network, time, bytestring, postgresql-typed
+  build-depends: base, network, time, bytestring, postgresql-typed, QuickCheck
   type: exitcode-stdio-1.0
   main-is: Main.hs
   buildable: True

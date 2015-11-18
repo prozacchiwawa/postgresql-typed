@@ -2,16 +2,20 @@
 -- {-# OPTIONS_GHC -ddump-splices #-}
 module Main (main) where
 
-import Data.ByteString (ByteString)
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BSC
 import Data.Int (Int32)
 import qualified Data.Time as Time
 import System.Exit (exitSuccess, exitFailure)
+import qualified Test.QuickCheck as Q
+import Test.QuickCheck.Test (isSuccess)
 
 import Database.PostgreSQL.Typed
 import Database.PostgreSQL.Typed.Types (OID)
 import Database.PostgreSQL.Typed.Array ()
 import qualified Database.PostgreSQL.Typed.Range as Range
 import Database.PostgreSQL.Typed.Enum
+import Database.PostgreSQL.Typed.Inet
 
 import Connect
 
@@ -26,6 +30,42 @@ useTPGDatabase db
 
 makePGEnum "myenum" "MyEnum" ("MyEnum_" ++)
 
+instance Q.Arbitrary MyEnum where
+  arbitrary = Q.arbitraryBoundedEnum
+
+instance Q.Arbitrary Time.Day where
+  arbitrary = Time.ModifiedJulianDay <$> Q.arbitrary
+instance Q.Arbitrary Time.DiffTime where
+  arbitrary = Time.picosecondsToDiffTime . (1000000 *) <$> Q.arbitrary
+instance Q.Arbitrary Time.UTCTime where
+  arbitrary = Time.UTCTime <$> Q.arbitrary <*> ((Time.picosecondsToDiffTime . (1000000 *)) <$> Q.choose (0,86399999999))
+instance Q.Arbitrary Time.LocalTime where
+  arbitrary = Time.utcToLocalTime Time.utc <$> Q.arbitrary
+
+instance Q.Arbitrary a => Q.Arbitrary (Range.Bound a) where
+  arbitrary = do
+    u <- Q.arbitrary
+    if u
+      then return $ Range.Unbounded
+      else Range.Bounded <$> Q.arbitrary <*> Q.arbitrary
+instance (Ord a, Q.Arbitrary a) => Q.Arbitrary (Range.Range a) where
+  arbitrary = Range.range <$> Q.arbitrary <*> Q.arbitrary
+
+instance Q.Arbitrary PGInet where
+  arbitrary = do
+    v6 <- Q.arbitrary
+    if v6
+      then PGInet6 <$> Q.arbitrary <*> ((`mod` 129) <$> Q.arbitrary)
+      else PGInet  <$> Q.arbitrary <*> ((`mod`  33) <$> Q.arbitrary)
+
+newtype Str = Str { strString :: [Char] } deriving (Eq, Show)
+strByte :: Str -> BS.ByteString
+strByte = BSC.pack . strString
+byteStr :: BS.ByteString -> Str
+byteStr = Str . BSC.unpack
+instance Q.Arbitrary Str where
+  arbitrary = Str <$> Q.listOf (Q.choose (' ', '~'))
+
 simple :: PGConnection -> OID -> IO [String]
 simple c t = pgQuery c [pgSQL|SELECT typname FROM pg_catalog.pg_type WHERE oid = ${t} AND oid = $1|]
 simpleApply :: PGConnection -> OID -> IO [Maybe String]
@@ -35,23 +75,31 @@ prepared c t = pgQuery c . [pgSQL|?$SELECT typname FROM pg_catalog.pg_type WHERE
 preparedApply :: PGConnection -> Int32 -> IO [String]
 preparedApply c = pgQuery c . [pgSQL|$(integer)SELECT typname FROM pg_catalog.pg_type WHERE oid = $1|]
 
+selectProp :: PGConnection -> Bool -> Int32 -> Float -> Time.LocalTime -> Time.UTCTime -> Time.Day -> Time.DiffTime -> Str -> [Maybe Str] -> Range.Range Int32 -> MyEnum -> PGInet -> Q.Property
+selectProp c b i f t z d p s l r e a = Q.ioProperty $ do
+  [(Just b', Just i', Just f', Just s', Just d', Just t', Just z', Just p', Just l', Just r', Just e', Just a')] <- pgQuery c
+    [pgSQL|$SELECT ${b}::bool, ${Just i}::int, ${f}::float4, ${strString s}::varchar, ${Just d}::date, ${t}::timestamp, ${z}::timestamptz, ${p}::interval, ${map (fmap strByte) l}::text[], ${r}::int4range, ${e}::myenum, ${a}::inet|]
+  return $ Q.conjoin 
+    [ i Q.=== i'
+    , b Q.=== b'
+    , strString s Q.=== s'
+    , f Q.=== f'
+    , d Q.=== d'
+    , t Q.=== t'
+    , z Q.=== z'
+    , p Q.=== p'
+    , l Q.=== map (fmap byteStr) l'
+    , Range.normalize' r Q.=== r'
+    , e Q.=== e'
+    , a Q.=== a'
+    ]
+
 main :: IO ()
 main = do
   c <- pgConnect db
-  z <- Time.getZonedTime
-  let i = 1 :: Int32
-      b = True
-      f = 3.14 :: Float
-      t = Time.zonedTimeToLocalTime z
-      d = Time.localDay t
-      p = -34881559 :: Time.DiffTime
-      s = "\"hel\\o'" :: String
-      l = [Just "a\\\"b,c", Nothing, Just "null", Just "nullish" :: Maybe ByteString]
-      r = Range.normal (Just (-2 :: Int32)) Nothing
-      e = MyEnum_XX_ye
-  [(Just b', Just i', Just f', Just s', Just d', Just t', Just z', Just p', Just l', Just r', Just e')] <- pgQuery c
-    [pgSQL|$SELECT ${b}::bool, ${Just i}::int, ${f}::float4, ${s}::varchar(10), ${Just d}::date, ${t}::timestamp, ${Time.zonedTimeToUTC z}::timestamptz, ${p}::interval, ${l}::text[], ${r}::int4range, ${e}::myenum|]
-  assert $ i == i' && b == b' && s == s' && f == f' && d == d' && t == t' && Time.zonedTimeToUTC z == z' && p == p' && l == l' && r == r' && e == e'
+
+  r <- Q.quickCheckResult $ selectProp c
+  assert $ isSuccess r
 
   ["box"] <- simple c 603
   [Just "box"] <- simpleApply c 603
@@ -60,7 +108,7 @@ main = do
   [Just "line"] <- prepared c 628 "line"
   ["line"] <- preparedApply c 628
 
-  assert $ [pgSQL|#abc${f}def|] == "abc3.14::realdef"
+  assert $ [pgSQL|#abc${3.14 :: Float}def|] == "abc3.14::realdef"
 
   assert $ pgEnumValues == [(MyEnum_abc, "abc"), (MyEnum_DEF, "DEF"), (MyEnum_XX_ye, "XX_ye")]
 

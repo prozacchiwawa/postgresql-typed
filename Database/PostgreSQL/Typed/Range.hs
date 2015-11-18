@@ -181,7 +181,7 @@ normalize' (Range (Lower l) (Upper u)) = normalize $ range l' u'
     _ -> l
   u' = case u of
     Bounded True b -> Bounded False (succ b)
-    _ -> l
+    _ -> u
 
 -- |Contains range
 (@>), (<@) :: Ord a => Range a -> Range a -> Bool

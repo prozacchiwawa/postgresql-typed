@@ -38,6 +38,7 @@ import Control.Exception (Exception, throwIO, onException)
 import Control.Monad (void, liftM2, replicateM, when, unless)
 #ifdef USE_MD5
 import qualified Crypto.Hash as Hash
+import qualified Data.ByteArray.Encoding as BA
 #endif
 import qualified Data.Binary.Get as G
 import qualified Data.ByteString as BS
@@ -220,7 +221,7 @@ pgTypeEnv = connTypeEnv
 
 #ifdef USE_MD5
 md5 :: BS.ByteString -> BS.ByteString
-md5 = Hash.digestToHexByteString . (Hash.hash :: BS.ByteString -> Hash.Digest Hash.MD5)
+md5 = BA.convertToBase BA.Base16 . (Hash.hash :: BS.ByteString -> Hash.Digest Hash.MD5)
 #endif
 
 

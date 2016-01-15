@@ -85,9 +85,8 @@ import Data.Word (Word8, Word32)
 import GHC.TypeLits (Symbol, symbolVal, KnownSymbol)
 import Numeric (readFloat)
 #ifdef USE_BINARY
--- import qualified PostgreSQLBinary.Array as BinA
-import qualified PostgreSQLBinary.Decoder as BinD
-import qualified PostgreSQLBinary.Encoder as BinE
+import qualified PostgreSQL.Binary.Decoder as BinD
+import qualified PostgreSQL.Binary.Encoder as BinE
 #endif
 
 type PGTextValue = BS.ByteString
@@ -222,11 +221,11 @@ parsePGDQuote blank unsafe isnul = (Just <$> q) <> (mnul <$> uq) where
     | otherwise = Just s
 
 #ifdef USE_BINARY
-binDec :: PGType t => BinD.D a -> PGTypeName t -> PGBinaryValue -> a
-binDec d t = either (\e -> error $ "pgDecodeBinary " ++ pgTypeName t ++ ": " ++ show e) id . d
+binDec :: PGType t => BinD.Decoder a -> PGTypeName t -> PGBinaryValue -> a
+binDec d t = either (\e -> error $ "pgDecodeBinary " ++ pgTypeName t ++ ": " ++ show e) id . BinD.run d
 
 #define BIN_COL pgBinaryColumn _ _ = True
-#define BIN_ENC(F) pgEncodeValue _ _ = PGBinaryValue . F
+#define BIN_ENC(F) pgEncodeValue _ _ = PGBinaryValue . buildPGValue . F
 #define BIN_DEC(F) pgDecodeBinary _ = F
 #else
 #define BIN_COL
@@ -259,7 +258,7 @@ instance PGType "oid" where BIN_COL
 instance PGParameter "oid" OID where
   pgEncode _ = BSC.pack . show
   pgLiteral = pgEncode
-  BIN_ENC(BinE.int4 . Right)
+  BIN_ENC(BinE.int4_word32)
 instance PGColumn "oid" OID where
   pgDecode _ = read . BSC.unpack
   BIN_DEC(binDec BinD.int)
@@ -268,7 +267,7 @@ instance PGType "smallint" where BIN_COL
 instance PGParameter "smallint" Int16 where
   pgEncode _ = BSC.pack . show
   pgLiteral = pgEncode
-  BIN_ENC(BinE.int2. Left)
+  BIN_ENC(BinE.int2_int16)
 instance PGColumn "smallint" Int16 where
   pgDecode _ = read . BSC.unpack
   BIN_DEC(binDec BinD.int)
@@ -277,7 +276,7 @@ instance PGType "integer" where BIN_COL
 instance PGParameter "integer" Int32 where
   pgEncode _ = BSC.pack . show
   pgLiteral = pgEncode
-  BIN_ENC(BinE.int4 . Left)
+  BIN_ENC(BinE.int4_int32)
 instance PGColumn "integer" Int32 where
   pgDecode _ = read . BSC.unpack
   BIN_DEC(binDec BinD.int)
@@ -286,7 +285,7 @@ instance PGType "bigint" where BIN_COL
 instance PGParameter "bigint" Int64 where
   pgEncode _ = BSC.pack . show
   pgLiteral = pgEncode
-  BIN_ENC(BinE.int8 . Left)
+  BIN_ENC(BinE.int8_int64)
 instance PGColumn "bigint" Int64 where
   pgDecode _ = read . BSC.unpack
   BIN_DEC(binDec BinD.int)
@@ -322,10 +321,10 @@ class PGType t => PGStringType t
 
 instance PGStringType t => PGParameter t String where
   pgEncode _ = BSU.fromString
-  BIN_ENC(BinE.text . Left . T.pack)
+  BIN_ENC(BinE.text_strict . T.pack)
 instance PGStringType t => PGColumn t String where
   pgDecode _ = BSU.toString
-  BIN_DEC((T.unpack .) . binDec BinD.text)
+  BIN_DEC((T.unpack .) . binDec BinD.text_strict)
 
 instance
 #if __GLASGOW_HASKELL__ >= 710
@@ -333,14 +332,14 @@ instance
 #endif
     PGStringType t => PGParameter t BS.ByteString where
   pgEncode _ = id
-  BIN_ENC(BinE.text . Left . TE.decodeUtf8)
+  BIN_ENC(BinE.text_strict . TE.decodeUtf8)
 instance
 #if __GLASGOW_HASKELL__ >= 710
     {-# OVERLAPPABLE #-}
 #endif
     PGStringType t => PGColumn t BS.ByteString where
   pgDecode _ = id
-  BIN_DEC((TE.encodeUtf8 .) . binDec BinD.text)
+  BIN_DEC((TE.encodeUtf8 .) . binDec BinD.text_strict)
 
 instance
 #if __GLASGOW_HASKELL__ >= 710
@@ -348,29 +347,29 @@ instance
 #endif
     PGStringType t => PGParameter t BSL.ByteString where
   pgEncode _ = BSL.toStrict
-  BIN_ENC(BinE.text . Right . TLE.decodeUtf8)
+  BIN_ENC(BinE.text_lazy . TLE.decodeUtf8)
 instance
 #if __GLASGOW_HASKELL__ >= 710
     {-# OVERLAPPABLE #-}
 #endif
     PGStringType t => PGColumn t BSL.ByteString where
   pgDecode _ = BSL.fromStrict
-  BIN_DEC((BSL.fromStrict .) . (TE.encodeUtf8 .) . binDec BinD.text)
+  BIN_DEC((TLE.encodeUtf8 .) . binDec BinD.text_lazy)
 
 #ifdef USE_TEXT
 instance PGStringType t => PGParameter t T.Text where
   pgEncode _ = TE.encodeUtf8
-  BIN_ENC(BinE.text . Left)
+  BIN_ENC(BinE.text_strict)
 instance PGStringType t => PGColumn t T.Text where
   pgDecode _ = TE.decodeUtf8
-  BIN_DEC(binDec BinD.text)
+  BIN_DEC(binDec BinD.text_strict)
 
 instance PGStringType t => PGParameter t TL.Text where
   pgEncode _ = BSL.toStrict . TLE.encodeUtf8
-  BIN_ENC(BinE.text . Right)
+  BIN_ENC(BinE.text_lazy)
 instance PGStringType t => PGColumn t TL.Text where
   pgDecode _ = TL.fromStrict . TE.decodeUtf8
-  BIN_DEC((TL.fromStrict .) . binDec BinD.text)
+  BIN_DEC(binDec BinD.text_lazy)
 #endif
 
 instance PGType "text" where BIN_COL
@@ -405,14 +404,14 @@ instance
     PGParameter "bytea" BSL.ByteString where
   pgEncode _ = encodeBytea . BSB.lazyByteStringHex
   pgLiteral t = pgQuoteUnsafe . pgEncode t
-  BIN_ENC(BinE.bytea . Right)
+  BIN_ENC(BinE.bytea_lazy)
 instance
 #if __GLASGOW_HASKELL__ >= 710
     {-# OVERLAPPING #-}
 #endif
     PGColumn "bytea" BSL.ByteString where
   pgDecode _ = BSL.pack . decodeBytea
-  BIN_DEC((BSL.fromStrict .) . binDec BinD.bytea)
+  BIN_DEC(binDec BinD.bytea_lazy)
 instance
 #if __GLASGOW_HASKELL__ >= 710
     {-# OVERLAPPING #-}
@@ -420,14 +419,14 @@ instance
     PGParameter "bytea" BS.ByteString where
   pgEncode _ = encodeBytea . BSB.byteStringHex
   pgLiteral t = pgQuoteUnsafe . pgEncode t
-  BIN_ENC(BinE.bytea . Left)
+  BIN_ENC(BinE.bytea_strict)
 instance
 #if __GLASGOW_HASKELL__ >= 710
     {-# OVERLAPPING #-}
 #endif
     PGColumn "bytea" BS.ByteString where
   pgDecode _ = BS.pack . decodeBytea
-  BIN_DEC(binDec BinD.bytea)
+  BIN_DEC(binDec BinD.bytea_strict)
 
 readTime :: Time.ParseTime t => String -> String -> t
 readTime =
@@ -454,11 +453,15 @@ binColDatetime PGTypeEnv{ pgIntegerDatetimes = Just _ } _ = True
 binColDatetime _ _ = False
 
 #ifdef USE_BINARY
-binEncDatetime :: PGParameter t a => (Bool -> a -> PGBinaryValue) -> PGTypeEnv -> PGTypeName t -> a -> PGValue
-binEncDatetime f e t = maybe (PGTextValue . pgEncode t) ((PGBinaryValue .) . f) (pgIntegerDatetimes e)
+binEncDatetime :: PGParameter t a => BinE.Encoder a -> BinE.Encoder a -> PGTypeEnv -> PGTypeName t -> a -> PGValue
+binEncDatetime _ ff PGTypeEnv{ pgIntegerDatetimes = Just False } _ = PGBinaryValue . buildPGValue . ff
+binEncDatetime fi _ PGTypeEnv{ pgIntegerDatetimes = Just True } _ = PGBinaryValue . buildPGValue . fi
+binEncDatetime _ _ PGTypeEnv{ pgIntegerDatetimes = Nothing } t = PGTextValue . pgEncode t
 
-binDecDatetime :: PGColumn t a => (Bool -> BinD.D a) -> PGTypeEnv -> PGTypeName t -> PGBinaryValue -> a
-binDecDatetime f e = binDec $ f $ fromMaybe (error "pgDecodeBinary: unknown integer_datetimes value") $ pgIntegerDatetimes e
+binDecDatetime :: PGColumn t a => BinD.Decoder a -> BinD.Decoder a -> PGTypeEnv -> PGTypeName t -> PGBinaryValue -> a
+binDecDatetime _ ff PGTypeEnv{ pgIntegerDatetimes = Just False } = binDec ff
+binDecDatetime fi _ PGTypeEnv{ pgIntegerDatetimes = Just True } = binDec fi
+binDecDatetime _ _ PGTypeEnv{ pgIntegerDatetimes = Nothing } = error "pgDecodeBinary: unknown integer_datetimes value"
 #endif
 
 instance PGType "time without time zone" where
@@ -467,12 +470,12 @@ instance PGParameter "time without time zone" Time.TimeOfDay where
   pgEncode _ = BSC.pack . Time.formatTime defaultTimeLocale "%T%Q"
   pgLiteral t = pgQuoteUnsafe . pgEncode t
 #ifdef USE_BINARY
-  pgEncodeValue = binEncDatetime BinE.time
+  pgEncodeValue = binEncDatetime BinE.time_int BinE.time_float
 #endif
 instance PGColumn "time without time zone" Time.TimeOfDay where
   pgDecode _ = readTime "%T%Q" . BSC.unpack
 #ifdef USE_BINARY
-  pgDecodeBinary = binDecDatetime BinD.time
+  pgDecodeBinary = binDecDatetime BinD.time_int BinD.time_float
 #endif
 
 instance PGType "timestamp without time zone" where
@@ -481,12 +484,12 @@ instance PGParameter "timestamp without time zone" Time.LocalTime where
   pgEncode _ = BSC.pack . Time.formatTime defaultTimeLocale "%F %T%Q"
   pgLiteral t = pgQuoteUnsafe . pgEncode t
 #ifdef USE_BINARY
-  pgEncodeValue = binEncDatetime BinE.timestamp
+  pgEncodeValue = binEncDatetime BinE.timestamp_int BinE.timestamp_float
 #endif
 instance PGColumn "timestamp without time zone" Time.LocalTime where
   pgDecode _ = readTime "%F %T%Q" . BSC.unpack
 #ifdef USE_BINARY
-  pgDecodeBinary = binDecDatetime BinD.timestamp
+  pgDecodeBinary = binDecDatetime BinD.timestamp_int BinD.timestamp_float
 #endif
 
 -- PostgreSQL uses "[+-]HH[:MM]" timezone offsets, while "%z" uses "+HHMM" by default.
@@ -505,12 +508,12 @@ instance PGParameter "timestamp with time zone" Time.UTCTime where
   pgEncode _ = BSC.pack . fixTZ . Time.formatTime defaultTimeLocale "%F %T%Q%z"
   -- pgLiteral t = pgQuoteUnsafe . pgEncode t
 #ifdef USE_BINARY
-  pgEncodeValue = binEncDatetime BinE.timestamptz
+  pgEncodeValue = binEncDatetime BinE.timestamptz_int BinE.timestamptz_float
 #endif
 instance PGColumn "timestamp with time zone" Time.UTCTime where
   pgDecode _ = readTime "%F %T%Q%z" . fixTZ . BSC.unpack
 #ifdef USE_BINARY
-  pgDecodeBinary = binDecDatetime BinD.timestamptz
+  pgDecodeBinary = binDecDatetime BinD.timestamptz_int BinD.timestamptz_float
 #endif
 
 instance PGType "interval" where
@@ -519,7 +522,7 @@ instance PGParameter "interval" Time.DiffTime where
   pgEncode _ = BSC.pack . show
   pgLiteral t = pgQuoteUnsafe . pgEncode t
 #ifdef USE_BINARY
-  pgEncodeValue = binEncDatetime BinE.interval
+  pgEncodeValue = binEncDatetime BinE.interval_int BinE.interval_float
 #endif
 -- |Representation of DiffTime as interval.
 -- PostgreSQL stores months and days separately in intervals, but DiffTime does not.
@@ -542,7 +545,7 @@ instance PGColumn "interval" Time.DiffTime where
     day = 86400
     month = 2629746
 #ifdef USE_BINARY
-  pgDecodeBinary = binDecDatetime BinD.interval
+  pgDecodeBinary = binDecDatetime BinD.interval_int BinD.interval_float
 #endif
 
 instance PGType "numeric" where BIN_COL

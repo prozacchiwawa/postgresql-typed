@@ -47,6 +47,10 @@ class PGQuery q a | q -> a where
   -- |Change the raw SQL query stored within this query.
   -- This is unsafe because the query has already been type-checked, so any change must not change the number or type of results or placeholders (so adding additional static WHERE or ORDER BY clauses is generally safe).
   -- This is useful in cases where you need to construct some part of the query dynamically, but still want to infer the result types.
+  -- If you want to add dynamic values to the query, it's best to use 'Database.PostgreSQL.Typed.Dynamic.pgSafeLiteral'.
+  -- For example:
+  --
+  -- > [pgSQL|SELECT a FROM t|] `unsafeModifyQuery` (<> (" WHERE a = " <> pgSafeLiteral x))
   unsafeModifyQuery :: q -> (BS.ByteString -> BS.ByteString) -> q
 class PGQuery q PGValues => PGRawQuery q
 

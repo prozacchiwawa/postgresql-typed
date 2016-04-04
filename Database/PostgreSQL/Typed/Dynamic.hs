@@ -45,6 +45,7 @@ class PGType t => PGRep t a | a -> t where
   pgEncodeRep :: a -> PGValue
   default pgEncodeRep :: PGParameter t a => a -> PGValue
   pgEncodeRep x = pgEncodeValue unknownPGTypeEnv (pgTypeOf x) x
+  -- |Produce a literal value for interpolation in a SQL statement.  Using 'pgSafeLiteral' is usually safer as it includes type cast.
   pgLiteralRep :: a -> BS.ByteString
   default pgLiteralRep :: PGParameter t a => a -> BS.ByteString
   pgLiteralRep x = pgLiteral (pgTypeOf x) x
@@ -62,7 +63,7 @@ class PGType t => PGRep t a | a -> t where
 pgLiteralString :: PGRep t a => a -> String
 pgLiteralString = BSC.unpack . pgLiteralRep
 
--- |Produce a safely type-cast literal value for interpolation in a SQL statement.
+-- |Produce a safely type-cast literal value for interpolation in a SQL statement, e.g., "'123'::integer".
 pgSafeLiteral :: PGRep t a => a -> BS.ByteString
 pgSafeLiteral x = pgLiteralRep x <> BSC.pack "::" <> fromString (pgTypeName (pgTypeOf x))
 

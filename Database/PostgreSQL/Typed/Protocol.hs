@@ -88,13 +88,14 @@ data PGDatabase = PGDatabase
   , pgDBPort :: PortID -- ^ The port, likely either @PortNumber 5432@ or @UnixSocket \"\/tmp\/.s.PGSQL.5432\"@
   , pgDBName :: BS.ByteString -- ^ The name of the database
   , pgDBUser, pgDBPass :: BS.ByteString
+  , pgDBParams :: [(BS.ByteString, BS.ByteString)] -- ^ Extra parameters to set for the connection (e.g., ("TimeZone", "UTC"))
   , pgDBDebug :: Bool -- ^ Log all low-level server messages
   , pgDBLogMessage :: MessageFields -> IO () -- ^ How to log server notice messages (e.g., @print . PGError@)
   }
 
 instance Eq PGDatabase where
-  PGDatabase h1 s1 n1 u1 p1 _ _ == PGDatabase h2 s2 n2 u2 p2 _ _ =
-    h1 == h2 && s1 == s2 && n1 == n2 && u1 == u2 && p1 == p2
+  PGDatabase h1 s1 n1 u1 p1 l1 _ _ == PGDatabase h2 s2 n2 u2 p2 l2 _ _ =
+    h1 == h2 && s1 == s2 && n1 == n2 && u1 == u2 && p1 == p2 && l1 == l2
 
 -- |An established connection to the PostgreSQL server.
 -- These objects are not thread-safe and must only be used for a single request at a time.
@@ -208,7 +209,7 @@ defaultLogMessage = hPutStrLn stderr . displayMessage
 -- |A database connection with sane defaults:
 -- localhost:5432:postgres
 defaultPGDatabase :: PGDatabase
-defaultPGDatabase = PGDatabase "localhost" (PortNumber 5432) (BSC.pack "postgres") (BSC.pack "postgres") BS.empty False defaultLogMessage
+defaultPGDatabase = PGDatabase "localhost" (PortNumber 5432) (BSC.pack "postgres") (BSC.pack "postgres") BS.empty [] False defaultLogMessage
 
 connDebug :: PGConnection -> Bool
 connDebug = pgDBDebug . connDatabase
@@ -420,7 +421,7 @@ pgConnect db = do
         , connInput = input
         , connTransaction = tr
         }
-  pgSend c $ StartupMessage
+  pgSend c $ StartupMessage $
     [ (BSC.pack "user", pgDBUser db)
     , (BSC.pack "database", pgDBName db)
     , (BSC.pack "client_encoding", BSC.pack "UTF8")
@@ -428,7 +429,7 @@ pgConnect db = do
     , (BSC.pack "bytea_output", BSC.pack "hex")
     , (BSC.pack "DateStyle", BSC.pack "ISO, YMD")
     , (BSC.pack "IntervalStyle", BSC.pack "iso_8601")
-    ]
+    ] ++ pgDBParams db
   pgFlush c
   conn c
   where
@@ -569,6 +570,7 @@ pgSimpleQuery h sql = do
   got c r = return (rowsAffected c, r)
 
 -- |A simple query which may contain multiple queries (separated by semi-colons) whose results are all ignored.
+-- This function can also be used for \"SET\" parameter queries if necessary, but it's safer better to use 'pgDBParams'.
 pgSimpleQueries_ :: PGConnection -> BSL.ByteString -- ^ SQL string
                    -> IO ()
 pgSimpleQueries_ h sql = do
@@ -581,6 +583,7 @@ pgSimpleQueries_ h sql = do
   res (CommandComplete _) = go
   res EmptyQueryResponse = go
   res (DataRow _) = go
+  res (ParameterStatus _ _) = go
   res (ReadyForQuery _) = return ()
   res m = fail $ "pgSimpleQueries_: unexpected response: " ++ show m
 

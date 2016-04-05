@@ -10,5 +10,6 @@ db = defaultPGDatabase
   , pgDBName = "templatepg"
   , pgDBUser = "templatepg"
   , pgDBDebug = True
+  , pgDBParams = [("TimeZone", "UTC")]
   }
 

@@ -39,10 +39,20 @@ class (PGType ta, PGType t) => PGArrayType ta t | ta -> t, t -> ta where
   pgArrayDelim :: PGTypeName ta -> Char
   pgArrayDelim _ = ','
 
-instance (PGArrayType ta t, PGParameter t a) => PGParameter ta (PGArray a) where
+instance
+#if __GLASGOW_HASKELL__ >= 710
+    {-# OVERLAPPING #-}
+#endif
+    (PGArrayType ta t, PGParameter t a) => PGParameter ta (PGArray a) where
   pgEncode ta l = buildPGValue $ BSB.char7 '{' <> mconcat (intersperse (BSB.char7 $ pgArrayDelim ta) $ map el l) <> BSB.char7 '}' where
     el Nothing = BSB.string7 "null"
     el (Just e) = pgDQuote (pgArrayDelim ta : "{}") $ pgEncode (pgArrayElementType ta) e
+#if __GLASGOW_HASKELL__ >= 710
+-- |Allow entirely non-null arrays as parameter inputs only.
+-- (Only supported on ghc >= 7.10 due to instance overlap.)
+instance {-# OVERLAPPABLE #-} (PGArrayType ta t, PGParameter t a) => PGParameter ta [a] where
+  pgEncode ta = pgEncode ta . map Just
+#endif
 instance (PGArrayType ta t, PGColumn t a) => PGColumn ta (PGArray a) where
   pgDecode ta a = either (error . ("pgDecode array (" ++) . (++ ("): " ++ BSC.unpack a))) id $ P.parseOnly pa a where
     pa = P.char '{' *> P.sepBy (P.skipSpace *> el <* P.skipSpace) (P.char (pgArrayDelim ta)) <* P.char '}' <* P.endOfInput

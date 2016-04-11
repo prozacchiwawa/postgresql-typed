@@ -257,8 +257,8 @@ qqTop err sql = do
 --
 -- [@?@] To disable nullability inference, treating all result values as nullable, thus returning 'Maybe' values regardless of inferred nullability. This makes unexpected NULL errors impossible.
 -- [@!@] To disable nullability inference, treating all result values as /not/ nullable, thus only returning 'Maybe' where requested. This is makes unexpected NULL errors more likely.
--- [@$@] To create a 'PGPreparedQuery' rather than a 'PGSimpleQuery', by default inferring parameter types.
--- [@$(type,...)@] To specify specific types to a prepared query (see <http://www.postgresql.org/docs/current/static/sql-prepare.html> for details).
+-- [@$@] To create a 'PGPreparedQuery' (using placeholder parameters) rather than the default 'PGSimpleQuery' (using literal substitution).
+-- [@$(type,...)@] To specify specific types for a prepared query (see <http://www.postgresql.org/docs/current/static/sql-prepare.html> for details), rather than inferring parameter types by default.
 -- [@#@] Only do literal @${}@ substitution using 'pgSubstituteLiterals' and return a string, not a query.
 -- 
 -- 'pgSQL' can also be used at the top-level to execute SQL statements at compile-time (without any parameters and ignoring results).

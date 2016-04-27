@@ -57,7 +57,8 @@ makePGEnum name typs valnf = do
     valn = map (\[PGTextValue v] -> let u = BSC.unpack v in (TH.mkName $ valnf u, map (TH.IntegerL . fromIntegral) $ BS.unpack v, TH.StringL u)) vals
   dv <- TH.newName "x"
   return
-    [ TH.DataD [] typn [] (map (\(n, _, _) -> TH.NormalC n []) valn) [''Eq, ''Ord, ''Enum, ''Ix, ''Bounded, ''Typeable]
+    [ TH.DataD [] typn [] (map (\(n, _, _) -> TH.NormalC n []) valn)
+      [''Eq, ''Ord, ''Enum, ''Ix, ''Bounded, ''Typeable]
     , TH.InstanceD [] (TH.ConT ''Show `TH.AppT` typt)
       [ TH.FunD 'show $ map (\(n, _, v) -> TH.Clause [TH.ConP n []]
         (TH.NormalB $ TH.LitE v) []) valn

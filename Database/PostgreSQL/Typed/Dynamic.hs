@@ -19,6 +19,7 @@ import Control.Applicative ((<$>))
 #endif
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
+import qualified Data.ByteString.Lazy as BSL
 import Data.Monoid ((<>))
 import Data.Int
 #ifdef USE_SCIENTIFIC
@@ -105,11 +106,11 @@ instance PGRep "numeric" Scientific
 instance PGRep "uuid" UUID.UUID
 #endif
 
--- |Create an expression that literally substitutes each instance of @${expr}@ for the result of @pgSafeLiteral expr@.
--- This lets you do safe, type-driven literal substitution into SQL fragments without needing a full query, bypassing placeholder inference and any prepared queries.
+-- |Create an expression that literally substitutes each instance of @${expr}@ for the result of @pgSafeLiteral expr@, producing a lazy 'BSL.ByteString'.
+-- This lets you do safe, type-driven literal substitution into SQL fragments without needing a full query, bypassing placeholder inference and any prepared queries, for example when using 'Database.PostgreSQL.Typed.Protocol.pgSimpleQuery' or 'Database.PostgreSQL.Typed.Protocol.pgSimpleQueries_'.
 -- Unlike most other TH functions, this does not require any database connection.
 pgSubstituteLiterals :: String -> TH.ExpQ
-pgSubstituteLiterals sql = TH.AppE (TH.VarE 'BS.concat) . TH.ListE <$> ssl (sqlSplitExprs sql) where
+pgSubstituteLiterals sql = TH.AppE (TH.VarE 'BSL.fromChunks) . TH.ListE <$> ssl (sqlSplitExprs sql) where
   ssl :: SQLSplit String 'True -> TH.Q [TH.Exp]
   ssl (SQLLiteral s l) = (TH.VarE 'fromString `TH.AppE` stringE s :) <$> ssp l
   ssl SQLSplitEnd = return []

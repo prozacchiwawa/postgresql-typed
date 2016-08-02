@@ -163,6 +163,10 @@ instance PGColumn t a => PGColumn t (Maybe a) where
   pgDecodeValue _ _ PGNullValue = Nothing
   pgDecodeValue e t v = Just $ pgDecodeValue e t v
 
+instance PGType t => PGColumn t PGValue where
+  pgDecode _ = PGTextValue
+  pgDecodeBinary _ _ = PGBinaryValue
+  pgDecodeValue _ _ = id
 
 -- |Final parameter encoding function used when a (nullable) parameter is passed to a prepared query.
 pgEncodeParameter :: PGParameter t a => PGTypeEnv -> PGTypeName t -> a -> PGValue

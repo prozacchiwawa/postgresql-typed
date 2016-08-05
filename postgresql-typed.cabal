@@ -16,7 +16,7 @@ Description:   Automatically type-check SQL statements at compile time.
                Allows not only syntax verification of your SQL but also full type safety between your SQL and Haskell.
                Supports many built-in PostgreSQL types already, including arrays and ranges, and can be easily extended in user code to support any other types.
                Originally based on Chris Forno's templatepg library.
-Tested-With:   GHC == 7.8.4, GHC == 7.10.2
+Tested-With:   GHC == 7.10.3
 Build-Type:    Simple
 
 source-repository head
@@ -73,8 +73,9 @@ Library
     Database.PostgreSQL.Typed.Inet
     Database.PostgreSQL.Typed.Dynamic
     Database.PostgreSQL.Typed.TemplatePG
+    Database.PostgreSQL.Typed.SQLToken
   Other-Modules:
-    Database.PostgreSQL.Typed.Internal
+    Paths_postgresql_typed
   GHC-Options: -Wall
   if flag(md5)
     Build-Depends: cryptonite >= 0.5, memory >= 0.5

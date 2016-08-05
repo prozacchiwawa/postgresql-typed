@@ -35,11 +35,11 @@ import Language.Haskell.Meta.Parse (parseExp)
 import qualified Language.Haskell.TH as TH
 import Language.Haskell.TH.Quote (QuasiQuoter(..))
 
-import Database.PostgreSQL.Typed.Internal
 import Database.PostgreSQL.Typed.Types
 import Database.PostgreSQL.Typed.Dynamic
 import Database.PostgreSQL.Typed.Protocol
 import Database.PostgreSQL.Typed.TH
+import Database.PostgreSQL.Typed.SQLToken
 
 class PGQuery q a | q -> a where
   -- |Execute a query and return the number of rows affected (or -1 if not known) and a list of results.
@@ -126,30 +126,24 @@ pgLazyQuery c (QueryParser q p) count =
   PreparedQuery sql types bind bc = q e
 
 -- |Given a SQL statement with placeholders of the form @${expr}@, return a (hopefully) valid SQL statement with @$N@ placeholders and the list of expressions.
--- This does not understand strings or other SQL syntax, so any literal occurrence of the string @${@ must be escaped as @$${@.
--- Embedded expressions may not contain @{@ or @}@.
+-- This does its best to understand SQL syntax, so placeholders are only interpreted in places postgres would understand them (i.e., not in quoted strings).  Since this is not valid SQL otherwise, there is never reason to escape a literal @${@.
+-- You can use @$N@ placeholders in the query otherwise to refer to the N-th index placeholder expression.
 sqlPlaceholders :: String -> (String, [String])
-sqlPlaceholders = ssl 1 . sqlSplitExprs where
-  ssl :: Int -> SQLSplit String 'True -> (String, [String])
-  ssl n (SQLLiteral s l) = first (s ++) $ ssp n l
-  ssl _ SQLSplitEnd = ("", [])
-  ssp :: Int -> SQLSplit String 'False -> (String, [String])
-  ssp n (SQLPlaceholder e l) = (('$':show n) ++) *** (e :) $ ssl (succ n) l
-  ssp _ SQLSplitEnd = ("", [])
+sqlPlaceholders = sst (1 :: Int) . sqlTokens where
+  sst n (SQLExpr e : l) = (('$':show n) ++) *** (e :) $ sst (succ n) l
+  sst n (t : l) = first (show t ++) $ sst n l
+  sst _ [] = ("", [])
 
 -- |Given a SQL statement with placeholders of the form @$N@ and a list of TH 'ByteString' expressions, return a new 'ByteString' expression that substitutes the expressions for the placeholders.
--- This does not understand strings or other SQL syntax, so any literal occurrence of a string like @$N@ must be escaped as @$$N@.
 sqlSubstitute :: String -> [TH.Exp] -> TH.Exp
-sqlSubstitute sql exprl = TH.AppE (TH.VarE 'BS.concat) $ TH.ListE $ ssl $ sqlSplitParams sql where
+sqlSubstitute sql exprl = TH.AppE (TH.VarE 'BS.concat) $ TH.ListE $ map sst $ sqlTokens sql where
   bnds = (1, length exprl)
   exprs = listArray bnds exprl
   expr n
     | inRange bnds n = exprs ! n
-    | otherwise = error $ "SQL placeholder '$" ++ show n ++ "' out of range (not recognized by PostgreSQL); literal occurrences may need to be escaped with '$$'"
-  ssl (SQLLiteral s l) = TH.VarE 'fromString `TH.AppE` stringE s : ssp l
-  ssl SQLSplitEnd = []
-  ssp (SQLPlaceholder n l) = expr n : ssl l
-  ssp SQLSplitEnd = []
+    | otherwise = error $ "SQL placeholder '$" ++ show n ++ "' out of range (not recognized by PostgreSQL)"
+  sst (SQLParam n) = expr n
+  sst t = TH.VarE 'fromString `TH.AppE` TH.LitE (TH.StringL $ show t)
 
 splitCommas :: String -> [String]
 splitCommas = spl where
@@ -180,7 +174,7 @@ makePGQuery :: QueryFlags -> String -> TH.ExpQ
 makePGQuery QueryFlags{ flagQuery = False } sqle = pgSubstituteLiterals sqle
 makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
   (pt, rt) <- TH.runIO $ tpgDescribe (fromString sqlp) (fromMaybe [] prep) (isNothing nulls)
-  when (length pt < length exprs) $ fail "Not all expression placeholders were recognized by PostgreSQL; literal occurrences of '${' may need to be escaped with '$${'"
+  when (length pt < length exprs) $ fail "Not all expression placeholders were recognized by PostgreSQL"
 
   e <- TH.newName "_tenv"
   (vars, vals) <- mapAndUnzipM (\t -> do
@@ -201,7 +195,7 @@ makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
       (TH.ConE 'SimpleQuery
         `TH.AppE` sqlSubstitute sqlp vals)
       (\p -> TH.ConE 'PreparedQuery
-        `TH.AppE` (TH.VarE 'fromString `TH.AppE` stringE sqlp)
+        `TH.AppE` (TH.VarE 'fromString `TH.AppE` TH.LitE (TH.StringL sqlp))
         `TH.AppE` TH.ListE (map (TH.LitE . TH.IntegerL . toInteger . tpgValueTypeOID . snd) $ zip p pt)
         `TH.AppE` TH.ListE vals 
         `TH.AppE` TH.ListE 
@@ -250,8 +244,8 @@ qqTop err sql = do
 -- It will be replaced by a 'PGQuery' object that can be used to perform the SQL statement.
 -- If there are more @$N@ placeholders than expressions, it will instead be a function accepting the additional parameters and returning a 'PGQuery'.
 -- 
--- Note that all occurrences of @$N@ or @${@ will be treated as placeholders, regardless of their context in the SQL (e.g., even within SQL strings or other places placeholders are disallowed by PostgreSQL), which may cause invalid SQL or other errors.
--- If you need to pass a literal @$@ through in these contexts, you may double it to escape it as @$$N@ or @$${@.
+-- Ideally, this mimics postgres' SQL parsing, so that placeholders and expressions will only be expanded when they are in valid positions (i.e., not inside quoted strings).
+-- Since @${@ is not valid SQL otherwise, there should be no need to escape it.
 --
 -- The statement may start with one of more special flags affecting the interpretation:
 --

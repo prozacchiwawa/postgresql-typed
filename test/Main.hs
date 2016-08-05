@@ -4,6 +4,7 @@ module Main (main) where
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
+import Data.Char (isDigit)
 import Data.Int (Int32)
 import qualified Data.Time as Time
 import System.Exit (exitSuccess, exitFailure)
@@ -16,6 +17,7 @@ import Database.PostgreSQL.Typed.Array ()
 import qualified Database.PostgreSQL.Typed.Range as Range
 import Database.PostgreSQL.Typed.Enum
 import Database.PostgreSQL.Typed.Inet
+import Database.PostgreSQL.Typed.SQLToken
 
 import Connect
 
@@ -94,11 +96,22 @@ selectProp c b i f t z d p s l r e a = Q.ioProperty $ do
     , a Q.=== a'
     ]
 
+tokenProp :: String -> Q.Property
+tokenProp s =
+  not (has0 s) Q.==> s Q.=== show (sqlTokens s) where
+  has0 ('$':'0':c:_) | isDigit c = True
+  has0 (_:r) = has0 r
+  has0 [] = False
+
 main :: IO ()
 main = do
   c <- pgConnect db
 
-  r <- Q.quickCheckResult $ selectProp c
+  r <- Q.quickCheckResult
+    $ selectProp c
+    Q..&&. tokenProp
+    Q..&&. [pgSQL|#abc ${3.14::Float} def $f$ $$ ${1} $f$${2::Int32}|] Q.=== "abc 3.14::real def $f$ $$ ${1} $f$2::integer"
+    Q..&&. pgEnumValues Q.=== [(MyEnum_abc, "abc"), (MyEnum_DEF, "DEF"), (MyEnum_XX_ye, "XX_ye")]
   assert $ isSuccess r
 
   ["box"] <- simple c 603
@@ -107,10 +120,6 @@ main = do
   ["box"] <- preparedApply c 603
   [Just "line"] <- prepared c 628 "line"
   ["line"] <- preparedApply c 628
-
-  assert $ [pgSQL|#abc${3.14 :: Float}def|] == "abc3.14::realdef"
-
-  assert $ pgEnumValues == [(MyEnum_abc, "abc"), (MyEnum_DEF, "DEF"), (MyEnum_XX_ye, "XX_ye")]
 
   pgDisconnect c
   exitSuccess

@@ -36,8 +36,8 @@ import qualified Data.UUID as UUID
 import Language.Haskell.Meta.Parse (parseExp)
 import qualified Language.Haskell.TH as TH
 
-import Database.PostgreSQL.Typed.Internal
 import Database.PostgreSQL.Typed.Types
+import Database.PostgreSQL.Typed.SQLToken
 
 -- |Represents canonical/default PostgreSQL representation for various Haskell types, allowing convenient type-driven marshalling.
 class PGType t => PGRep t a | a -> t where
@@ -110,12 +110,8 @@ instance PGRep "uuid" UUID.UUID
 -- This lets you do safe, type-driven literal substitution into SQL fragments without needing a full query, bypassing placeholder inference and any prepared queries, for example when using 'Database.PostgreSQL.Typed.Protocol.pgSimpleQuery' or 'Database.PostgreSQL.Typed.Protocol.pgSimpleQueries_'.
 -- Unlike most other TH functions, this does not require any database connection.
 pgSubstituteLiterals :: String -> TH.ExpQ
-pgSubstituteLiterals sql = TH.AppE (TH.VarE 'BSL.fromChunks) . TH.ListE <$> ssl (sqlSplitExprs sql) where
-  ssl :: SQLSplit String 'True -> TH.Q [TH.Exp]
-  ssl (SQLLiteral s l) = (TH.VarE 'fromString `TH.AppE` stringE s :) <$> ssp l
-  ssl SQLSplitEnd = return []
-  ssp :: SQLSplit String 'False -> TH.Q [TH.Exp]
-  ssp (SQLPlaceholder e l) = do
+pgSubstituteLiterals sql = TH.AppE (TH.VarE 'BSL.fromChunks) . TH.ListE <$> mapM sst (sqlTokens sql) where
+  sst (SQLExpr e) = do
     v <- either (fail . (++) ("Failed to parse expression {" ++ e ++ "}: ")) return $ parseExp e
-    (TH.VarE 'pgSafeLiteral `TH.AppE` v :) <$> ssl l
-  ssp SQLSplitEnd = return []
+    return $ TH.VarE 'pgSafeLiteral `TH.AppE` v
+  sst t = return $ TH.VarE 'fromString `TH.AppE` TH.LitE (TH.StringL $ show t)

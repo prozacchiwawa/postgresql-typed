@@ -180,7 +180,7 @@ instance HDBC.IConnection Connection where
         , HDBC.fetchRow = withPG c $ \pg -> do
           p <- readIORef cr
           fmap (zipWith colDescDecode (cursorDesc p)) <$> case cursorRow p of
-            [] | True || cursorActive p -> do
+            [] | cursorActive p -> do
                 (rl, e) <- pgFetch pg n (connectionFetchSize c)
                 let rl' = uncons rl
                 writeIORef cr p

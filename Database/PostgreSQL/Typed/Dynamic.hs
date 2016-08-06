@@ -95,6 +95,7 @@ instance PGRep "text" T.Text
 #endif
 instance PGRep "date" Time.Day
 instance PGRep "time without time zone" Time.TimeOfDay
+instance PGRep "time with time zone" (Time.TimeOfDay, Time.TimeZone)
 instance PGRep "timestamp without time zone" Time.LocalTime
 instance PGRep "timestamp with time zone" Time.UTCTime
 instance PGRep "interval" Time.DiffTime

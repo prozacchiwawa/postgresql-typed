@@ -13,6 +13,7 @@ module Database.PostgreSQL.Typed.SQLToken
 import Control.Arrow (first)
 import Data.Char (isDigit, isAsciiUpper, isAsciiLower)
 import Data.List (stripPrefix)
+import Data.String (IsString(..))
 
 -- |A parsed SQL token.
 data SQLToken
@@ -20,6 +21,7 @@ data SQLToken
   | SQLParam Int -- ^A \"$N\" parameter placeholder (this is the only non-string-preserving token: \"$012\" becomes \"$12\")
   | SQLExpr String -- ^A \"${expr}\" expression placeholder
   | SQLQMark Bool -- ^A possibly-escaped question-mark: False for \"?\" or True for \"\\?\"
+  deriving (Eq)
 
 -- |Produces the original SQL string
 instance Show SQLToken where
@@ -29,6 +31,9 @@ instance Show SQLToken where
   showsPrec _ (SQLQMark False) = showChar '?'
   showsPrec _ (SQLQMark True) = showString "\\?"
   showList = flip $ foldr shows
+
+instance IsString SQLToken where
+  fromString = SQLToken
 
 type PH = String -> [SQLToken]
 

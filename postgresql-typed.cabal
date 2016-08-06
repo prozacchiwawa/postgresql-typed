@@ -1,12 +1,12 @@
 Name:          postgresql-typed
-Version:       0.4.4
+Version:       0.5
 Cabal-Version: >= 1.8
 License:       BSD3
 License-File:  COPYING
-Copyright:     2010-2013 Chris Forno, 2014-2015 Dylan Simon
+Copyright:     2010-2013 Chris Forno, 2014-2016 Dylan Simon
 Author:        Dylan Simon
 Maintainer:    Dylan Simon <dylan-pgtyped@dylex.net>
-Stability:     beta
+Stability:     provisional
 Bug-Reports:   https://github.com/dylex/postgresql-typed/issues
 Homepage:      https://github.com/dylex/postgresql-typed
 Category:      Database
@@ -47,9 +47,12 @@ Flag aeson
   Description: Support decoding json via aeson.
   Default: True
 
+Flag HDBC
+  Description: Provide an HDBC driver
+
 Library
   Build-Depends:
-    base >= 4.7 && < 5,
+    base >= 4.8 && < 5,
     array,
     binary,
     containers,
@@ -96,13 +99,24 @@ Library
   if flag(aeson)
     Build-Depends: aeson >= 0.7
     CPP-options: -DUSE_AESON
+  if flag(HDBC)
+    Build-Depends: HDBC >= 2.2
+    Exposed-Modules:
+      Database.PostgreSQL.Typed.HDBC
 
 test-suite test
   build-depends: base, network, time, bytestring, postgresql-typed, QuickCheck
   type: exitcode-stdio-1.0
+  hs-source-dirs: test
   main-is: Main.hs
   Other-Modules: Connect
-  buildable: True
-  hs-source-dirs: test
   Extensions: TemplateHaskell, QuasiQuotes
   GHC-Options: -Wall
+
+test-suite hdbc
+  build-depends: base, network, time, containers, convertible, postgresql-typed, HDBC, HUnit
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test/hdbc, test
+  main-is: runtests.hs
+  if !flag(HDBC)
+    buildable: False

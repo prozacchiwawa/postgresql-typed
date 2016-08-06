@@ -12,7 +12,9 @@ module Database.PostgreSQL.Typed.Protocol (
   , PGConnection
   , PGError(..)
   , pgErrorCode
+  , pgConnectionDatabase
   , pgTypeEnv
+  , pgServerVersion
   , pgConnect
   , pgDisconnect
   , pgReconnect
@@ -28,12 +30,22 @@ module Database.PostgreSQL.Typed.Protocol (
   , pgCommit
   , pgRollback
   , pgTransaction
+  -- * HDBC support
+  , pgDisconnectOnce
+  , pgRun
+  , PGPreparedStatement
+  , pgPrepare
+  , pgClose
+  , PGColDescription(..)
+  , PGRowDescription
+  , pgBind
+  , pgFetch
   ) where
 
 #if !MIN_VERSION_base(4,8,0)
 import Control.Applicative ((<$>), (<$))
 #endif
-import Control.Arrow ((&&&), second)
+import Control.Arrow ((&&&), first, second)
 import Control.Exception (Exception, throwIO, onException)
 import Control.Monad (void, liftM2, replicateM, when, unless)
 #ifdef USE_MD5
@@ -57,6 +69,7 @@ import Data.Monoid ((<>))
 #if !MIN_VERSION_base(4,8,0)
 import Data.Monoid (mempty)
 #endif
+import Data.Tuple (swap)
 import Data.Typeable (Typeable)
 #if !MIN_VERSION_base(4,8,0)
 import Data.Word (Word)
@@ -71,8 +84,7 @@ import Database.PostgreSQL.Typed.Types
 import Database.PostgreSQL.Typed.Dynamic
 
 data PGState
-  = StateUnknown -- no Sync
-  | StateCommand -- was Sync, sent command
+  = StateUnsync -- no Sync
   | StatePending -- Sync sent
   -- ReadyForQuery received:
   | StateIdle
@@ -97,6 +109,12 @@ instance Eq PGDatabase where
   PGDatabase h1 s1 n1 u1 p1 l1 _ _ == PGDatabase h2 s2 n2 u2 p2 l2 _ _ =
     h1 == h2 && s1 == s2 && n1 == n2 && u1 == u2 && p1 == p2 && l1 == l2
 
+newtype PGPreparedStatement = PGPreparedStatement Integer
+  deriving (Eq, Show)
+
+preparedStatementName :: PGPreparedStatement -> BS.ByteString
+preparedStatementName (PGPreparedStatement n) = BSC.pack $ show n
+
 -- |An established connection to the PostgreSQL server.
 -- These objects are not thread-safe and must only be used for a single request at a time.
 data PGConnection = PGConnection
@@ -106,20 +124,23 @@ data PGConnection = PGConnection
   , connKey :: !Word32 -- unused
   , connParameters :: Map.Map BS.ByteString BS.ByteString
   , connTypeEnv :: PGTypeEnv
-  , connPreparedStatements :: IORef (Integer, Map.Map (BS.ByteString, [OID]) Integer)
+  , connPreparedStatementCount :: IORef Integer
+  , connPreparedStatementMap :: IORef (Map.Map (BS.ByteString, [OID]) PGPreparedStatement)
   , connState :: IORef PGState
   , connInput :: IORef (G.Decoder PGBackendMessage)
   , connTransaction :: IORef Word
   }
 
-data ColDescription = ColDescription
+data PGColDescription = PGColDescription
   { colName :: BS.ByteString
   , colTable :: !OID
   , colNumber :: !Int16
   , colType :: !OID
+  , colSize :: !Int16
   , colModifier :: !Int32
   , colBinary :: !Bool
   } deriving (Show)
+type PGRowDescription = [PGColDescription]
 
 type MessageFields = Map.Map Char BS.ByteString
 
@@ -128,12 +149,14 @@ type MessageFields = Map.Map Char BS.ByteString
 data PGFrontendMessage
   = StartupMessage [(BS.ByteString, BS.ByteString)] -- only sent first
   | CancelRequest !Word32 !Word32 -- sent first on separate connection
-  | Bind { statementName :: BS.ByteString, bindParameters :: PGValues, binaryColumns :: [Bool] }
-  | Close { statementName :: BS.ByteString }
+  | Bind { portalName :: BS.ByteString, statementName :: BS.ByteString, bindParameters :: PGValues, binaryColumns :: [Bool] }
+  | CloseStatement { statementName :: BS.ByteString }
+  | ClosePortal { portalName :: BS.ByteString }
   -- |Describe a SQL query/statement. The SQL string can contain
   --  parameters ($1, $2, etc.).
-  | Describe { statementName :: BS.ByteString }
-  | Execute !Word32
+  | DescribeStatement { statementName :: BS.ByteString }
+  | DescribePortal { portalName :: BS.ByteString }
+  | Execute { portalName :: BS.ByteString, executeRows :: !Word32 }
   | Flush
   -- |Parse SQL Destination (prepared statement)
   | Parse { statementName :: BS.ByteString, queryString :: BSL.ByteString, parseTypes :: [OID] }
@@ -177,7 +200,7 @@ data PGBackendMessage
   -- |A RowDescription contains the name, type, table OID, and
   --  column number of the resulting columns(s) of a query. The
   --  column number is useful for inferring nullability.
-  | RowDescription [ColDescription]
+  | RowDescription PGRowDescription
   deriving (Show)
 
 -- |PGException is thrown upon encountering an 'ErrorResponse' with severity of
@@ -192,8 +215,11 @@ instance Exception PGError
 
 -- |Produce a human-readable string representing the message
 displayMessage :: MessageFields -> String
-displayMessage m = "PG" ++ f 'S' ++ " [" ++ f 'C' ++ "]: " ++ f 'M' ++ '\n' : f 'D'
-  where f c = BSC.unpack $ Map.findWithDefault BS.empty c m
+displayMessage m = "PG" ++ f 'S' ++ (if null fC then ": " else " [" ++ fC ++ "]: ") ++ f 'M' ++ (if null fD then fD else '\n' : fD)
+  where
+  fC = f 'C'
+  fD = f 'D'
+  f c = BSC.unpack $ Map.findWithDefault BS.empty c m
 
 makeMessage :: BS.ByteString -> BS.ByteString -> MessageFields
 makeMessage m d = Map.fromAscList [('D', d), ('M', m)]
@@ -217,8 +243,17 @@ connDebug = pgDBDebug . connDatabase
 connLogMessage :: PGConnection -> MessageFields -> IO ()
 connLogMessage = pgDBLogMessage . connDatabase
 
+-- |The database information for this connection.
+pgConnectionDatabase :: PGConnection -> PGDatabase
+pgConnectionDatabase = connDatabase
+
+-- |The type environment for this connection.
 pgTypeEnv :: PGConnection -> PGTypeEnv
 pgTypeEnv = connTypeEnv
+
+-- |Retrieve the \"server_version\" parameter from the connection, if any.
+pgServerVersion :: PGConnection -> Maybe BS.ByteString
+pgServerVersion PGConnection{ connParameters = p } = Map.lookup (BSC.pack "server_version") p
 
 #ifdef USE_MD5
 md5 :: BS.ByteString -> BS.ByteString
@@ -241,8 +276,9 @@ messageBody (StartupMessage kv) = (Nothing, B.word32BE 0x30000
   <> Fold.foldMap (\(k, v) -> byteStringNul k <> byteStringNul v) kv <> nul)
 messageBody (CancelRequest pid key) = (Nothing, B.word32BE 80877102
   <> B.word32BE pid <> B.word32BE key)
-messageBody Bind{ statementName = n, bindParameters = p, binaryColumns = bc } = (Just 'B',
-  nul <> byteStringNul n
+messageBody Bind{ portalName = d, statementName = n, bindParameters = p, binaryColumns = bc } = (Just 'B',
+  byteStringNul d
+    <> byteStringNul n
     <> (if any fmt p
           then B.word16BE (fromIntegral $ length p) <> Fold.foldMap (B.word16BE . fromIntegral . fromEnum . fmt) p
           else B.word16BE 0)
@@ -256,12 +292,16 @@ messageBody Bind{ statementName = n, bindParameters = p, binaryColumns = bc } = 
   val PGNullValue = B.int32BE (-1)
   val (PGTextValue v) = B.word32BE (fromIntegral $ BS.length v) <> B.byteString v
   val (PGBinaryValue v) = B.word32BE (fromIntegral $ BS.length v) <> B.byteString v
-messageBody Close{ statementName = n } = (Just 'C', 
+messageBody CloseStatement{ statementName = n } = (Just 'C', 
   B.char7 'S' <> byteStringNul n)
-messageBody Describe{ statementName = n } = (Just 'D',
+messageBody ClosePortal{ portalName = n } = (Just 'C', 
+  B.char7 'P' <> byteStringNul n)
+messageBody DescribeStatement{ statementName = n } = (Just 'D',
   B.char7 'S' <> byteStringNul n)
-messageBody (Execute r) = (Just 'E',
-  nul <> B.word32BE r)
+messageBody DescribePortal{ portalName = n } = (Just 'D',
+  B.char7 'P' <> byteStringNul n)
+messageBody Execute{ portalName = n, executeRows = r } = (Just 'E',
+  byteStringNul n <> B.word32BE r)
 messageBody Flush = (Just 'H', mempty)
 messageBody Parse{ statementName = n, queryString = s, parseTypes = t } = (Just 'P',
   byteStringNul n <> lazyByteStringNul s
@@ -285,8 +325,7 @@ pgSend c@PGConnection{ connHandle = h, connState = sr } msg = do
   state _ StateClosed = StateClosed
   state Sync _ = StatePending
   state Terminate _ = StateClosed
-  state _ StateUnknown = StateUnknown
-  state _ _ = StateCommand
+  state _ _ = StateUnsync
 
 pgFlush :: PGConnection -> IO ()
 pgFlush = hFlush . connHandle
@@ -318,14 +357,15 @@ getMessageBody 'T' = do
     oid <- G.getWord32be -- table OID
     col <- G.getWord16be -- column number
     typ' <- G.getWord32be -- type
-    _ <- G.getWord16be -- type size
+    siz <- G.getWord16be -- type size
     tmod <- G.getWord32be -- type modifier
     fmt <- G.getWord16be -- format code
-    return $ ColDescription
+    return $ PGColDescription
       { colName = name
       , colTable = oid
       , colNumber = fromIntegral col
       , colType = typ'
+      , colSize = fromIntegral siz
       , colModifier = fromIntegral tmod
       , colBinary = toEnum (fromIntegral fmt)
       }
@@ -382,10 +422,8 @@ pgRecv block c@PGConnection{ connHandle = h, connInput = dr, connState = sr } =
       else go $ r (Just b)
   got :: G.Decoder PGBackendMessage -> PGBackendMessage -> PGState -> IO (Maybe PGBackendMessage)
   got d (NoticeResponse m) _ = connLogMessage c m >> go d
-  got d (ReadyForQuery _) StateCommand = go d
   got d m@(ReadyForQuery s) _ = Just m <$ state s d
-  got d m@(ErrorResponse _) _ = Just m <$ state StateUnknown d
-  got d m StateCommand = Just m <$ state StateUnknown d
+  got d m@(ErrorResponse _) _ = Just m <$ state StateUnsync d
   got d m _ = Just m <$ next d
 
 -- |Receive the next message from PostgreSQL (low-level). Note that this will
@@ -403,8 +441,9 @@ pgReceive c = do
 -- |Connect to a PostgreSQL server.
 pgConnect :: PGDatabase -> IO PGConnection
 pgConnect db = do
-  state <- newIORef StateUnknown
-  prep <- newIORef (0, Map.empty)
+  state <- newIORef StateUnsync
+  prepc <- newIORef 0
+  prepm <- newIORef Map.empty
   input <- newIORef getMessage
   tr <- newIORef 0
   h <- connectTo (pgDBHost db) (pgDBPort db)
@@ -415,7 +454,8 @@ pgConnect db = do
         , connPid = 0
         , connKey = 0
         , connParameters = Map.empty
-        , connPreparedStatements = prep
+        , connPreparedStatementCount = prepc
+        , connPreparedStatementMap = prepm
         , connState = state
         , connTypeEnv = unknownPGTypeEnv
         , connInput = input
@@ -461,6 +501,14 @@ pgDisconnect c@PGConnection{ connHandle = h } = do
   pgSend c Terminate
   hClose h
 
+-- |Disconnect cleanly from the PostgreSQL server, but only if it's still connected.
+pgDisconnectOnce :: PGConnection -- ^ a handle from 'pgConnect'
+                 -> IO ()
+pgDisconnectOnce c@PGConnection{ connState = cs } = do
+  s <- readIORef cs
+  unless (s == StateClosed) $
+    pgDisconnect c
+
 -- |Possibly re-open a connection to a different database, either reusing the connection if the given database is already connected or closing it and opening a new one.
 -- Regardless, the input connection must not be used afterwards.
 pgReconnect :: PGConnection -> PGDatabase -> IO PGConnection
@@ -478,7 +526,7 @@ pgSync c@PGConnection{ connState = sr } = do
   case s of
     StateClosed -> fail "pgSync: operation on closed connection"
     StatePending -> wait True
-    StateUnknown -> wait False
+    StateUnsync -> wait False
     _ -> return ()
   where
   wait s = do
@@ -496,6 +544,11 @@ pgSync c@PGConnection{ connState = sr } = do
         connLogMessage c $ makeMessage (BSC.pack $ "Unexpected server message: " ++ show m) $ BSC.pack "Each statement should only contain a single query"
         wait s
     
+rowDescription :: PGBackendMessage -> PGRowDescription
+rowDescription (RowDescription d) = d
+rowDescription NoData = []
+rowDescription m = error $ "describe: unexpected response: " ++ show m
+
 -- |Describe a SQL statement/query. A statement description consists of 0 or
 -- more parameter descriptions (a PostgreSQL type) and zero or more result
 -- field descriptions (for queries) (consist of the name of the field, the
@@ -506,20 +559,15 @@ pgDescribe :: PGConnection -> BSL.ByteString -- ^ SQL string
                   -> IO ([OID], [(BS.ByteString, OID, Bool)]) -- ^ a list of parameter types, and a list of result field names, types, and nullability indicators.
 pgDescribe h sql types nulls = do
   pgSync h
-  pgSend h $ Parse{ queryString = sql, statementName = BS.empty, parseTypes = types }
-  pgSend h $ Describe BS.empty
-  pgSend h Flush
+  pgSend h Parse{ queryString = sql, statementName = BS.empty, parseTypes = types }
+  pgSend h DescribeStatement{ statementName = BS.empty }
   pgSend h Sync
   pgFlush h
   ParseComplete <- pgReceive h
   ParameterDescription ps <- pgReceive h
-  m <- pgReceive h
-  (,) ps <$> case m of
-    NoData -> return []
-    RowDescription r -> mapM desc r
-    _ -> fail $ "describeStatement: unexpected response: " ++ show m
+  (,) ps <$> (mapM desc . rowDescription =<< pgReceive h)
   where
-  desc (ColDescription{ colName = name, colTable = tab, colNumber = col, colType = typ }) = do
+  desc (PGColDescription{ colName = name, colTable = tab, colNumber = col, colType = typ }) = do
     n <- nullable tab col
     return (name, typ, n)
   -- We don't get nullability indication from PostgreSQL, at least not directly.
@@ -536,12 +584,12 @@ pgDescribe h sql types nulls = do
         _ -> fail $ "Failed to determine nullability of column #" ++ show col
     | otherwise = return True
 
-rowsAffected :: BS.ByteString -> Int
+rowsAffected :: (Integral i, Read i) => BS.ByteString -> i
 rowsAffected = ra . BSC.words where
   ra [] = -1
   ra l = fromMaybe (-1) $ readMaybe $ BSC.unpack $ last l
 
--- Do we need to use the ColDescription here always, or are the request formats okay?
+-- Do we need to use the PGColDescription here always, or are the request formats okay?
 fixBinary :: [Bool] -> PGValues -> PGValues
 fixBinary (False:b) (PGBinaryValue x:r) = PGTextValue x : fixBinary b r
 fixBinary (True :b) (PGTextValue x:r) = PGBinaryValue x : fixBinary b r
@@ -588,22 +636,23 @@ pgSimpleQueries_ h sql = do
   res m = fail $ "pgSimpleQueries_: unexpected response: " ++ show m
 
 pgPreparedBind :: PGConnection -> BS.ByteString -> [OID] -> PGValues -> [Bool] -> IO (IO ())
-pgPreparedBind c@PGConnection{ connPreparedStatements = psr } sql types bind bc = do
+pgPreparedBind c sql types bind bc = do
   pgSync c
-  (p, n) <- atomicModifyIORef' psr $ \(i, m) ->
-    maybe ((succ i, m), (False, i)) ((,) (i, m) . (,) True) $ Map.lookup key m
-  let sn = BSC.pack $ show n
+  m <- readIORef (connPreparedStatementMap c)
+  (p, n) <- maybe
+    (atomicModifyIORef' (connPreparedStatementCount c) (succ &&& (,) False . PGPreparedStatement))
+    (return . (,) True) $ Map.lookup key m
   unless p $
-    pgSend c $ Parse{ queryString = BSL.fromStrict sql, statementName = sn, parseTypes = types }
-  pgSend c $ Bind{ statementName = sn, bindParameters = bind, binaryColumns = bc }
+    pgSend c Parse{ queryString = BSL.fromStrict sql, statementName = preparedStatementName n, parseTypes = types }
+  pgSend c Bind{ portalName = BS.empty, statementName = preparedStatementName n, bindParameters = bind, binaryColumns = bc }
   let
     go = pgReceive c >>= start
     start ParseComplete = do
-      modifyIORef psr $ \(i, m) ->
-        (i, Map.insert key n m)
+      modifyIORef (connPreparedStatementMap c) $
+        Map.insert key n
       go
     start BindComplete = return ()
-    start m = fail $ "pgPrepared: unexpected response: " ++ show m
+    start r = fail $ "pgPrepared: unexpected response: " ++ show r
   return go
   where key = (sql, types)
 
@@ -616,8 +665,7 @@ pgPreparedQuery :: PGConnection -> BS.ByteString -- ^ SQL statement with placeho
   -> IO (Int, [PGValues])
 pgPreparedQuery c sql types bind bc = do
   start <- pgPreparedBind c sql types bind bc
-  pgSend c $ Execute 0
-  pgSend c Flush
+  pgSend c Execute{ portalName = BS.empty, executeRows = 0 }
   pgSend c Sync
   pgFlush c
   start
@@ -641,8 +689,8 @@ pgPreparedLazyQuery c sql types bind bc count = do
     go id
   where
   execute = do
-    pgSend c $ Execute count
-    pgSend c $ Flush
+    pgSend c Execute{ portalName = BS.empty, executeRows = count }
+    pgSend c Flush
     pgFlush c
   go r = pgReceive c >>= row r
   row r (DataRow fs) = go (r . (fixBinary bc fs :))
@@ -653,15 +701,10 @@ pgPreparedLazyQuery c sql types bind bc count = do
 
 -- |Close a previously prepared query (if necessary).
 pgCloseStatement :: PGConnection -> BS.ByteString -> [OID] -> IO ()
-pgCloseStatement c@PGConnection{ connPreparedStatements = psr } sql types = do
-  mn <- atomicModifyIORef psr $ \(i, m) ->
-    let (n, m') = Map.updateLookupWithKey (\_ _ -> Nothing) (sql, types) m in ((i, m'), n)
-  Fold.forM_ mn $ \n -> do
-    pgSync c
-    pgSend c $ Close{ statementName = BSC.pack $ show n }
-    pgFlush c
-    CloseComplete <- pgReceive c
-    return ()
+pgCloseStatement c sql types = do
+  mn <- atomicModifyIORef (connPreparedStatementMap c) $
+    swap . Map.updateLookupWithKey (\_ _ -> Nothing) (sql, types)
+  Fold.mapM_ (pgClose c) mn
 
 -- |Begin a new transaction. If there is already a transaction in progress (created with 'pgBegin' or 'pgTransaction') instead creates a savepoint.
 pgBegin :: PGConnection -> IO ()
@@ -694,3 +737,82 @@ pgTransaction c f = do
     pgCommit c
     return r)
     (pgRollback c)
+
+-- |Prepare, bind, execute, and close a single (unnamed) query, and return the number of rows affected, or Nothing if there are (ignored) result rows.
+pgRun :: PGConnection -> BSL.ByteString -> [OID] -> PGValues -> IO (Maybe Integer)
+pgRun c sql types bind = do
+  pgSync c
+  pgSend c Parse{ queryString = sql, statementName = BS.empty, parseTypes = types }
+  pgSend c Bind{ portalName = BS.empty, statementName = BS.empty, bindParameters = bind, binaryColumns = [] }
+  pgSend c Execute{ portalName = BS.empty, executeRows = 1 } -- 0 does not mean none
+  pgSend c Sync
+  pgFlush c
+  go where
+  go = pgReceive c >>= res
+  res ParseComplete = go
+  res BindComplete = go
+  res (DataRow _) = go
+  res PortalSuspended = return Nothing
+  res (CommandComplete d) = return (Just $ rowsAffected d)
+  res EmptyQueryResponse = return (Just 0)
+  res m = fail $ "pgRun: unexpected response: " ++ show m
+
+-- |Prepare a single query and return its handle.
+pgPrepare :: PGConnection -> BSL.ByteString -> [OID] -> IO PGPreparedStatement
+pgPrepare c sql types = do
+  n <- atomicModifyIORef' (connPreparedStatementCount c) (succ &&& PGPreparedStatement)
+  pgSync c
+  pgSend c Parse{ queryString = sql, statementName = preparedStatementName n, parseTypes = types }
+  pgSend c Sync
+  pgFlush c
+  ParseComplete <- pgReceive c
+  return n
+
+-- |Close a previously prepared query.
+pgClose :: PGConnection -> PGPreparedStatement -> IO ()
+pgClose c n = do
+  pgSync c
+  pgSend c ClosePortal{ portalName = preparedStatementName n }
+  pgSend c CloseStatement{ statementName = preparedStatementName n }
+  pgSend c Sync
+  pgFlush c
+  CloseComplete <- pgReceive c
+  CloseComplete <- pgReceive c
+  return ()
+
+-- |Bind a prepared statement, and return the row description.
+-- After 'pgBind', you must either call 'pgFetch' until it completes (returns @(_, 'Just' _)@) or 'pgFinish' before calling 'pgBind' again on the same prepared statement.
+pgBind :: PGConnection -> PGPreparedStatement -> PGValues -> IO PGRowDescription
+pgBind c n bind = do
+  pgSync c
+  pgSend c ClosePortal{ portalName = sn }
+  pgSend c Bind{ portalName = sn, statementName = sn, bindParameters = bind, binaryColumns = [] }
+  pgSend c DescribePortal{ portalName = sn }
+  pgSend c Sync
+  pgFlush c
+  CloseComplete <- pgReceive c
+  BindComplete <- pgReceive c
+  rowDescription <$> pgReceive c
+  where sn = preparedStatementName n
+
+-- |Fetch a single row from an executed prepared statement, returning the next N result rows (if any) and number of affected rows when complete.
+pgFetch :: PGConnection -> PGPreparedStatement -> Word32 -- ^Maximum number of rows to return, or 0 for all
+  -> IO ([PGValues], Maybe Integer)
+pgFetch c n count = do
+  pgSync c
+  pgSend c Execute{ portalName = preparedStatementName n, executeRows = count }
+  pgSend c Sync
+  pgFlush c
+  go where
+  go = pgReceive c >>= res
+  res (DataRow v) = first (v :) <$> go
+  res PortalSuspended = return ([], Nothing)
+  res (CommandComplete d) = do
+    pgSync c
+    pgSend c ClosePortal{ portalName = preparedStatementName n }
+    pgSend c Sync
+    pgFlush c
+    CloseComplete <- pgReceive c
+    return ([], Just $ rowsAffected d)
+  res EmptyQueryResponse = return ([], Just 0)
+  res m = fail $ "pgFetch: unexpected response: " ++ show m

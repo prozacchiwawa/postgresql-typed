@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings, FlexibleInstances, MultiParamTypeClasses, DataKinds, DeriveDataTypeable #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 -- {-# OPTIONS_GHC -ddump-splices #-}
 module Main (main) where
 
@@ -60,6 +61,14 @@ instance Q.Arbitrary PGInet where
       then PGInet6 <$> Q.arbitrary <*> ((`mod` 129) <$> Q.arbitrary)
       else PGInet  <$> Q.arbitrary <*> ((`mod`  33) <$> Q.arbitrary)
 
+instance Q.Arbitrary SQLToken where
+  arbitrary = Q.oneof
+    [ SQLToken <$> Q.arbitrary
+    , SQLParam <$> Q.arbitrary
+    , SQLExpr <$> Q.arbitrary
+    , SQLQMark <$> Q.arbitrary
+    ]
+    
 newtype Str = Str { strString :: [Char] } deriving (Eq, Show)
 strByte :: Str -> BS.ByteString
 strByte = BSC.pack . strString
@@ -112,6 +121,20 @@ main = do
     Q..&&. tokenProp
     Q..&&. [pgSQL|#abc ${3.14::Float} def $f$ $$ ${1} $f$${2::Int32}|] Q.=== "abc 3.14::real def $f$ $$ ${1} $f$2::integer"
     Q..&&. pgEnumValues Q.=== [(MyEnum_abc, "abc"), (MyEnum_DEF, "DEF"), (MyEnum_XX_ye, "XX_ye")]
+    Q..&&. Q.conjoin (map (\(s, t) -> sqlTokens s Q.=== t)
+      [ ("",
+        [])
+      , (  "SELECT a from b WHERE c = ?"
+        , ["SELECT a from b WHERE c = ", SQLQMark False])
+      , (  "INSERT INTO foo VALUES (?,?)"
+        , ["INSERT INTO foo VALUES (", SQLQMark False, ",", SQLQMark False, ")"])
+      , (  "INSERT INTO foo VALUES ('?','''?')"
+        , ["INSERT INTO foo VALUES ('?','''?')"])
+      , (  "-- really?\n-- yes'?\nINSERT INTO ? VALUES ('', ?, \"?asd\", e'?\\'?', '?''?', /* foo? */ /* foo /* bar */ ? */ ?)"
+        , ["-- really?\n-- yes'?\nINSERT INTO ", SQLQMark False, " VALUES ('', ", SQLQMark False, ", \"?asd\", e'?\\'?', '?''?', /* foo? */ /* foo /* bar */ ? */ ", SQLQMark False, ")"])
+        , (  "some ${things? {don't}} change$1 $1\\?"
+          , ["some ", SQLExpr "things? {don't}", " change$1 ", SQLParam 1, SQLQMark True])
+      ])
   assert $ isSuccess r
 
   ["box"] <- simple c 603

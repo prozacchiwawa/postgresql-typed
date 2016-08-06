@@ -40,6 +40,7 @@ module Database.PostgreSQL.Typed.Types
 #if !MIN_VERSION_base(4,8,0)
 import Control.Applicative ((<$>), (<$), (<*), (*>))
 #endif
+import Control.Arrow ((&&&))
 #ifdef USE_AESON
 import qualified Data.Aeson as JSON
 #endif
@@ -163,11 +164,6 @@ instance PGColumn t a => PGColumn t (Maybe a) where
   pgDecodeValue _ _ PGNullValue = Nothing
   pgDecodeValue e t v = Just $ pgDecodeValue e t v
 
-instance PGType t => PGColumn t PGValue where
-  pgDecode _ = PGTextValue
-  pgDecodeBinary _ _ = PGBinaryValue
-  pgDecodeValue _ _ = id
-
 -- |Final parameter encoding function used when a (nullable) parameter is passed to a prepared query.
 pgEncodeParameter :: PGParameter t a => PGTypeEnv -> PGTypeName t -> a -> PGValue
 pgEncodeParameter = pgEncodeValue
@@ -237,6 +233,17 @@ binDec d t = either (\e -> error $ "pgDecodeBinary " ++ pgTypeName t ++ ": " ++ 
 #define BIN_DEC(F)
 #endif
 
+instance PGType "any"
+instance PGType t => PGColumn t PGValue where
+  pgDecode _ = PGTextValue
+  pgDecodeBinary _ _ = PGBinaryValue
+  pgDecodeValue _ _ = id
+instance PGParameter "any" PGValue where
+  pgEncode _ (PGTextValue v) = v
+  pgEncode _ PGNullValue = error "pgEncode any: NULL"
+  pgEncode _ (PGBinaryValue _) = error "pgEncode any: binary"
+  pgEncodeValue _ _ = id
+
 instance PGType "void"
 instance PGColumn "void" () where
   pgDecode _ _ = ()
@@ -302,12 +309,19 @@ instance PGParameter "real" Float where
 instance PGColumn "real" Float where
   pgDecode _ = read . BSC.unpack
   BIN_DEC(binDec BinD.float4)
+instance PGColumn "real" Double where
+  pgDecode _ = read . BSC.unpack
+  BIN_DEC((realToFrac .) . binDec BinD.float4)
 
 instance PGType "double precision" where BIN_COL
 instance PGParameter "double precision" Double where
   pgEncode _ = BSC.pack . show
   pgLiteral = pgEncode
   BIN_ENC(BinE.float8)
+instance PGParameter "double precision" Float where
+  pgEncode _ = BSC.pack . show
+  pgLiteral = pgEncode
+  BIN_ENC(BinE.float8 . realToFrac)
 instance PGColumn "double precision" Double where
   pgDecode _ = read . BSC.unpack
   BIN_DEC(binDec BinD.float8)
@@ -468,6 +482,16 @@ binDecDatetime fi _ PGTypeEnv{ pgIntegerDatetimes = Just True } = binDec fi
 binDecDatetime _ _ PGTypeEnv{ pgIntegerDatetimes = Nothing } = error "pgDecodeBinary: unknown integer_datetimes value"
 #endif
 
+-- PostgreSQL uses "[+-]HH[:MM]" timezone offsets, while "%z" uses "+HHMM" by default.
+-- readTime can successfully parse both formats, but PostgreSQL needs the colon.
+fixTZ :: String -> String
+fixTZ "" = ""
+fixTZ ['+',h1,h2] | isDigit h1 && isDigit h2 = ['+',h1,h2,':','0','0']
+fixTZ ['-',h1,h2] | isDigit h1 && isDigit h2 = ['-',h1,h2,':','0','0']
+fixTZ ['+',h1,h2,m1,m2] | isDigit h1 && isDigit h2 && isDigit m1 && isDigit m2 = ['+',h1,h2,':',m1,m2]
+fixTZ ['-',h1,h2,m1,m2] | isDigit h1 && isDigit h2 && isDigit m1 && isDigit m2 = ['-',h1,h2,':',m1,m2]
+fixTZ (c:s) = c:fixTZ s
+
 instance PGType "time without time zone" where
   pgBinaryColumn = binColDatetime
 instance PGParameter "time without time zone" Time.TimeOfDay where
@@ -480,6 +504,20 @@ instance PGColumn "time without time zone" Time.TimeOfDay where
   pgDecode _ = readTime "%T%Q" . BSC.unpack
 #ifdef USE_BINARY
   pgDecodeBinary = binDecDatetime BinD.time_int BinD.time_float
+#endif
+
+instance PGType "time with time zone" where
+  pgBinaryColumn = binColDatetime
+instance PGParameter "time with time zone" (Time.TimeOfDay, Time.TimeZone) where
+  pgEncode _ (t, z) = BSC.pack $ Time.formatTime defaultTimeLocale "%T%Q" t ++ fixTZ (Time.formatTime defaultTimeLocale "%z" z)
+  pgLiteral t = pgQuoteUnsafe . pgEncode t
+#ifdef USE_BINARY
+  pgEncodeValue = binEncDatetime BinE.timetz_int BinE.timetz_float
+#endif
+instance PGColumn "time with time zone" (Time.TimeOfDay, Time.TimeZone) where
+  pgDecode _ = (Time.localTimeOfDay . Time.zonedTimeToLocalTime &&& Time.zonedTimeZone) . readTime "%T%Q%z" . fixTZ . BSC.unpack
+#ifdef USE_BINARY
+  pgDecodeBinary = binDecDatetime BinD.timetz_int BinD.timetz_float
 #endif
 
 instance PGType "timestamp without time zone" where
@@ -495,16 +533,6 @@ instance PGColumn "timestamp without time zone" Time.LocalTime where
 #ifdef USE_BINARY
   pgDecodeBinary = binDecDatetime BinD.timestamp_int BinD.timestamp_float
 #endif
-
--- PostgreSQL uses "[+-]HH[:MM]" timezone offsets, while "%z" uses "+HHMM" by default.
--- readTime can successfully parse both formats, but PostgreSQL needs the colon.
-fixTZ :: String -> String
-fixTZ "" = ""
-fixTZ ['+',h1,h2] | isDigit h1 && isDigit h2 = ['+',h1,h2,':','0','0']
-fixTZ ['-',h1,h2] | isDigit h1 && isDigit h2 = ['-',h1,h2,':','0','0']
-fixTZ ['+',h1,h2,m1,m2] | isDigit h1 && isDigit h2 && isDigit m1 && isDigit m2 = ['+',h1,h2,':',m1,m2]
-fixTZ ['-',h1,h2,m1,m2] | isDigit h1 && isDigit h2 && isDigit m1 && isDigit m2 = ['-',h1,h2,':',m1,m2]
-fixTZ (c:s) = c:fixTZ s
 
 instance PGType "timestamp with time zone" where
   pgBinaryColumn = binColDatetime

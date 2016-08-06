@@ -16,6 +16,9 @@ module Database.PostgreSQL.Typed.TH
   , tpgTypeEncoder
   , tpgTypeDecoder
   , tpgTypeBinary
+  -- * HDBC support
+  , PGTypes
+  , pgLoadTypes
   ) where
 
 #if !MIN_VERSION_base(4,8,0)
@@ -74,13 +77,21 @@ tpgState = unsafePerformIO $ do
 
 data TPGState = TPGState
   { tpgConnection :: PGConnection
-  , tpgTypes :: IntMap.IntMap TPGType -- keyed on fromIntegral OID
+  , tpgTypes :: PGTypes
   }
+
+-- |Map keyed on fromIntegral OID.
+type PGTypes = IntMap.IntMap TPGType
+
+-- |Load a map of types from the database.
+pgLoadTypes :: PGConnection -> IO PGTypes
+pgLoadTypes c =
+  IntMap.fromAscList . map (\[to, tn] -> (fromIntegral (pgDecodeRep to :: OID), pgDecodeRep tn)) .
+    snd <$> pgSimpleQuery c (BSLC.pack "SELECT typ.oid, format_type(CASE WHEN typtype = 'd' THEN typbasetype ELSE typ.oid END, -1) FROM pg_catalog.pg_type typ JOIN pg_catalog.pg_namespace nsp ON typnamespace = nsp.oid WHERE nspname <> 'pg_toast' AND nspname <> 'information_schema' ORDER BY typ.oid")
 
 tpgLoadTypes :: TPGState -> IO TPGState
 tpgLoadTypes tpg = do
-  t <- IntMap.fromAscList . map (\[to, tn] -> (fromIntegral (pgDecodeRep to :: OID), pgDecodeRep tn)) .
-    snd <$> pgSimpleQuery (tpgConnection tpg) (BSLC.pack "SELECT typ.oid, format_type(CASE WHEN typtype = 'd' THEN typbasetype ELSE typ.oid END, -1) FROM pg_catalog.pg_type typ JOIN pg_catalog.pg_namespace nsp ON typnamespace = nsp.oid WHERE nspname <> 'pg_toast' AND nspname <> 'information_schema' ORDER BY typ.oid")
+  t <- pgLoadTypes (tpgConnection tpg)
   return tpg{ tpgTypes = t }
 
 tpgInit :: PGConnection -> IO TPGState
@@ -123,7 +134,7 @@ reloadTPGTypes = TH.runIO $ [] <$ modifyMVar_ tpgState (\(d, c) -> (,) d <$> Tv.
 -- Error if not found.
 tpgType :: TPGState -> OID -> TPGType
 tpgType TPGState{ tpgTypes = types } t =
-  IntMap.findWithDefault (error $ "Unknown PostgreSQL type: " ++ show t) (fromIntegral t) types
+  IntMap.findWithDefault (error $ "Unknown PostgreSQL type: " ++ show t ++ "\nYour postgresql-typed application may need to be rebuilt.") (fromIntegral t) types
 
 -- |Lookup a type OID by type name.
 -- This is less common and thus less efficient than going the other way.

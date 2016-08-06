@@ -115,7 +115,7 @@ import Database.PostgreSQL.Typed.Query
 -- There are two steps to running a query: a Template Haskell quasiquoter to perform type-inference at compile time and create a 'PGQuery'; and a run-time function to execute the query ('pgRunQuery', 'pgQuery', 'pgExecute').
 
 -- $compile
--- Both TH functions take a single SQL string, which may contain in-line placeholders of the form @${expr}@ (where @expr@ is any valid Haskell expression that does not contain @{}@) and/or PostgreSQL placeholders of the form @$1@, @$2@, etc.
+-- Both TH functions take a single SQL string, which may contain in-line placeholders of the form @${expr}@ (where @expr@ is any valid Haskell expression) and/or PostgreSQL placeholders of the form @$1@, @$2@, etc.
 --
 -- > let q = [pgSQL|SELECT id, name, address FROM people WHERE name LIKE ${query++"%"} OR email LIKE $1|] :: PGSimpleQuery [(Int32, String, Maybe String)]
 --
@@ -125,7 +125,7 @@ import Database.PostgreSQL.Typed.Query
 --
 -- > [pgSQL|SELECT id FROM people WHERE name = $1|] :: String -> PGSimpleQuery [Int32]
 --
--- To produce 'PGPreparedQuery' objects instead, put a single @$@ at the beginning of the query.
+-- To produce 'PGPreparedQuery' objects instead of 'PGSimpleQuery', put a single @$@ at the beginning of the query.
 -- You can also create queries at run-time using 'rawPGSimpleQuery' or 'rawPGPreparedQuery'.
 
 -- $run

@@ -105,18 +105,19 @@ Library
       Database.PostgreSQL.Typed.HDBC
 
 test-suite test
-  build-depends: base, network, time, bytestring, postgresql-typed, QuickCheck
   type: exitcode-stdio-1.0
   hs-source-dirs: test
   main-is: Main.hs
   Other-Modules: Connect
   Extensions: TemplateHaskell, QuasiQuotes
+  build-depends: base, network, time, bytestring, postgresql-typed, QuickCheck
   GHC-Options: -Wall
 
 test-suite hdbc
-  build-depends: base, network, time, containers, convertible, postgresql-typed, HDBC, HUnit
   type: exitcode-stdio-1.0
   hs-source-dirs: test/hdbc, test
   main-is: runtests.hs
-  if !flag(HDBC)
+  if flag(HDBC)
+    build-depends: base, network, time, containers, convertible, postgresql-typed, HDBC, HUnit
+  else
     buildable: False

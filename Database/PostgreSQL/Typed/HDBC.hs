@@ -10,9 +10,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 module Database.PostgreSQL.Typed.HDBC
-  ( Connection, pgConnection
+  ( Connection, connectionPG, connectionFetchSize
   , connect
   , reloadTypes
+  , setFetchSize
   ) where
 
 import Control.Arrow ((&&&))
@@ -44,15 +45,17 @@ import Database.PostgreSQL.Typed.SQLToken
 import Paths_postgresql_typed (version)
 
 -- |A wrapped 'PGConnection'.
--- This differs from a bare 'PGConnection' in two ways:
+-- This differs from a bare 'PGConnection' in a few ways:
 --
---   1) It always has exactly one active transaction (with 'pgBegin')
---   2) It automatically disconnects on GC
+--   1. It always has exactly one active transaction (with 'pgBegin')
+--   2. It automatically disconnects on GC
+--   3. It provides a mutex around the underlying 'PGConnection' for thread-safety
 --
 data Connection = Connection
-  { pgConnection :: MVar PGConnection -- ^Access the underlying 'PGConnection' directly. You must be careful to ensure that the first invariant is preserved: you should not call 'pgBegin', 'pgCommit', or 'pgRollback' on it. All other operations should be safe.
-  , pgServerVer :: String
-  , pgTypes :: IntMap.IntMap SqlType
+  { connectionPG :: MVar PGConnection -- ^Access the underlying 'PGConnection' directly. You must be careful to ensure that the first invariant is preserved: you should not call 'pgBegin', 'pgCommit', or 'pgRollback' on it. All other operations should be safe.
+  , connectionServerVer :: String
+  , connectionTypes :: IntMap.IntMap SqlType
+  , connectionFetchSize :: Word32 -- ^Number of rows to fetch (and cache) with 'HDBC.execute' and each time 'HDBC.fetchRow' requires more rows. A higher value will result in fewer round-trips to the database but potentially more wasted data. Defaults to 1. 0 means fetch all rows.
   }
 
 sqlError :: IO a -> IO a
@@ -67,7 +70,7 @@ sqlError = handle $ \(PGError m) ->
     }
 
 withPG :: Connection -> (PGConnection -> IO a) -> IO a
-withPG c = sqlError . withMVar (pgConnection c)
+withPG c = sqlError . withMVar (connectionPG c)
 
 connect_ :: PGDatabase -> IO PGConnection
 connect_ d = sqlError $ do
@@ -82,9 +85,10 @@ connect d = do
   pg <- connect_ d
   pgv <- newMVar pg
   reloadTypes Connection
-    { pgConnection = pgv
-    , pgServerVer = maybe "" BSC.unpack $ pgServerVersion pg
-    , pgTypes = mempty
+    { connectionPG = pgv
+    , connectionServerVer = maybe "" BSC.unpack $ pgServerVersion pg
+    , connectionTypes = mempty
+    , connectionFetchSize = 1
     }
 
 -- |Reload the table of all types from the database.
@@ -92,7 +96,12 @@ connect d = do
 reloadTypes :: Connection -> IO Connection
 reloadTypes c = withPG c $ \pg -> do
   t <- pgLoadTypes pg
-  return c{ pgTypes = IntMap.map (sqlType $ pgTypeEnv pg) t }
+  return c{ connectionTypes = IntMap.map (sqlType $ pgTypeEnv pg) t }
+
+-- |Change the 'connectionFetchSize' for new 'HDBC.Statement's created with 'HDBC.prepare'.
+-- Ideally this could be set with each call to 'HDBC.execute' and 'HDBC.fetchRow', but the HDBC interface provides no way to do this.
+setFetchSize :: Word32 -> Connection -> Connection
+setFetchSize i c = c{ connectionFetchSize = i }
 
 sqls :: String -> BSLC.ByteString
 sqls = BSLC.pack
@@ -119,11 +128,6 @@ data Cursor = Cursor
 noCursor :: HDBC.Statement -> Cursor
 noCursor = Cursor [] [] False
 
--- |Number of rows to retrieve (and cache) with each call to fetchRow.
--- Ideally this should be configurable, but it's not clear how.
-fetchSize :: Word32
-fetchSize = 1
-
 getType :: Connection -> PGConnection -> Maybe Bool -> PGColDescription -> ColDesc
 getType c pg nul PGColDescription{..} = ColDesc
   { colDescName = BSC.unpack colName
@@ -135,7 +139,7 @@ getType c pg nul PGColDescription{..} = ColDesc
     , HDBC.colNullable = nul
     }
   , colDescDecode = sqlTypeDecode t
-  } where t = IntMap.findWithDefault (sqlType (pgTypeEnv pg) $ show colType) (fromIntegral colType) (pgTypes c)
+  } where t = IntMap.findWithDefault (sqlType (pgTypeEnv pg) $ show colType) (fromIntegral colType) (connectionTypes c)
 
 instance HDBC.IConnection Connection where
   disconnect c = withPG c
@@ -159,7 +163,7 @@ instance HDBC.IConnection Connection where
     let
       execute v = withPG c $ \pg -> do
         d <- pgBind pg n (map encode v)
-        (r, e) <- pgFetch pg n fetchSize
+        (r, e) <- pgFetch pg n (connectionFetchSize c)
         modifyIORef' cr $ \p -> p
           { cursorDesc = map (getType c pg Nothing) d
           , cursorRow = r
@@ -177,7 +181,7 @@ instance HDBC.IConnection Connection where
           p <- readIORef cr
           fmap (zipWith colDescDecode (cursorDesc p)) <$> case cursorRow p of
             [] | True || cursorActive p -> do
-                (rl, e) <- pgFetch pg n fetchSize
+                (rl, e) <- pgFetch pg n (connectionFetchSize c)
                 let rl' = uncons rl
                 writeIORef cr p
                   { cursorRow = maybe [] snd rl'
@@ -199,14 +203,14 @@ instance HDBC.IConnection Connection where
     addFinalizer stmt $ withPG c $ \pg -> pgClose pg n
     return stmt
   clone c = do
-    c' <- connect_ . pgConnectionDatabase =<< readMVar (pgConnection c)
+    c' <- connect_ . pgConnectionDatabase =<< readMVar (connectionPG c)
     cv <- newMVar c'
-    return c{ pgConnection = cv }
+    return c{ connectionPG = cv }
   hdbcDriverName _ = "postgresql-typed"
   hdbcClientVer _ = show version
   proxiedClientName = HDBC.hdbcDriverName
   proxiedClientVer = HDBC.hdbcClientVer
-  dbServerVer = pgServerVer
+  dbServerVer = connectionServerVer
   dbTransactionSupport _ = True
   getTables c = withPG c $ \pg ->
     map (pgDecodeRep . head) . snd <$> pgSimpleQuery pg (BSLC.fromChunks

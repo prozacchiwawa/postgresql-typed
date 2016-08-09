@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP, FlexibleInstances, MultiParamTypeClasses, ScopedTypeVariables, FunctionalDependencies, UndecidableInstances, DataKinds, DefaultSignatures, PatternGuards, GADTs, TemplateHaskell #-}
+{-# LANGUAGE CPP, FlexibleInstances, MultiParamTypeClasses, ScopedTypeVariables, FunctionalDependencies, UndecidableInstances, DataKinds, DefaultSignatures, PatternGuards, GADTs, TemplateHaskell, AllowAmbiguousTypes #-}
 -- |
 -- Module: Database.PostgreSQL.Typed.Dynamic
 -- Copyright: 2015 Dylan Simon

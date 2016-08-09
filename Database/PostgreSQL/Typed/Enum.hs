@@ -1,4 +1,4 @@
-{-# LANGUAGE TemplateHaskell, FlexibleInstances, MultiParamTypeClasses, DataKinds #-}
+{-# LANGUAGE CPP, TemplateHaskell, FlexibleInstances, MultiParamTypeClasses, DataKinds #-}
 -- |
 -- Module: Database.PostgreSQL.Typed.Enum
 -- Copyright: 2015 Dylan Simon
@@ -57,18 +57,25 @@ makePGEnum name typs valnf = do
     valn = map (\[PGTextValue v] -> let u = BSC.unpack v in (TH.mkName $ valnf u, map (TH.IntegerL . fromIntegral) $ BS.unpack v, TH.StringL u)) vals
   dv <- TH.newName "x"
   return
-    [ TH.DataD [] typn [] (map (\(n, _, _) -> TH.NormalC n []) valn)
+    [ TH.DataD [] typn []
+#if MIN_VERSION_template_haskell(2,11,0)
+      Nothing
+#endif
+      (map (\(n, _, _) -> TH.NormalC n []) valn) $
+#if MIN_VERSION_template_haskell(2,11,0)
+      map TH.ConT
+#endif
       [''Eq, ''Ord, ''Enum, ''Ix, ''Bounded, ''Typeable]
-    , TH.InstanceD [] (TH.ConT ''Show `TH.AppT` typt)
+    , instanceD [] (TH.ConT ''Show `TH.AppT` typt)
       [ TH.FunD 'show $ map (\(n, _, v) -> TH.Clause [TH.ConP n []]
         (TH.NormalB $ TH.LitE v) []) valn
       ]
-    , TH.InstanceD [] (TH.ConT ''PGType `TH.AppT` typl) []
-    , TH.InstanceD [] (TH.ConT ''PGParameter `TH.AppT` typl `TH.AppT` typt)
+    , instanceD [] (TH.ConT ''PGType `TH.AppT` typl) []
+    , instanceD [] (TH.ConT ''PGParameter `TH.AppT` typl `TH.AppT` typt)
       [ TH.FunD 'pgEncode $ map (\(n, l, _) -> TH.Clause [TH.WildP, TH.ConP n []]
         (TH.NormalB $ TH.VarE 'BS.pack `TH.AppE` TH.ListE (map TH.LitE l)) []) valn
       ]
-    , TH.InstanceD [] (TH.ConT ''PGColumn `TH.AppT` typl `TH.AppT` typt)
+    , instanceD [] (TH.ConT ''PGColumn `TH.AppT` typl `TH.AppT` typt)
       [ TH.FunD 'pgDecode [TH.Clause [TH.WildP, TH.VarP dv]
         (TH.NormalB $ TH.CaseE (TH.VarE 'BS.unpack `TH.AppE` TH.VarE dv) $ map (\(n, l, _) ->
           TH.Match (TH.ListP (map TH.LitP l)) (TH.NormalB $ TH.ConE n) []) valn ++
@@ -77,10 +84,14 @@ makePGEnum name typs valnf = do
             []])
         []] 
       ]
-    , TH.InstanceD [] (TH.ConT ''PGRep `TH.AppT` typl `TH.AppT` typt) []
-    , TH.InstanceD [] (TH.ConT ''PGEnum `TH.AppT` typt) []
+    , instanceD [] (TH.ConT ''PGRep `TH.AppT` typl `TH.AppT` typt) []
+    , instanceD [] (TH.ConT ''PGEnum `TH.AppT` typt) []
     ]
   where
   typn = TH.mkName typs
   typt = TH.ConT typn
   typl = TH.LitT (TH.StrTyLit name)
+  instanceD = TH.InstanceD
+#if MIN_VERSION_template_haskell(2,11,0)
+      Nothing
+#endif

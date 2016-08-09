@@ -144,7 +144,7 @@ isFull (Range (Lower Unbounded) (Upper Unbounded)) = True
 isFull _ = False
 
 -- |Create a point range @[x,x]@
-point :: Eq a => a -> Range a
+point :: a -> Range a
 point a = Range (Lower (Bounded True a)) (Upper (Bounded True a))
 
 -- |Extract a point: @getPoint (point x) == Just x@

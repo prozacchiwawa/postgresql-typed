@@ -1,5 +1,8 @@
 {-# LANGUAGE CPP, MultiParamTypeClasses, FlexibleInstances, FunctionalDependencies, UndecidableInstances, DataKinds, OverloadedStrings #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
+#if __GLASGOW_HASKELL__ >= 800
+{-# OPTIONS_GHC -fno-warn-redundant-constraints #-}
+#endif
 -- |
 -- Module: Database.PostgreSQL.Typed.Array
 -- Copyright: 2015 Dylan Simon

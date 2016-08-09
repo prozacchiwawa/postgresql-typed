@@ -19,7 +19,7 @@ Description:   Automatically type-check SQL statements at compile time.
                Also includes an optional HDBC backend that, since it uses the raw PostgreSQL backend, may be more efficient than the normal libpq backend in some cases (though provides no more type safety than HDBC-postgresql when used without templates).
                .
                Originally based on Chris Forno's templatepg library.
-Tested-With:   GHC == 7.10.3
+Tested-With:   GHC == 7.10.3, GHC == 8.0.1
 Build-Type:    Simple
 
 source-repository head

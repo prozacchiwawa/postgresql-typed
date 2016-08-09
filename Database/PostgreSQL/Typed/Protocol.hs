@@ -29,6 +29,8 @@ module Database.PostgreSQL.Typed.Protocol (
   , pgBegin
   , pgCommit
   , pgRollback
+  , pgCommitAll
+  , pgRollbackAll
   , pgTransaction
   -- * HDBC support
   , pgDisconnectOnce
@@ -727,6 +729,18 @@ pgCommit :: PGConnection -> IO ()
 pgCommit c@PGConnection{ connTransaction = tr } = do
   t <- atomicModifyIORef' tr predTransaction
   void $ pgSimpleQuery c $ BSLC.pack $ if t == 0 then "COMMIT" else "RELEASE SAVEPOINT pgt" ++ show t
+
+-- |Rollback all active 'pgBegin's.
+pgRollbackAll :: PGConnection -> IO ()
+pgRollbackAll c@PGConnection{ connTransaction = tr } = do
+  writeIORef tr 0
+  void $ pgSimpleQuery c $ BSLC.pack "ROLLBACK"
+
+-- |Commit all active 'pgBegin's.
+pgCommitAll :: PGConnection -> IO ()
+pgCommitAll c@PGConnection{ connTransaction = tr } = do
+  writeIORef tr 0
+  void $ pgSimpleQuery c $ BSLC.pack "COMMIT"
 
 -- |Wrap a computation in a 'pgBegin', 'pgCommit' block, or 'pgRollback' on exception.
 pgTransaction :: PGConnection -> IO a -> IO a

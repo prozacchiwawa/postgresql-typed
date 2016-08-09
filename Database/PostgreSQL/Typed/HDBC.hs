@@ -10,14 +10,16 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 module Database.PostgreSQL.Typed.HDBC
-  ( Connection, connectionPG, connectionFetchSize
+  ( Connection, connectionPG
   , connect
+  , fromPGConnection
   , reloadTypes
+  , connectionFetchSize
   , setFetchSize
   ) where
 
 import Control.Arrow ((&&&))
-import Control.Concurrent.MVar (MVar, newMVar, readMVar, withMVar)
+import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Exception (handle, throwIO)
 import Control.Monad (void, guard)
 import qualified Data.ByteString.Char8 as BSC
@@ -72,24 +74,29 @@ sqlError = handle $ \(PGError m) ->
 withPG :: Connection -> (PGConnection -> IO a) -> IO a
 withPG c = sqlError . withMVar (connectionPG c)
 
-connect_ :: PGDatabase -> IO PGConnection
-connect_ d = sqlError $ do
-  pg <- pgConnect d
+takePGConnection :: PGConnection -> IO (MVar PGConnection)
+takePGConnection pg = do
   addFinalizer pg (pgDisconnectOnce pg)
   pgBegin pg
-  return pg
+  newMVar pg
 
--- |Connect to a database for HDBC use (equivalent to 'pgConnect' and 'pgBegin').
-connect :: PGDatabase -> IO Connection
-connect d = do
-  pg <- connect_ d
-  pgv <- newMVar pg
+-- |Convert an existing 'PGConnection' to an HDBC-compatible 'Connection'.
+-- The caveats under 'connectionPG' apply if you plan to continue using the original 'PGConnection'.
+fromPGConnection :: PGConnection -> IO Connection
+fromPGConnection pg = do
+  pgv <- takePGConnection pg
   reloadTypes Connection
     { connectionPG = pgv
     , connectionServerVer = maybe "" BSC.unpack $ pgServerVersion pg
     , connectionTypes = mempty
     , connectionFetchSize = 1
     }
+
+-- |Connect to a database for HDBC use (equivalent to 'pgConnect' and 'pgBegin').
+connect :: PGDatabase -> IO Connection
+connect d = sqlError $ do
+  pg <- pgConnect d
+  fromPGConnection pg
 
 -- |Reload the table of all types from the database.
 -- This may be needed if you make structural changes to the database.
@@ -145,10 +152,10 @@ instance HDBC.IConnection Connection where
   disconnect c = withPG c
     pgDisconnectOnce
   commit c = withPG c $ \pg -> do
-    pgCommit pg
+    pgCommitAll pg
     pgBegin pg
   rollback c = withPG c $ \pg -> do
-    pgRollback pg
+    pgRollbackAll pg
     pgBegin pg
   runRaw c q = withPG c $ \pg ->
     pgSimpleQueries_ pg $ sqls q
@@ -202,10 +209,10 @@ instance HDBC.IConnection Connection where
     writeIORef cr $ noCursor stmt
     addFinalizer stmt $ withPG c $ \pg -> pgClose pg n
     return stmt
-  clone c = do
-    c' <- connect_ . pgConnectionDatabase =<< readMVar (connectionPG c)
-    cv <- newMVar c'
-    return c{ connectionPG = cv }
+  clone c = withPG c $ \pg -> do
+    pg' <- pgConnect $ pgConnectionDatabase pg
+    pgv <- takePGConnection pg'
+    return c{ connectionPG = pgv }
   hdbcDriverName _ = "postgresql-typed"
   hdbcClientVer _ = show version
   proxiedClientName = HDBC.hdbcDriverName

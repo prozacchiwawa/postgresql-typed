@@ -80,6 +80,7 @@ Library
     Database.PostgreSQL.Typed.Dynamic
     Database.PostgreSQL.Typed.TemplatePG
     Database.PostgreSQL.Typed.SQLToken
+    Database.PostgreSQL.Typed.ErrCodes
   Other-Modules:
     Paths_postgresql_typed
   GHC-Options: -Wall

@@ -8,6 +8,10 @@
 
 module Database.PostgreSQL.Typed.Dynamic 
   ( PGRep(..)
+  , pgTypeOf
+  , pgEncodeRep
+  , pgDecodeRep
+  , pgLiteralRep
   , pgLiteralString
   , pgSafeLiteral
   , pgSafeLiteralString
@@ -44,19 +48,21 @@ import Database.PostgreSQL.Typed.SQLToken
 class (PGParameter (PGRepType a) a, PGColumn (PGRepType a) a) => PGRep a where
   -- |The PostgreSOL type that this type should be converted to.
   type PGRepType a :: Symbol
-  pgTypeOf :: a -> PGTypeName (PGRepType a)
-  pgTypeOf _ = PGTypeProxy
-  -- |Encode a value, using 'pgEncodeValue' by default.
-  pgEncodeRep :: a -> PGValue
-  pgEncodeRep x = pgEncodeValue unknownPGTypeEnv (pgTypeOf x) x
-  -- |Produce a literal value for interpolation in a SQL statement, using 'pgLiteral' by default.  Using 'pgSafeLiteral' is usually safer as it includes type cast.
-  pgLiteralRep :: a -> BS.ByteString
-  pgLiteralRep x = pgLiteral (pgTypeOf x) x
-  -- |Decode a value, using 'pgDecode' for text values or producing an error for binary or null values by default.
-  pgDecodeRep :: PGValue -> a
-  pgDecodeRep (PGTextValue v) = pgDecode (PGTypeProxy :: PGTypeName (PGRepType a)) v
-  pgDecodeRep (PGBinaryValue v) = pgDecodeBinary unknownPGTypeEnv (PGTypeProxy :: PGTypeName (PGRepType a)) v
-  pgDecodeRep _ = error $ "pgDecodeRep " ++ pgTypeName (PGTypeProxy :: PGTypeName (PGRepType a)) ++ ": unsupported PGValue"
+
+pgTypeOf :: a -> PGTypeName (PGRepType a)
+pgTypeOf _ = PGTypeProxy
+
+-- |Encode a value using 'pgEncodeValue'.
+pgEncodeRep :: PGRep a => a -> PGValue
+pgEncodeRep x = pgEncodeValue unknownPGTypeEnv (pgTypeOf x) x
+
+-- |Produce a literal value for interpolation in a SQL statement using 'pgLiteral'.  Using 'pgSafeLiteral' is usually safer as it includes type cast.
+pgLiteralRep :: PGRep a => a -> BS.ByteString
+pgLiteralRep x = pgLiteral (pgTypeOf x) x
+
+-- |Decode a value using 'pgDecodeValue'.
+pgDecodeRep :: forall a . PGRep a => PGValue -> a
+pgDecodeRep = pgDecodeValue unknownPGTypeEnv (PGTypeProxy :: PGTypeName (PGRepType a))
 
 -- |Produce a raw SQL literal from a value. Using 'pgSafeLiteral' is usually safer when interpolating in a SQL statement.
 pgLiteralString :: PGRep a => a -> String
@@ -72,13 +78,9 @@ pgSafeLiteralString x = pgLiteralString x ++ "::" ++ pgTypeName (pgTypeOf x)
 
 instance PGRep a => PGRep (Maybe a) where
   type PGRepType (Maybe a) = PGRepType a
-  pgEncodeRep Nothing = PGNullValue
-  pgEncodeRep (Just x) = pgEncodeRep x
-  pgLiteralRep Nothing = BSC.pack "NULL"
-  pgLiteralRep (Just x) = pgLiteralRep x
-  pgDecodeRep PGNullValue = Nothing
-  pgDecodeRep v = Just (pgDecodeRep v)
 
+instance PGRep () where
+  type PGRepType () = "void"
 instance PGRep Bool where
   type PGRepType Bool = "boolean"
 instance PGRep OID where

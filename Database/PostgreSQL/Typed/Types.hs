@@ -245,6 +245,8 @@ instance PGParameter "any" PGValue where
   pgEncodeValue _ _ = id
 
 instance PGType "void"
+instance PGParameter "void" () where
+  pgEncode _ _ = BSC.empty
 instance PGColumn "void" () where
   pgDecode _ _ = ()
   pgDecodeBinary _ _ _ = ()

@@ -1,4 +1,7 @@
-{-# LANGUAGE CPP, FlexibleContexts, FlexibleInstances, MultiParamTypeClasses, ScopedTypeVariables, DataKinds, DefaultSignatures, TemplateHaskell, TypeFamilies, UndecidableSuperClasses #-}
+{-# LANGUAGE CPP, FlexibleContexts, FlexibleInstances, MultiParamTypeClasses, ScopedTypeVariables, DataKinds, DefaultSignatures, TemplateHaskell, TypeFamilies #-}
+#if __GLASGOW_HASKELL__ >= 800
+{-# LANGUAGE UndecidableSuperClasses #-}
+#endif
 -- |
 -- Module: Database.PostgreSQL.Typed.Dynamic
 -- Copyright: 2015 Dylan Simon

@@ -1,6 +1,9 @@
-{-# LANGUAGE CPP, FlexibleInstances, ScopedTypeVariables, MultiParamTypeClasses, FlexibleContexts, DataKinds, KindSignatures, TypeFamilies, UndecidableSuperClasses #-}
+{-# LANGUAGE CPP, FlexibleInstances, ScopedTypeVariables, MultiParamTypeClasses, FlexibleContexts, DataKinds, KindSignatures, TypeFamilies #-}
 #if __GLASGOW_HASKELL__ < 710
 {-# LANGUAGE OverlappingInstances #-}
+#endif
+#if __GLASGOW_HASKELL__ >= 800
+{-# LANGUAGE UndecidableSuperClasses #-}
 #endif
 -- |
 -- Module: Database.PostgreSQL.Typed.Types
@@ -116,10 +119,15 @@ unknownPGTypeEnv = PGTypeEnv
 data PGTypeName (t :: Symbol) = PGTypeProxy
 
 -- |A valid PostgreSQL type.
--- This is just an indicator class: no implementation is needed.
 -- Unfortunately this will generate orphan instances wherever used.
-class (KnownSymbol t, PGParameter t (PGVal t), PGColumn t (PGVal t)) => PGType t where
+class (KnownSymbol t
+#if __GLASGOW_HASKELL__ >= 800
+    , PGParameter t (PGVal t), PGColumn t (PGVal t)
+#endif
+    ) => PGType t where
+  -- |The default, native Haskell representation of this type, which should be as close as possible to the PostgreSQL representation.
   type PGVal t :: *
+  -- |The string name of this type: specialized version of 'symbolVal'.
   pgTypeName :: PGTypeName t -> String
   pgTypeName = symbolVal
   -- |Does this type support binary decoding?

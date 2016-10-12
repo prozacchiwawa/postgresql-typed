@@ -1,4 +1,7 @@
-{-# LANGUAGE CPP, MultiParamTypeClasses, FlexibleContexts, FlexibleInstances, UndecidableInstances, DataKinds, OverloadedStrings, TypeFamilies, UndecidableSuperClasses #-}
+{-# LANGUAGE CPP, MultiParamTypeClasses, FlexibleContexts, FlexibleInstances, UndecidableInstances, DataKinds, OverloadedStrings, TypeFamilies #-}
+#if __GLASGOW_HASKELL__ >= 800
+{-# LANGUAGE UndecidableSuperClasses #-}
+#endif
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 #if __GLASGOW_HASKELL__ >= 800
 {-# OPTIONS_GHC -fno-warn-redundant-constraints #-}

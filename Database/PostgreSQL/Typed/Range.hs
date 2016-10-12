@@ -1,4 +1,7 @@
-{-# LANGUAGE CPP, MultiParamTypeClasses, FlexibleContexts, FlexibleInstances, UndecidableInstances, DataKinds, GeneralizedNewtypeDeriving, PatternGuards, OverloadedStrings, TypeFamilies, UndecidableSuperClasses #-}
+{-# LANGUAGE CPP, MultiParamTypeClasses, FlexibleContexts, FlexibleInstances, UndecidableInstances, DataKinds, GeneralizedNewtypeDeriving, PatternGuards, OverloadedStrings, TypeFamilies #-}
+#if __GLASGOW_HASKELL__ >= 800
+{-# LANGUAGE UndecidableSuperClasses #-}
+#endif
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 -- |
 -- Module: Database.PostgreSQL.Typed.Range

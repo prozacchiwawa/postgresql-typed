@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP, FlexibleInstances, ScopedTypeVariables, MultiParamTypeClasses, FlexibleContexts, DataKinds, KindSignatures, UndecidableInstances #-}
+{-# LANGUAGE CPP, FlexibleInstances, ScopedTypeVariables, MultiParamTypeClasses, FlexibleContexts, DataKinds, KindSignatures, TypeFamilies, UndecidableSuperClasses #-}
 #if __GLASGOW_HASKELL__ < 710
 {-# LANGUAGE OverlappingInstances #-}
 #endif
@@ -118,7 +118,8 @@ data PGTypeName (t :: Symbol) = PGTypeProxy
 -- |A valid PostgreSQL type.
 -- This is just an indicator class: no implementation is needed.
 -- Unfortunately this will generate orphan instances wherever used.
-class KnownSymbol t => PGType t where
+class (KnownSymbol t, PGParameter t (PGVal t), PGColumn t (PGVal t)) => PGType t where
+  type PGVal t :: *
   pgTypeName :: PGTypeName t -> String
   pgTypeName = symbolVal
   -- |Does this type support binary decoding?
@@ -232,7 +233,8 @@ binDec d t = either (\e -> error $ "pgDecodeBinary " ++ pgTypeName t ++ ": " ++ 
 #define BIN_DEC(F)
 #endif
 
-instance PGType "any"
+instance PGType "any" where
+  type PGVal "any" = PGValue
 instance PGType t => PGColumn t PGValue where
   pgDecode _ = PGTextValue
   pgDecodeBinary _ _ = PGBinaryValue
@@ -243,7 +245,8 @@ instance PGParameter "any" PGValue where
   pgEncode _ (PGBinaryValue _) = error "pgEncode any: binary"
   pgEncodeValue _ _ = id
 
-instance PGType "void"
+instance PGType "void" where
+  type PGVal "void" = ()
 instance PGParameter "void" () where
   pgEncode _ _ = BSC.empty
 instance PGColumn "void" () where
@@ -251,7 +254,9 @@ instance PGColumn "void" () where
   pgDecodeBinary _ _ _ = ()
   pgDecodeValue _ _ _ = ()
 
-instance PGType "boolean" where BIN_COL
+instance PGType "boolean" where
+  type PGVal "boolean" = Bool
+  BIN_COL
 instance PGParameter "boolean" Bool where
   pgEncode _ False = BSC.singleton 'f'
   pgEncode _ True = BSC.singleton 't'
@@ -266,7 +271,9 @@ instance PGColumn "boolean" Bool where
   BIN_DEC(BinD.bool)
 
 type OID = Word32
-instance PGType "oid" where BIN_COL
+instance PGType "oid" where
+  type PGVal "oid" = OID
+  BIN_COL
 instance PGParameter "oid" OID where
   pgEncode _ = BSC.pack . show
   pgLiteral = pgEncode
@@ -275,7 +282,9 @@ instance PGColumn "oid" OID where
   pgDecode _ = read . BSC.unpack
   BIN_DEC(BinD.int)
 
-instance PGType "smallint" where BIN_COL
+instance PGType "smallint" where
+  type PGVal "smallint" = Int16
+  BIN_COL
 instance PGParameter "smallint" Int16 where
   pgEncode _ = BSC.pack . show
   pgLiteral = pgEncode
@@ -284,7 +293,9 @@ instance PGColumn "smallint" Int16 where
   pgDecode _ = read . BSC.unpack
   BIN_DEC(BinD.int)
 
-instance PGType "integer" where BIN_COL
+instance PGType "integer" where 
+  type PGVal "integer" = Int32
+  BIN_COL
 instance PGParameter "integer" Int32 where
   pgEncode _ = BSC.pack . show
   pgLiteral = pgEncode
@@ -293,7 +304,9 @@ instance PGColumn "integer" Int32 where
   pgDecode _ = read . BSC.unpack
   BIN_DEC(BinD.int)
 
-instance PGType "bigint" where BIN_COL
+instance PGType "bigint" where
+  type PGVal "bigint" = Int64
+  BIN_COL
 instance PGParameter "bigint" Int64 where
   pgEncode _ = BSC.pack . show
   pgLiteral = pgEncode
@@ -302,7 +315,9 @@ instance PGColumn "bigint" Int64 where
   pgDecode _ = read . BSC.unpack
   BIN_DEC(BinD.int)
 
-instance PGType "real" where BIN_COL
+instance PGType "real" where
+  type PGVal "real" = Float
+  BIN_COL
 instance PGParameter "real" Float where
   pgEncode _ = BSC.pack . show
   pgLiteral = pgEncode
@@ -314,7 +329,9 @@ instance PGColumn "real" Double where
   pgDecode _ = read . BSC.unpack
   BIN_DEC(realToFrac <$> BinD.float4)
 
-instance PGType "double precision" where BIN_COL
+instance PGType "double precision" where
+  type PGVal "double precision" = Double
+  BIN_COL
 instance PGParameter "double precision" Double where
   pgEncode _ = BSC.pack . show
   pgLiteral = pgEncode
@@ -327,7 +344,9 @@ instance PGColumn "double precision" Double where
   pgDecode _ = read . BSC.unpack
   BIN_DEC(BinD.float8)
 
-instance PGType "\"char\"" where BIN_COL
+instance PGType "\"char\"" where
+  type PGVal "\"char\"" = Word8
+  BIN_COL
 instance PGParameter "\"char\"" Word8 where
   pgEncode _ = BS.singleton
   BIN_ENC(BinE.char . w2c)
@@ -395,12 +414,23 @@ instance PGStringType t => PGParameter t TL.Text where
 instance PGStringType t => PGColumn t TL.Text where
   pgDecode _ = TL.fromStrict . TE.decodeUtf8
   BIN_DEC(BinD.text_lazy)
+#define PGVALSTRING T.Text
+#else
+#define PGVALSTRING String
 #endif
 
-instance PGType "text" where BIN_COL
-instance PGType "character varying" where BIN_COL
-instance PGType "name" where BIN_COL
-instance PGType "bpchar" where BIN_COL
+instance PGType "text" where
+  type PGVal "text" = PGVALSTRING
+  BIN_COL
+instance PGType "character varying" where
+  type PGVal "character varying" = PGVALSTRING
+  BIN_COL
+instance PGType "name" where
+  type PGVal "name" = PGVALSTRING
+  BIN_COL
+instance PGType "bpchar" where
+  type PGVal "bpchar" = PGVALSTRING
+  BIN_COL
 instance PGStringType "text"
 instance PGStringType "character varying"
 instance PGStringType "name" -- limit 63 characters; not strictly textsend but essentially the same
@@ -421,7 +451,9 @@ decodeBytea s
   pd [x] = error $ "pgDecode bytea: " ++ show x
   unhex = fromIntegral . digitToInt . w2c
 
-instance PGType "bytea" where BIN_COL
+instance PGType "bytea" where
+  type PGVal "bytea" = BS.ByteString
+  BIN_COL
 instance
 #if __GLASGOW_HASKELL__ >= 710
     {-# OVERLAPPING #-}
@@ -462,7 +494,9 @@ readTime =
 #endif
     defaultTimeLocale
 
-instance PGType "date" where BIN_COL
+instance PGType "date" where
+  type PGVal "date" = Time.Day
+  BIN_COL
 instance PGParameter "date" Time.Day where
   pgEncode _ = BSC.pack . Time.showGregorian
   pgLiteral t = pgQuoteUnsafe . pgEncode t
@@ -500,6 +534,7 @@ fixTZ ['-',h1,h2,m1,m2] | isDigit h1 && isDigit h2 && isDigit m1 && isDigit m2 =
 fixTZ (c:s) = c:fixTZ s
 
 instance PGType "time without time zone" where
+  type PGVal "time without time zone" = Time.TimeOfDay
   pgBinaryColumn = binColDatetime
 instance PGParameter "time without time zone" Time.TimeOfDay where
   pgEncode _ = BSC.pack . Time.formatTime defaultTimeLocale "%T%Q"
@@ -514,6 +549,7 @@ instance PGColumn "time without time zone" Time.TimeOfDay where
 #endif
 
 instance PGType "time with time zone" where
+  type PGVal "time with time zone" = (Time.TimeOfDay, Time.TimeZone)
   pgBinaryColumn = binColDatetime
 instance PGParameter "time with time zone" (Time.TimeOfDay, Time.TimeZone) where
   pgEncode _ (t, z) = BSC.pack $ Time.formatTime defaultTimeLocale "%T%Q" t ++ fixTZ (Time.formatTime defaultTimeLocale "%z" z)
@@ -528,6 +564,7 @@ instance PGColumn "time with time zone" (Time.TimeOfDay, Time.TimeZone) where
 #endif
 
 instance PGType "timestamp without time zone" where
+  type PGVal "timestamp without time zone" = Time.LocalTime
   pgBinaryColumn = binColDatetime
 instance PGParameter "timestamp without time zone" Time.LocalTime where
   pgEncode _ = BSC.pack . Time.formatTime defaultTimeLocale "%F %T%Q"
@@ -542,6 +579,7 @@ instance PGColumn "timestamp without time zone" Time.LocalTime where
 #endif
 
 instance PGType "timestamp with time zone" where
+  type PGVal "timestamp with time zone" = Time.UTCTime
   pgBinaryColumn = binColDatetime
 instance PGParameter "timestamp with time zone" Time.UTCTime where
   pgEncode _ = BSC.pack . fixTZ . Time.formatTime defaultTimeLocale "%F %T%Q%z"
@@ -556,6 +594,7 @@ instance PGColumn "timestamp with time zone" Time.UTCTime where
 #endif
 
 instance PGType "interval" where
+  type PGVal "interval" = Time.DiffTime
   pgBinaryColumn = binColDatetime
 instance PGParameter "interval" Time.DiffTime where
   pgEncode _ = BSC.pack . show
@@ -587,7 +626,14 @@ instance PGColumn "interval" Time.DiffTime where
   pgDecodeBinary = binDecDatetime BinD.interval_int BinD.interval_float
 #endif
 
-instance PGType "numeric" where BIN_COL
+instance PGType "numeric" where
+  type PGVal "numeric" = 
+#ifdef VERSION_scientific
+    Scientific
+#else
+    Rational
+#endif
+  BIN_COL
 instance PGParameter "numeric" Rational where
   pgEncode _ r
     | denominator r == 0 = BSC.pack "NaN" -- this can't happen
@@ -627,7 +673,9 @@ instance PGColumn "numeric" Scientific where
 #endif
 
 #ifdef VERSION_uuid
-instance PGType "uuid" where BIN_COL
+instance PGType "uuid" where
+  type PGVal "uuid" = UUID.UUID
+  BIN_COL
 instance PGParameter "uuid" UUID.UUID where
   pgEncode _ = UUID.toASCIIBytes
   pgLiteral t = pgQuoteUnsafe . pgEncode t
@@ -650,13 +698,16 @@ instance PGRecordType t => PGColumn t PGRecord where
     pa = P.char '(' *> P.sepBy el (P.char ',') <* P.char ')' <* P.endOfInput
     el = parsePGDQuote True "()," BS.null
 
-instance PGType "record"
+instance PGType "record" where
+  type PGVal "record" = PGRecord
 -- |The generic anonymous record type, as created by @ROW@.
 -- In this case we can not know the types, and in fact, PostgreSQL does not accept values of this type regardless (except as literals).
 instance PGRecordType "record"
 
 #ifdef VERSION_aeson
-instance PGType "json" where BIN_COL
+instance PGType "json" where
+  type PGVal "json" = JSON.Value
+  BIN_COL
 instance PGParameter "json" JSON.Value where
   pgEncode _ = BSL.toStrict . JSON.encode
   BIN_ENC(BinE.json_ast)
@@ -664,7 +715,9 @@ instance PGColumn "json" JSON.Value where
   pgDecode _ j = either (error . ("pgDecode json (" ++) . (++ ("): " ++ BSC.unpack j))) id $ P.parseOnly JSON.json j
   BIN_DEC(BinD.json_ast)
 
-instance PGType "jsonb"
+instance PGType "jsonb" where
+  type PGVal "jsonb" = JSON.Value
+  BIN_COL
 instance PGParameter "jsonb" JSON.Value where
   pgEncode _ = BSL.toStrict . JSON.encode
   BIN_ENC(BinE.jsonb_ast)

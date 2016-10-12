@@ -1,4 +1,4 @@
-{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, FunctionalDependencies, DataKinds #-}
+{-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, FunctionalDependencies, DataKinds, TypeFamilies #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 -- |
 -- Module: Database.PostgreSQL.Typed.Inet
@@ -120,8 +120,10 @@ instance Read PGInet where
     jb :: Word8 -> Word8 -> Word16
     jb x y = fromIntegral x `shiftL` 8 .|. fromIntegral y
 
-instance PGType "inet"
-instance PGType "cidr"
+instance PGType "inet" where
+  type PGVal "inet" = PGInet
+instance PGType "cidr" where
+  type PGVal "cidr" = PGInet
 instance PGParameter "inet" PGInet where
   pgEncode _ = BSC.pack . show
 instance PGParameter "cidr" PGInet where

@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP, FlexibleContexts, FlexibleInstances, MultiParamTypeClasses, ScopedTypeVariables, DataKinds, DefaultSignatures, TemplateHaskell, TypeFamilies #-}
+{-# LANGUAGE CPP, FlexibleContexts, FlexibleInstances, MultiParamTypeClasses, ScopedTypeVariables, DataKinds, DefaultSignatures, TemplateHaskell, TypeFamilies, UndecidableSuperClasses #-}
 -- |
 -- Module: Database.PostgreSQL.Typed.Dynamic
 -- Copyright: 2015 Dylan Simon

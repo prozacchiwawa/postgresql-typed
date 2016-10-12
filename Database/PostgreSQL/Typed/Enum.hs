@@ -70,7 +70,9 @@ makePGEnum name typs valnf = do
       [ TH.FunD 'show $ map (\(n, _, v) -> TH.Clause [TH.ConP n []]
         (TH.NormalB $ TH.LitE v) []) valn
       ]
-    , instanceD [] (TH.ConT ''PGType `TH.AppT` typl) []
+    , instanceD [] (TH.ConT ''PGType `TH.AppT` typl)
+      [ TH.TySynInstD ''PGVal $ TH.TySynEqn [typl] typt
+      ]
     , instanceD [] (TH.ConT ''PGParameter `TH.AppT` typl `TH.AppT` typt)
       [ TH.FunD 'pgEncode $ map (\(n, l, _) -> TH.Clause [TH.WildP, TH.ConP n []]
         (TH.NormalB $ TH.VarE 'BS.pack `TH.AppE` TH.ListE (map TH.LitE l)) []) valn

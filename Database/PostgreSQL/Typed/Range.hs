@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP, MultiParamTypeClasses, FlexibleInstances, UndecidableInstances, FunctionalDependencies, DataKinds, GeneralizedNewtypeDeriving, PatternGuards, OverloadedStrings #-}
+{-# LANGUAGE CPP, MultiParamTypeClasses, FlexibleContexts, FlexibleInstances, UndecidableInstances, DataKinds, GeneralizedNewtypeDeriving, PatternGuards, OverloadedStrings, TypeFamilies, UndecidableSuperClasses #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 -- |
 -- Module: Database.PostgreSQL.Typed.Range
@@ -21,6 +21,7 @@ import Data.Monoid ((<>))
 #if !MIN_VERSION_base(4,8,0)
 import Data.Monoid (Monoid(..))
 #endif
+import GHC.TypeLits (Symbol)
 
 import Database.PostgreSQL.Typed.Types
 
@@ -216,11 +217,12 @@ instance Ord a => Monoid (Range a) where
 
 -- |Class indicating that the first PostgreSQL type is a range of the second.
 -- This implies 'PGParameter' and 'PGColumn' instances that will work for any type.
-class (PGType tr, PGType t) => PGRangeType tr t | tr -> t where
-  pgRangeElementType :: PGTypeName tr -> PGTypeName t
+class (PGType t, PGType (PGSubType t)) => PGRangeType t where
+  type PGSubType t :: Symbol
+  pgRangeElementType :: PGTypeName t -> PGTypeName (PGSubType t)
   pgRangeElementType PGTypeProxy = PGTypeProxy
 
-instance (PGRangeType tr t, PGParameter t a) => PGParameter tr (Range a) where
+instance (PGRangeType t, PGParameter (PGSubType t) a) => PGParameter t (Range a) where
   pgEncode _ Empty = BSC.pack "empty"
   pgEncode tr (Range (Lower l) (Upper u)) = buildPGValue $
     pc '[' '(' l
@@ -232,7 +234,7 @@ instance (PGRangeType tr t, PGParameter t a) => PGParameter tr (Range a) where
     pb Nothing = mempty
     pb (Just b) = pgDQuote "(),[]" $ pgEncode (pgRangeElementType tr) b
     pc c o b = BSB.char7 $ if boundClosed b then c else o
-instance (PGRangeType tr t, PGColumn t a) => PGColumn tr (Range a) where
+instance (PGRangeType t, PGColumn (PGSubType t) a) => PGColumn t (Range a) where
   pgDecode tr a = either (error . ("pgDecode range (" ++) . (++ ("): " ++ BSC.unpack a))) id $ P.parseOnly per a where
     per = (Empty <$ pe) <> pr
     pe = P.stringCI "empty"
@@ -247,16 +249,28 @@ instance (PGRangeType tr t, PGColumn t a) => PGColumn tr (Range a) where
       uc <- pc ']' ')'
       return $ Range (Lower (mb lc lb)) (Upper (mb uc ub))
 
-instance PGType "int4range"
-instance PGRangeType "int4range" "integer"
-instance PGType "numrange"
-instance PGRangeType "numrange" "numeric"
-instance PGType "tsrange"
-instance PGRangeType "tsrange" "timestamp without time zone"
-instance PGType "tstzrange"
-instance PGRangeType "tstzrange" "timestamp with time zone"
-instance PGType "daterange"
-instance PGRangeType "daterange" "date"
-instance PGType "int8range"
-instance PGRangeType "int8range" "bigint"
+instance PGType "int4range" where
+  type PGVal "int4range" = Range (PGVal (PGSubType "int4range"))
+instance PGRangeType "int4range" where
+  type PGSubType "int4range" = "integer"
+instance PGType "numrange" where
+  type PGVal "numrange" = Range (PGVal (PGSubType "numrange"))
+instance PGRangeType "numrange" where
+  type PGSubType "numrange" = "numeric"
+instance PGType "tsrange" where
+  type PGVal "tsrange" = Range (PGVal (PGSubType "tsrange"))
+instance PGRangeType "tsrange" where
+  type PGSubType "tsrange" = "timestamp without time zone"
+instance PGType "tstzrange" where
+  type PGVal "tstzrange" = Range (PGVal (PGSubType "tstzrange"))
+instance PGRangeType "tstzrange" where
+  type PGSubType "tstzrange" = "timestamp with time zone"
+instance PGType "daterange" where
+  type PGVal "daterange" = Range (PGVal (PGSubType "daterange"))
+instance PGRangeType "daterange" where
+  type PGSubType "daterange" = "date"
+instance PGType "int8range" where
+  type PGVal "int8range" = Range (PGVal (PGSubType "int8range"))
+instance PGRangeType "int8range" where
+  type PGSubType "int8range" = "bigint"
 

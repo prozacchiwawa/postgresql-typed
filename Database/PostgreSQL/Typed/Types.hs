@@ -47,12 +47,11 @@ import qualified Data.Aeson as JSON
 import qualified Data.Attoparsec.ByteString as P (anyWord8)
 import qualified Data.Attoparsec.ByteString.Char8 as P
 import Data.Bits (shiftL, (.|.))
-import Data.ByteString.Internal (w2c)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Builder as BSB
 import qualified Data.ByteString.Builder.Prim as BSBP
 import qualified Data.ByteString.Char8 as BSC
-import Data.ByteString.Internal (c2w)
+import Data.ByteString.Internal (c2w, w2c)
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.UTF8 as BSU
 import Data.Char (isSpace, isDigit, digitToInt, intToDigit, toLower)
@@ -225,8 +224,8 @@ binDec :: PGType t => BinD.Decoder a -> PGTypeName t -> PGBinaryValue -> a
 binDec d t = either (\e -> error $ "pgDecodeBinary " ++ pgTypeName t ++ ": " ++ show e) id . BinD.run d
 
 #define BIN_COL pgBinaryColumn _ _ = True
-#define BIN_ENC(F) pgEncodeValue _ _ = PGBinaryValue . buildPGValue . F
-#define BIN_DEC(F) pgDecodeBinary _ = F
+#define BIN_ENC(F) pgEncodeValue _ _ = PGBinaryValue . buildPGValue . (F)
+#define BIN_DEC(F) pgDecodeBinary _ = binDec (F)
 #else
 #define BIN_COL
 #define BIN_ENC(F)
@@ -264,7 +263,7 @@ instance PGColumn "boolean" Bool where
     'f' -> False
     't' -> True
     c -> error $ "pgDecode boolean: " ++ [c]
-  BIN_DEC(binDec BinD.bool)
+  BIN_DEC(BinD.bool)
 
 type OID = Word32
 instance PGType "oid" where BIN_COL
@@ -274,7 +273,7 @@ instance PGParameter "oid" OID where
   BIN_ENC(BinE.int4_word32)
 instance PGColumn "oid" OID where
   pgDecode _ = read . BSC.unpack
-  BIN_DEC(binDec BinD.int)
+  BIN_DEC(BinD.int)
 
 instance PGType "smallint" where BIN_COL
 instance PGParameter "smallint" Int16 where
@@ -283,7 +282,7 @@ instance PGParameter "smallint" Int16 where
   BIN_ENC(BinE.int2_int16)
 instance PGColumn "smallint" Int16 where
   pgDecode _ = read . BSC.unpack
-  BIN_DEC(binDec BinD.int)
+  BIN_DEC(BinD.int)
 
 instance PGType "integer" where BIN_COL
 instance PGParameter "integer" Int32 where
@@ -292,7 +291,7 @@ instance PGParameter "integer" Int32 where
   BIN_ENC(BinE.int4_int32)
 instance PGColumn "integer" Int32 where
   pgDecode _ = read . BSC.unpack
-  BIN_DEC(binDec BinD.int)
+  BIN_DEC(BinD.int)
 
 instance PGType "bigint" where BIN_COL
 instance PGParameter "bigint" Int64 where
@@ -301,7 +300,7 @@ instance PGParameter "bigint" Int64 where
   BIN_ENC(BinE.int8_int64)
 instance PGColumn "bigint" Int64 where
   pgDecode _ = read . BSC.unpack
-  BIN_DEC(binDec BinD.int)
+  BIN_DEC(BinD.int)
 
 instance PGType "real" where BIN_COL
 instance PGParameter "real" Float where
@@ -310,10 +309,10 @@ instance PGParameter "real" Float where
   BIN_ENC(BinE.float4)
 instance PGColumn "real" Float where
   pgDecode _ = read . BSC.unpack
-  BIN_DEC(binDec BinD.float4)
+  BIN_DEC(BinD.float4)
 instance PGColumn "real" Double where
   pgDecode _ = read . BSC.unpack
-  BIN_DEC((realToFrac .) . binDec BinD.float4)
+  BIN_DEC(realToFrac <$> BinD.float4)
 
 instance PGType "double precision" where BIN_COL
 instance PGParameter "double precision" Double where
@@ -326,15 +325,21 @@ instance PGParameter "double precision" Float where
   BIN_ENC(BinE.float8 . realToFrac)
 instance PGColumn "double precision" Double where
   pgDecode _ = read . BSC.unpack
-  BIN_DEC(binDec BinD.float8)
+  BIN_DEC(BinD.float8)
 
 instance PGType "\"char\"" where BIN_COL
+instance PGParameter "\"char\"" Word8 where
+  pgEncode _ = BS.singleton
+  BIN_ENC(BinE.char . w2c)
+instance PGColumn "\"char\"" Word8 where
+  pgDecode _ = BS.head
+  BIN_DEC(c2w <$> BinD.char)
 instance PGParameter "\"char\"" Char where
   pgEncode _ = BSC.singleton
   BIN_ENC(BinE.char)
 instance PGColumn "\"char\"" Char where
   pgDecode _ = BSC.head
-  BIN_DEC(binDec BinD.char)
+  BIN_DEC(BinD.char)
 
 
 class PGType t => PGStringType t
@@ -344,7 +349,7 @@ instance PGStringType t => PGParameter t String where
   BIN_ENC(BinE.text_strict . T.pack)
 instance PGStringType t => PGColumn t String where
   pgDecode _ = BSU.toString
-  BIN_DEC((T.unpack .) . binDec BinD.text_strict)
+  BIN_DEC(T.unpack <$> BinD.text_strict)
 
 instance
 #if __GLASGOW_HASKELL__ >= 710
@@ -359,7 +364,7 @@ instance
 #endif
     PGStringType t => PGColumn t BS.ByteString where
   pgDecode _ = id
-  BIN_DEC((TE.encodeUtf8 .) . binDec BinD.text_strict)
+  BIN_DEC(TE.encodeUtf8 <$> BinD.text_strict)
 
 instance
 #if __GLASGOW_HASKELL__ >= 710
@@ -374,7 +379,7 @@ instance
 #endif
     PGStringType t => PGColumn t BSL.ByteString where
   pgDecode _ = BSL.fromStrict
-  BIN_DEC((TLE.encodeUtf8 .) . binDec BinD.text_lazy)
+  BIN_DEC(TLE.encodeUtf8 <$> BinD.text_lazy)
 
 #ifdef VERSION_text
 instance PGStringType t => PGParameter t T.Text where
@@ -382,14 +387,14 @@ instance PGStringType t => PGParameter t T.Text where
   BIN_ENC(BinE.text_strict)
 instance PGStringType t => PGColumn t T.Text where
   pgDecode _ = TE.decodeUtf8
-  BIN_DEC(binDec BinD.text_strict)
+  BIN_DEC(BinD.text_strict)
 
 instance PGStringType t => PGParameter t TL.Text where
   pgEncode _ = BSL.toStrict . TLE.encodeUtf8
   BIN_ENC(BinE.text_lazy)
 instance PGStringType t => PGColumn t TL.Text where
   pgDecode _ = TL.fromStrict . TE.decodeUtf8
-  BIN_DEC(binDec BinD.text_lazy)
+  BIN_DEC(BinD.text_lazy)
 #endif
 
 instance PGType "text" where BIN_COL
@@ -431,7 +436,7 @@ instance
 #endif
     PGColumn "bytea" BSL.ByteString where
   pgDecode _ = BSL.pack . decodeBytea
-  BIN_DEC(binDec BinD.bytea_lazy)
+  BIN_DEC(BinD.bytea_lazy)
 instance
 #if __GLASGOW_HASKELL__ >= 710
     {-# OVERLAPPING #-}
@@ -446,7 +451,7 @@ instance
 #endif
     PGColumn "bytea" BS.ByteString where
   pgDecode _ = BS.pack . decodeBytea
-  BIN_DEC(binDec BinD.bytea_strict)
+  BIN_DEC(BinD.bytea_strict)
 
 readTime :: Time.ParseTime t => String -> String -> t
 readTime =
@@ -464,7 +469,7 @@ instance PGParameter "date" Time.Day where
   BIN_ENC(BinE.date)
 instance PGColumn "date" Time.Day where
   pgDecode _ = readTime "%F" . BSC.unpack
-  BIN_DEC(binDec BinD.date)
+  BIN_DEC(BinD.date)
 
 binColDatetime :: PGTypeEnv -> PGTypeName t -> Bool
 #ifdef VERSION_postgresql_binary
@@ -602,7 +607,7 @@ instance PGColumn "numeric" Rational where
     ur [(x,"")] = x
     ur _ = error $ "pgDecode numeric: " ++ s
     s = BSC.unpack bs
-  BIN_DEC((realToFrac .) . binDec BinD.numeric)
+  BIN_DEC(realToFrac <$> BinD.numeric)
 
 -- This will produce infinite(-precision) strings
 showRational :: Rational -> String
@@ -618,7 +623,7 @@ instance PGParameter "numeric" Scientific where
   BIN_ENC(BinE.numeric)
 instance PGColumn "numeric" Scientific where
   pgDecode _ = read . BSC.unpack
-  BIN_DEC(binDec BinD.numeric)
+  BIN_DEC(BinD.numeric)
 #endif
 
 #ifdef VERSION_uuid
@@ -629,7 +634,7 @@ instance PGParameter "uuid" UUID.UUID where
   BIN_ENC(BinE.uuid)
 instance PGColumn "uuid" UUID.UUID where
   pgDecode _ u = fromMaybe (error $ "pgDecode uuid: " ++ BSC.unpack u) $ UUID.fromASCIIBytes u
-  BIN_DEC(binDec BinD.uuid)
+  BIN_DEC(BinD.uuid)
 #endif
 
 -- |Generic class of composite (row or record) types.
@@ -651,17 +656,21 @@ instance PGType "record"
 instance PGRecordType "record"
 
 #ifdef VERSION_aeson
-instance PGType "json"
+instance PGType "json" where BIN_COL
 instance PGParameter "json" JSON.Value where
   pgEncode _ = BSL.toStrict . JSON.encode
+  BIN_ENC(BinE.json_ast)
 instance PGColumn "json" JSON.Value where
   pgDecode _ j = either (error . ("pgDecode json (" ++) . (++ ("): " ++ BSC.unpack j))) id $ P.parseOnly JSON.json j
+  BIN_DEC(BinD.json_ast)
 
 instance PGType "jsonb"
 instance PGParameter "jsonb" JSON.Value where
   pgEncode _ = BSL.toStrict . JSON.encode
+  BIN_ENC(BinE.jsonb_ast)
 instance PGColumn "jsonb" JSON.Value where
   pgDecode _ j = either (error . ("pgDecode jsonb (" ++) . (++ ("): " ++ BSC.unpack j))) id $ P.parseOnly JSON.json j
+  BIN_DEC(BinD.jsonb_ast)
 #endif
 
 {-

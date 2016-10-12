@@ -50,7 +50,7 @@ import Control.Applicative ((<$>), (<$))
 import Control.Arrow ((&&&), first, second)
 import Control.Exception (Exception, throwIO, onException)
 import Control.Monad (void, liftM2, replicateM, when, unless)
-#ifdef USE_MD5
+#ifdef VERSION_cryptonite
 import qualified Crypto.Hash as Hash
 import qualified Data.ByteArray.Encoding as BA
 #endif
@@ -257,7 +257,7 @@ pgTypeEnv = connTypeEnv
 pgServerVersion :: PGConnection -> Maybe BS.ByteString
 pgServerVersion PGConnection{ connParameters = p } = Map.lookup (BSC.pack "server_version") p
 
-#ifdef USE_MD5
+#ifdef VERSION_cryptonite
 md5 :: BS.ByteString -> BS.ByteString
 md5 = BA.convertToBase BA.Base16 . (Hash.hash :: BS.ByteString -> Hash.Digest Hash.MD5)
 #endif
@@ -488,7 +488,7 @@ pgConnect db = do
     pgSend c $ PasswordMessage $ pgDBPass db
     pgFlush c
     conn c
-#ifdef USE_MD5
+#ifdef VERSION_cryptonite
   msg c (AuthenticationMD5Password salt) = do
     pgSend c $ PasswordMessage $ BSC.pack "md5" `BS.append` md5 (md5 (pgDBPass db <> pgDBUser db) `BS.append` salt)
     pgFlush c

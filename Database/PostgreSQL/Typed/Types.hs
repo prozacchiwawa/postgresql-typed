@@ -41,7 +41,7 @@ module Database.PostgreSQL.Typed.Types
 import Control.Applicative ((<$>), (<$), (<*), (*>))
 #endif
 import Control.Arrow ((&&&))
-#ifdef USE_AESON
+#ifdef VERSION_aeson
 import qualified Data.Aeson as JSON
 #endif
 import qualified Data.Attoparsec.ByteString as P (anyWord8)
@@ -64,10 +64,10 @@ import Data.Monoid ((<>))
 import Data.Monoid (mempty, mconcat)
 #endif
 import Data.Ratio ((%), numerator, denominator)
-#ifdef USE_SCIENTIFIC
+#ifdef VERSION_scientific
 import Data.Scientific (Scientific)
 #endif
-#ifdef USE_TEXT
+#ifdef VERSION_text
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Lazy as TL
@@ -79,13 +79,13 @@ import Data.Time (defaultTimeLocale)
 #else
 import System.Locale (defaultTimeLocale)
 #endif
-#ifdef USE_UUID
+#ifdef VERSION_uuid
 import qualified Data.UUID as UUID
 #endif
 import Data.Word (Word8, Word32)
 import GHC.TypeLits (Symbol, symbolVal, KnownSymbol)
 import Numeric (readFloat)
-#ifdef USE_BINARY
+#ifdef VERSION_postgresql_binary
 import qualified PostgreSQL.Binary.Decoder as BinD
 import qualified PostgreSQL.Binary.Encoder as BinE
 #endif
@@ -220,7 +220,7 @@ parsePGDQuote blank unsafe isnul = (Just <$> q) <> (mnul <$> uq) where
     | isnul s = Nothing
     | otherwise = Just s
 
-#ifdef USE_BINARY
+#ifdef VERSION_postgresql_binary
 binDec :: PGType t => BinD.Decoder a -> PGTypeName t -> PGBinaryValue -> a
 binDec d t = either (\e -> error $ "pgDecodeBinary " ++ pgTypeName t ++ ": " ++ show e) id . BinD.run d
 
@@ -376,7 +376,7 @@ instance
   pgDecode _ = BSL.fromStrict
   BIN_DEC((TLE.encodeUtf8 .) . binDec BinD.text_lazy)
 
-#ifdef USE_TEXT
+#ifdef VERSION_text
 instance PGStringType t => PGParameter t T.Text where
   pgEncode _ = TE.encodeUtf8
   BIN_ENC(BinE.text_strict)
@@ -467,12 +467,12 @@ instance PGColumn "date" Time.Day where
   BIN_DEC(binDec BinD.date)
 
 binColDatetime :: PGTypeEnv -> PGTypeName t -> Bool
-#ifdef USE_BINARY
+#ifdef VERSION_postgresql_binary
 binColDatetime PGTypeEnv{ pgIntegerDatetimes = Just _ } _ = True
 #endif
 binColDatetime _ _ = False
 
-#ifdef USE_BINARY
+#ifdef VERSION_postgresql_binary
 binEncDatetime :: PGParameter t a => BinE.Encoder a -> BinE.Encoder a -> PGTypeEnv -> PGTypeName t -> a -> PGValue
 binEncDatetime _ ff PGTypeEnv{ pgIntegerDatetimes = Just False } _ = PGBinaryValue . buildPGValue . ff
 binEncDatetime fi _ PGTypeEnv{ pgIntegerDatetimes = Just True } _ = PGBinaryValue . buildPGValue . fi
@@ -499,12 +499,12 @@ instance PGType "time without time zone" where
 instance PGParameter "time without time zone" Time.TimeOfDay where
   pgEncode _ = BSC.pack . Time.formatTime defaultTimeLocale "%T%Q"
   pgLiteral t = pgQuoteUnsafe . pgEncode t
-#ifdef USE_BINARY
+#ifdef VERSION_postgresql_binary
   pgEncodeValue = binEncDatetime BinE.time_int BinE.time_float
 #endif
 instance PGColumn "time without time zone" Time.TimeOfDay where
   pgDecode _ = readTime "%T%Q" . BSC.unpack
-#ifdef USE_BINARY
+#ifdef VERSION_postgresql_binary
   pgDecodeBinary = binDecDatetime BinD.time_int BinD.time_float
 #endif
 
@@ -513,12 +513,12 @@ instance PGType "time with time zone" where
 instance PGParameter "time with time zone" (Time.TimeOfDay, Time.TimeZone) where
   pgEncode _ (t, z) = BSC.pack $ Time.formatTime defaultTimeLocale "%T%Q" t ++ fixTZ (Time.formatTime defaultTimeLocale "%z" z)
   pgLiteral t = pgQuoteUnsafe . pgEncode t
-#ifdef USE_BINARY
+#ifdef VERSION_postgresql_binary
   pgEncodeValue = binEncDatetime BinE.timetz_int BinE.timetz_float
 #endif
 instance PGColumn "time with time zone" (Time.TimeOfDay, Time.TimeZone) where
   pgDecode _ = (Time.localTimeOfDay . Time.zonedTimeToLocalTime &&& Time.zonedTimeZone) . readTime "%T%Q%z" . fixTZ . BSC.unpack
-#ifdef USE_BINARY
+#ifdef VERSION_postgresql_binary
   pgDecodeBinary = binDecDatetime BinD.timetz_int BinD.timetz_float
 #endif
 
@@ -527,12 +527,12 @@ instance PGType "timestamp without time zone" where
 instance PGParameter "timestamp without time zone" Time.LocalTime where
   pgEncode _ = BSC.pack . Time.formatTime defaultTimeLocale "%F %T%Q"
   pgLiteral t = pgQuoteUnsafe . pgEncode t
-#ifdef USE_BINARY
+#ifdef VERSION_postgresql_binary
   pgEncodeValue = binEncDatetime BinE.timestamp_int BinE.timestamp_float
 #endif
 instance PGColumn "timestamp without time zone" Time.LocalTime where
   pgDecode _ = readTime "%F %T%Q" . BSC.unpack
-#ifdef USE_BINARY
+#ifdef VERSION_postgresql_binary
   pgDecodeBinary = binDecDatetime BinD.timestamp_int BinD.timestamp_float
 #endif
 
@@ -541,12 +541,12 @@ instance PGType "timestamp with time zone" where
 instance PGParameter "timestamp with time zone" Time.UTCTime where
   pgEncode _ = BSC.pack . fixTZ . Time.formatTime defaultTimeLocale "%F %T%Q%z"
   -- pgLiteral t = pgQuoteUnsafe . pgEncode t
-#ifdef USE_BINARY
+#ifdef VERSION_postgresql_binary
   pgEncodeValue = binEncDatetime BinE.timestamptz_int BinE.timestamptz_float
 #endif
 instance PGColumn "timestamp with time zone" Time.UTCTime where
   pgDecode _ = readTime "%F %T%Q%z" . fixTZ . BSC.unpack
-#ifdef USE_BINARY
+#ifdef VERSION_postgresql_binary
   pgDecodeBinary = binDecDatetime BinD.timestamptz_int BinD.timestamptz_float
 #endif
 
@@ -555,7 +555,7 @@ instance PGType "interval" where
 instance PGParameter "interval" Time.DiffTime where
   pgEncode _ = BSC.pack . show
   pgLiteral t = pgQuoteUnsafe . pgEncode t
-#ifdef USE_BINARY
+#ifdef VERSION_postgresql_binary
   pgEncodeValue = binEncDatetime BinE.interval_int BinE.interval_float
 #endif
 -- |Representation of DiffTime as interval.
@@ -578,7 +578,7 @@ instance PGColumn "interval" Time.DiffTime where
       return $ x * u
     day = 86400
     month = 2629746
-#ifdef USE_BINARY
+#ifdef VERSION_postgresql_binary
   pgDecodeBinary = binDecDatetime BinD.interval_int BinD.interval_float
 #endif
 
@@ -611,7 +611,7 @@ showRational r = show (ri :: Integer) ++ '.' : frac (abs rf) where
   frac 0 = ""
   frac f = intToDigit i : frac f' where (i, f') = properFraction (10 * f)
 
-#ifdef USE_SCIENTIFIC
+#ifdef VERSION_scientific
 instance PGParameter "numeric" Scientific where
   pgEncode _ = BSC.pack . show
   pgLiteral = pgEncode
@@ -621,7 +621,7 @@ instance PGColumn "numeric" Scientific where
   BIN_DEC(binDec BinD.numeric)
 #endif
 
-#ifdef USE_UUID
+#ifdef VERSION_uuid
 instance PGType "uuid" where BIN_COL
 instance PGParameter "uuid" UUID.UUID where
   pgEncode _ = UUID.toASCIIBytes
@@ -650,7 +650,7 @@ instance PGType "record"
 -- In this case we can not know the types, and in fact, PostgreSQL does not accept values of this type regardless (except as literals).
 instance PGRecordType "record"
 
-#ifdef USE_AESON
+#ifdef VERSION_aeson
 instance PGType "json"
 instance PGParameter "json" JSON.Value where
   pgEncode _ = BSL.toStrict . JSON.encode

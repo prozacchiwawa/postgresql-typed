@@ -199,7 +199,7 @@ makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
         `TH.AppE` TH.ListE (map (TH.LitE . TH.IntegerL . toInteger . tpgValueTypeOID . snd) $ zip p pt)
         `TH.AppE` TH.ListE vals 
         `TH.AppE` TH.ListE 
-#ifdef USE_BINARY
+#ifdef VERSION_postgresql_binary
           bins
 #else
           []

@@ -21,20 +21,23 @@ module Database.PostgreSQL.Typed.Dynamic
 #if !MIN_VERSION_base(4,8,0)
 import Control.Applicative ((<$>))
 #endif
+#ifdef VERSION_aeson
+import qualified Data.Aeson as JSON
+#endif
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BSL
 import Data.Monoid ((<>))
 import Data.Int
-#ifdef USE_SCIENTIFIC
+#ifdef VERSION_scientific
 import Data.Scientific (Scientific)
 #endif
 import Data.String (fromString)
-#ifdef USE_TEXT
+#ifdef VERSION_text
 import qualified Data.Text as T
 #endif
 import qualified Data.Time as Time
-#ifdef USE_UUID
+#ifdef VERSION_uuid
 import qualified Data.UUID as UUID
 #endif
 import GHC.TypeLits (Symbol)
@@ -101,7 +104,7 @@ instance PGRep String where
   type PGRepType String = "text"
 instance PGRep BS.ByteString where
   type PGRepType BS.ByteString = "text"
-#ifdef USE_TEXT
+#ifdef VERSION_text
 instance PGRep T.Text where
   type PGRepType T.Text = "text"
 #endif
@@ -119,13 +122,17 @@ instance PGRep Time.DiffTime where
   type PGRepType Time.DiffTime = "interval"
 instance PGRep Rational where
   type PGRepType Rational = "numeric"
-#ifdef USE_SCIENTIFIC
+#ifdef VERSION_scientific
 instance PGRep Scientific where
   type PGRepType Scientific = "numeric"
 #endif
-#ifdef USE_UUID
+#ifdef VERSION_uuid
 instance PGRep UUID.UUID where
   type PGRepType UUID.UUID = "uuid"
+#endif
+#ifdef VERSION_aeson
+instance PGRep JSON.Value where
+  type PGRepType JSON.Value = "jsonb"
 #endif
 
 -- |Create an expression that literally substitutes each instance of @${expr}@ for the result of @pgSafeLiteral expr@, producing a lazy 'BSL.ByteString'.

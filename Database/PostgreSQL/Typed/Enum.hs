@@ -84,7 +84,9 @@ makePGEnum name typs valnf = do
             []])
         []] 
       ]
-    , instanceD [] (TH.ConT ''PGRep `TH.AppT` typl `TH.AppT` typt) []
+    , instanceD [] (TH.ConT ''PGRep `TH.AppT` typt)
+      [ TH.TySynInstD ''PGRepType $ TH.TySynEqn [typt] typl
+      ]
     , instanceD [] (TH.ConT ''PGEnum `TH.AppT` typt) []
     ]
   where

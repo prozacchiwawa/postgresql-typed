@@ -176,7 +176,7 @@ import Database.PostgreSQL.Typed.Query
 -- You can make as many 'PGParameter' and 'PGColumn' instances as you want if you want to support different representations of your type.
 -- If you want to use any of the functions in "Database.PostgreSQL.Typed.Dynamic", however, such as 'Database.PostgreSQL.Typed.Dynamic.pgSafeLiteral', you must define a default representation:
 --
--- > instance PGRep "mytype" MyType
+-- > instance PGRep MyType where type PGRepType MyType = "mytype"
 --
 -- If you want to support arrays of your new type, you should also provide a 'Database.PostgreSQL.Typed.Array.PGArrayType' instance (or 'Database.PostgreSQL.Typed.Range.PGRangeType' for new ranges).
 -- Currently only 1-dimensional arrays are supported.

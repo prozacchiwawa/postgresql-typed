@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP, FlexibleInstances, MultiParamTypeClasses, ScopedTypeVariables, FunctionalDependencies, UndecidableInstances, DataKinds, DefaultSignatures, PatternGuards, GADTs, TemplateHaskell, AllowAmbiguousTypes #-}
+{-# LANGUAGE CPP, FlexibleContexts, FlexibleInstances, MultiParamTypeClasses, ScopedTypeVariables, DataKinds, DefaultSignatures, TemplateHaskell, TypeFamilies #-}
 -- |
 -- Module: Database.PostgreSQL.Typed.Dynamic
 -- Copyright: 2015 Dylan Simon
@@ -33,6 +33,7 @@ import qualified Data.Time as Time
 #ifdef USE_UUID
 import qualified Data.UUID as UUID
 #endif
+import GHC.TypeLits (Symbol)
 import Language.Haskell.Meta.Parse (parseExp)
 import qualified Language.Haskell.TH as TH
 
@@ -40,39 +41,37 @@ import Database.PostgreSQL.Typed.Types
 import Database.PostgreSQL.Typed.SQLToken
 
 -- |Represents canonical/default PostgreSQL representation for various Haskell types, allowing convenient type-driven marshalling.
-class PGType t => PGRep t a | a -> t where
-  pgTypeOf :: a -> PGTypeName t
+class (PGParameter (PGRepType a) a, PGColumn (PGRepType a) a) => PGRep a where
+  -- |The PostgreSOL type that this type should be converted to.
+  type PGRepType a :: Symbol
+  pgTypeOf :: a -> PGTypeName (PGRepType a)
   pgTypeOf _ = PGTypeProxy
+  -- |Encode a value, using 'pgEncodeValue' by default.
   pgEncodeRep :: a -> PGValue
-  default pgEncodeRep :: PGParameter t a => a -> PGValue
   pgEncodeRep x = pgEncodeValue unknownPGTypeEnv (pgTypeOf x) x
-  -- |Produce a literal value for interpolation in a SQL statement.  Using 'pgSafeLiteral' is usually safer as it includes type cast.
+  -- |Produce a literal value for interpolation in a SQL statement, using 'pgLiteral' by default.  Using 'pgSafeLiteral' is usually safer as it includes type cast.
   pgLiteralRep :: a -> BS.ByteString
-  default pgLiteralRep :: PGParameter t a => a -> BS.ByteString
   pgLiteralRep x = pgLiteral (pgTypeOf x) x
+  -- |Decode a value, using 'pgDecode' for text values or producing an error for binary or null values by default.
   pgDecodeRep :: PGValue -> a
-#ifdef USE_BINARY_XXX
-  default pgDecodeRep :: PGBinaryColumn t a => PGValue -> a
-  pgDecodeRep (PGBinaryValue v) = pgDecodeBinary unknownPGTypeEnv (PGTypeProxy :: PGTypeName t) v
-#else
-  default pgDecodeRep :: PGColumn t a => PGValue -> a
-#endif
-  pgDecodeRep (PGTextValue v) = pgDecode (PGTypeProxy :: PGTypeName t) v
-  pgDecodeRep _ = error $ "pgDecodeRep " ++ pgTypeName (PGTypeProxy :: PGTypeName t) ++ ": unsupported PGValue"
+  pgDecodeRep (PGTextValue v) = pgDecode (PGTypeProxy :: PGTypeName (PGRepType a)) v
+  pgDecodeRep (PGBinaryValue v) = pgDecodeBinary unknownPGTypeEnv (PGTypeProxy :: PGTypeName (PGRepType a)) v
+  pgDecodeRep _ = error $ "pgDecodeRep " ++ pgTypeName (PGTypeProxy :: PGTypeName (PGRepType a)) ++ ": unsupported PGValue"
 
 -- |Produce a raw SQL literal from a value. Using 'pgSafeLiteral' is usually safer when interpolating in a SQL statement.
-pgLiteralString :: PGRep t a => a -> String
+pgLiteralString :: PGRep a => a -> String
 pgLiteralString = BSC.unpack . pgLiteralRep
 
 -- |Produce a safely type-cast literal value for interpolation in a SQL statement, e.g., "'123'::integer".
-pgSafeLiteral :: PGRep t a => a -> BS.ByteString
+pgSafeLiteral :: PGRep a => a -> BS.ByteString
 pgSafeLiteral x = pgLiteralRep x <> BSC.pack "::" <> fromString (pgTypeName (pgTypeOf x))
 
 -- |Identical to @'BSC.unpack' . 'pgSafeLiteral'@ but more efficient.
-pgSafeLiteralString :: PGRep t a => a -> String
+pgSafeLiteralString :: PGRep a => a -> String
 pgSafeLiteralString x = pgLiteralString x ++ "::" ++ pgTypeName (pgTypeOf x)
 
-instance PGRep t a => PGRep t (Maybe a) where
+instance PGRep a => PGRep (Maybe a) where
+  type PGRepType (Maybe a) = PGRepType a
   pgEncodeRep Nothing = PGNullValue
   pgEncodeRep (Just x) = pgEncodeRep x
   pgLiteralRep Nothing = BSC.pack "NULL"
@@ -80,31 +79,51 @@ instance PGRep t a => PGRep t (Maybe a) where
   pgDecodeRep PGNullValue = Nothing
   pgDecodeRep v = Just (pgDecodeRep v)
 
-instance PGRep "boolean" Bool
-instance PGRep "oid" OID
-instance PGRep "smallint" Int16
-instance PGRep "integer" Int32
-instance PGRep "bigint" Int64
-instance PGRep "real" Float
-instance PGRep "double precision" Double
-instance PGRep "\"char\"" Char
-instance PGRep "text" String
-instance PGRep "text" BS.ByteString
+instance PGRep Bool where
+  type PGRepType Bool = "boolean"
+instance PGRep OID where
+  type PGRepType OID = "oid"
+instance PGRep Int16 where
+  type PGRepType Int16 = "smallint"
+instance PGRep Int32 where
+  type PGRepType Int32 = "integer"
+instance PGRep Int64 where
+  type PGRepType Int64 = "bigint"
+instance PGRep Float where
+  type PGRepType Float = "real"
+instance PGRep Double where
+  type PGRepType Double = "double precision"
+instance PGRep Char where
+  type PGRepType Char = "\"char\""
+instance PGRep String where
+  type PGRepType String = "text"
+instance PGRep BS.ByteString where
+  type PGRepType BS.ByteString = "text"
 #ifdef USE_TEXT
-instance PGRep "text" T.Text
+instance PGRep T.Text where
+  type PGRepType T.Text = "text"
 #endif
-instance PGRep "date" Time.Day
-instance PGRep "time without time zone" Time.TimeOfDay
-instance PGRep "time with time zone" (Time.TimeOfDay, Time.TimeZone)
-instance PGRep "timestamp without time zone" Time.LocalTime
-instance PGRep "timestamp with time zone" Time.UTCTime
-instance PGRep "interval" Time.DiffTime
-instance PGRep "numeric" Rational
+instance PGRep Time.Day where
+  type PGRepType Time.Day = "date"
+instance PGRep Time.TimeOfDay where
+  type PGRepType Time.TimeOfDay = "time without time zone"
+instance PGRep (Time.TimeOfDay, Time.TimeZone) where
+  type PGRepType (Time.TimeOfDay, Time.TimeZone) = "time with time zone"
+instance PGRep Time.LocalTime where
+  type PGRepType Time.LocalTime = "timestamp without time zone"
+instance PGRep Time.UTCTime where
+  type PGRepType Time.UTCTime = "timestamp with time zone"
+instance PGRep Time.DiffTime where
+  type PGRepType Time.DiffTime = "interval"
+instance PGRep Rational where
+  type PGRepType Rational = "numeric"
 #ifdef USE_SCIENTIFIC
-instance PGRep "numeric" Scientific
+instance PGRep Scientific where
+  type PGRepType Scientific = "numeric"
 #endif
 #ifdef USE_UUID
-instance PGRep "uuid" UUID.UUID
+instance PGRep UUID.UUID where
+  type PGRepType UUID.UUID = "uuid"
 #endif
 
 -- |Create an expression that literally substitutes each instance of @${expr}@ for the result of @pgSafeLiteral expr@, producing a lazy 'BSL.ByteString'.

@@ -253,7 +253,7 @@ instance HDBC.IConnection Connection where
       ,    "ORDER BY attnum"
       ])
 
-encodeRep :: (PGParameter t a, PGRep t a) => a -> PGValue
+encodeRep :: PGRep a => a -> PGValue
 encodeRep x = PGTextValue $ pgEncode (pgTypeOf x) x
 
 encode :: HDBC.SqlValue -> PGValue

@@ -61,7 +61,11 @@ dataPGTable dats tabs colf = do
 #endif
     [ TH.RecC datn $ map (\(cn, ct, cnn) ->
       ( TH.mkName (colf cn)
+#if MIN_VERSION_template_haskell(2,11,0)
       , TH.Bang TH.NoSourceUnpackedness TH.NoSourceStrictness
+#else
+      , TH.NotStrict
+#endif
       , (if cnn then id else TH.AppT (TH.ConT ''Maybe))
         (TH.ConT ''PGVal `TH.AppT` TH.LitT (TH.StrTyLit ct))))
       cols

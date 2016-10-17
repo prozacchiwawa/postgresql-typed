@@ -72,7 +72,7 @@ sqlError = handle $ \(PGError m) ->
     , HDBC.seErrorMsg = f 'S' ++ ": " ++ f 'M' ++ if null fD then fD else '\n':fD
     }
 
--- ^Use the underlying 'PGConnection' directly. You must be careful to ensure that the first invariant is preserved: you should not call 'pgBegin', 'pgCommit', or 'pgRollback' on it. All other operations should be safe.
+-- |Use the underlying 'PGConnection' directly. You must be careful to ensure that the first invariant is preserved: you should not call 'pgBegin', 'pgCommit', or 'pgRollback' on it. All other operations should be safe.
 withPGConnection :: Connection -> (PGConnection -> IO a) -> IO a
 withPGConnection c = sqlError . withMVar (connectionPG c)
 

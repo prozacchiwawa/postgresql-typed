@@ -1,11 +1,11 @@
 {-# LANGUAGE OverloadedStrings, FlexibleInstances, MultiParamTypeClasses, DataKinds, DeriveDataTypeable, TypeFamilies #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
--- {-# OPTIONS_GHC -ddump-splices #-}
+--{-# OPTIONS_GHC -ddump-splices #-}
 module Main (main) where
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
-import Data.Char (isDigit)
+import Data.Char (isDigit, toUpper)
 import Data.Int (Int32)
 import qualified Data.Time as Time
 import System.Exit (exitSuccess, exitFailure)
@@ -19,6 +19,7 @@ import qualified Database.PostgreSQL.Typed.Range as Range
 import Database.PostgreSQL.Typed.Enum
 import Database.PostgreSQL.Typed.Inet
 import Database.PostgreSQL.Typed.SQLToken
+import Database.PostgreSQL.Typed.Models
 
 import Connect
 
@@ -31,7 +32,14 @@ useTPGDatabase db
 -- This runs at compile-time:
 [pgSQL|!CREATE TYPE myenum AS enum ('abc', 'DEF', 'XX_ye')|]
 
-makePGEnum "myenum" "MyEnum" ("MyEnum_" ++)
+dataPGEnum "MyEnum" "myenum" ("MyEnum_" ++)
+
+[pgSQL|!CREATE TABLE myfoo (id serial primary key, adx myenum, bar char(4))|]
+
+dataPGTable "MyFoo" "myfoo" (\(c:s) -> "foo" ++ toUpper c : s)
+
+fooRow :: MyFoo
+fooRow = MyFoo{ fooId = 1, fooAdx = Just MyEnum_DEF, fooBar = Just "abcd" }
 
 instance Q.Arbitrary MyEnum where
   arbitrary = Q.arbitraryBoundedEnum

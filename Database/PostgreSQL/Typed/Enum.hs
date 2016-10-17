@@ -8,6 +8,7 @@
 module Database.PostgreSQL.Typed.Enum 
   ( PGEnum
   , pgEnumValues
+  , dataPGEnum
   , makePGEnum
   ) where
 
@@ -25,7 +26,7 @@ import Database.PostgreSQL.Typed.TH
 import Database.PostgreSQL.Typed.Types
 import Database.PostgreSQL.Typed.Dynamic
 
--- |A type based on a PostgreSQL enum. Automatically instantiated by 'makePGEnum'.
+-- |A type based on a PostgreSQL enum. Automatically instantiated by 'dataPGEnum'.
 class (Eq a, Ord a, Enum a, Bounded a, Show a) => PGEnum a
 
 -- |List of all the values in the enum along with their database names.
@@ -34,7 +35,7 @@ pgEnumValues = map (\e -> (e, show e)) $ enumFromTo minBound maxBound
 
 -- |Create a new enum type corresponding to the given PostgreSQL enum type.
 -- For example, if you have @CREATE TYPE foo AS ENUM (\'abc\', \'DEF\');@, then
--- @makePGEnum \"foo\" \"Foo\" (\"Foo_\"++)@ will be equivalent to:
+-- @dataPGEnum \"Foo\" \"foo\" (\"Foo_\"++)@ will be equivalent to:
 -- 
 -- > data Foo = Foo_abc | Foo_DEF deriving (Eq, Ord, Enum, Bounded, Typeable)
 -- > instance Show Foo where show Foo_abc = "abc" ...
@@ -45,14 +46,14 @@ pgEnumValues = map (\e -> (e, show e)) $ enumFromTo minBound maxBound
 -- > instance PGEnum Foo where pgEnumValues = [(Foo_abc, "abc"), (Foo_DEF, "DEF")]
 --
 -- Requires language extensions: TemplateHaskell, FlexibleInstances, MultiParamTypeClasses, DeriveDataTypeable, DataKinds, TypeFamilies
-makePGEnum :: String -- ^ PostgreSQL enum type name
-  -> String -- ^ Haskell type to create
+dataPGEnum :: String -- ^ Haskell type to create 
+  -> String -- ^ PostgreSQL enum type name
   -> (String -> String) -- ^ How to generate constructor names from enum values, e.g. @(\"Type_\"++)@
   -> TH.DecsQ
-makePGEnum name typs valnf = do
+dataPGEnum typs name valnf = do
   (_, vals) <- TH.runIO $ withTPGConnection $ \c ->
     pgSimpleQuery c $ BSL.fromChunks [BSC.pack "SELECT enumlabel FROM pg_catalog.pg_enum JOIN pg_catalog.pg_type t ON enumtypid = t.oid WHERE typtype = 'e' AND format_type(t.oid, -1) = ", pgQuote (fromString name), BSC.pack " ORDER BY enumsortorder"]
-  when (null vals) $ fail $ "makePGEnum: enum " ++ name ++ " not found"
+  when (null vals) $ fail $ "dataPGEnum: enum " ++ name ++ " not found"
   let 
     valn = map (\[PGTextValue v] -> let u = BSC.unpack v in (TH.mkName $ valnf u, map (TH.IntegerL . fromIntegral) $ BS.unpack v, TH.StringL u)) vals
   dv <- TH.newName "x"
@@ -99,3 +100,7 @@ makePGEnum name typs valnf = do
 #if MIN_VERSION_template_haskell(2,11,0)
       Nothing
 #endif
+
+-- |A deprecated alias for 'dataPGEnum' with its arguments flipped.
+makePGEnum :: String -> String -> (String -> String) -> TH.DecsQ
+makePGEnum = flip dataPGEnum

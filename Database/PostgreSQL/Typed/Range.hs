@@ -222,7 +222,7 @@ instance Ord a => Monoid (Range a) where
 -- This implies 'PGParameter' and 'PGColumn' instances that will work for any type.
 class (PGType t, PGType (PGSubType t)) => PGRangeType t where
   type PGSubType t :: Symbol
-  pgRangeElementType :: PGTypeName t -> PGTypeName (PGSubType t)
+  pgRangeElementType :: PGTypeID t -> PGTypeID (PGSubType t)
   pgRangeElementType PGTypeProxy = PGTypeProxy
 
 instance (PGRangeType t, PGParameter (PGSubType t) a) => PGParameter t (Range a) where

@@ -41,10 +41,10 @@ type PGArray a = [Maybe a]
 -- This will only work with 1-dimensional arrays.
 class (PGType t, PGType (PGElemType t)) => PGArrayType t where
   type PGElemType t :: Symbol
-  pgArrayElementType :: PGTypeName t -> PGTypeName (PGElemType t)
+  pgArrayElementType :: PGTypeID t -> PGTypeID (PGElemType t)
   pgArrayElementType PGTypeProxy = PGTypeProxy
   -- |The character used as a delimeter.  The default @,@ is correct for all standard types (except @box@).
-  pgArrayDelim :: PGTypeName t -> Char
+  pgArrayDelim :: PGTypeID t -> Char
   pgArrayDelim _ = ','
 
 instance

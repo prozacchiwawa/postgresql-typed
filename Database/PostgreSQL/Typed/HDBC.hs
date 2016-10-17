@@ -10,9 +10,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 module Database.PostgreSQL.Typed.HDBC
-  ( Connection, connectionPG
+  ( Connection
   , connect
   , fromPGConnection
+  , withPGConnection
   , reloadTypes
   , connectionFetchSize
   , setFetchSize
@@ -39,10 +40,10 @@ import qualified Database.HDBC.ColTypes as HDBC
 import System.Mem.Weak (addFinalizer)
 import Text.Read (readMaybe)
 
-import Database.PostgreSQL.Typed.Protocol
 import Database.PostgreSQL.Typed.Types
+import Database.PostgreSQL.Typed.Protocol
 import Database.PostgreSQL.Typed.Dynamic
-import Database.PostgreSQL.Typed.TH
+import Database.PostgreSQL.Typed.TypeCache
 import Database.PostgreSQL.Typed.SQLToken
 import Paths_postgresql_typed (version)
 
@@ -54,7 +55,7 @@ import Paths_postgresql_typed (version)
 --   3. It provides a mutex around the underlying 'PGConnection' for thread-safety
 --
 data Connection = Connection
-  { connectionPG :: MVar PGConnection -- ^Access the underlying 'PGConnection' directly. You must be careful to ensure that the first invariant is preserved: you should not call 'pgBegin', 'pgCommit', or 'pgRollback' on it. All other operations should be safe.
+  { connectionPG :: MVar PGConnection
   , connectionServerVer :: String
   , connectionTypes :: IntMap.IntMap SqlType
   , connectionFetchSize :: Word32 -- ^Number of rows to fetch (and cache) with 'HDBC.execute' and each time 'HDBC.fetchRow' requires more rows. A higher value will result in fewer round-trips to the database but potentially more wasted data. Defaults to 1. 0 means fetch all rows.
@@ -71,8 +72,9 @@ sqlError = handle $ \(PGError m) ->
     , HDBC.seErrorMsg = f 'S' ++ ": " ++ f 'M' ++ if null fD then fD else '\n':fD
     }
 
-withPG :: Connection -> (PGConnection -> IO a) -> IO a
-withPG c = sqlError . withMVar (connectionPG c)
+-- ^Use the underlying 'PGConnection' directly. You must be careful to ensure that the first invariant is preserved: you should not call 'pgBegin', 'pgCommit', or 'pgRollback' on it. All other operations should be safe.
+withPGConnection :: Connection -> (PGConnection -> IO a) -> IO a
+withPGConnection c = sqlError . withMVar (connectionPG c)
 
 takePGConnection :: PGConnection -> IO (MVar PGConnection)
 takePGConnection pg = do
@@ -101,8 +103,8 @@ connect d = sqlError $ do
 -- |Reload the table of all types from the database.
 -- This may be needed if you make structural changes to the database.
 reloadTypes :: Connection -> IO Connection
-reloadTypes c = withPG c $ \pg -> do
-  t <- pgLoadTypes pg
+reloadTypes c = withPGConnection c $ \pg -> do
+  t <- pgGetTypes pg
   return c{ connectionTypes = IntMap.map (sqlType $ pgTypeEnv pg) t }
 
 -- |Change the 'connectionFetchSize' for new 'HDBC.Statement's created with 'HDBC.prepare'.
@@ -149,26 +151,26 @@ getType c pg nul PGColDescription{..} = ColDesc
   } where t = IntMap.findWithDefault (sqlType (pgTypeEnv pg) $ show colType) (fromIntegral colType) (connectionTypes c)
 
 instance HDBC.IConnection Connection where
-  disconnect c = withPG c
+  disconnect c = withPGConnection c
     pgDisconnectOnce
-  commit c = withPG c $ \pg -> do
+  commit c = withPGConnection c $ \pg -> do
     pgCommitAll pg
     pgBegin pg
-  rollback c = withPG c $ \pg -> do
+  rollback c = withPGConnection c $ \pg -> do
     pgRollbackAll pg
     pgBegin pg
-  runRaw c q = withPG c $ \pg ->
+  runRaw c q = withPGConnection c $ \pg ->
     pgSimpleQueries_ pg $ sqls q
-  run c q v = withPG c $ \pg -> do
+  run c q v = withPGConnection c $ \pg -> do
     let q' = sqls $ show $ placeholders 1 $ sqlTokens q
         v' = map encode v
     fromMaybe 0 <$> pgRun pg q' [] v'
   prepare c q = do
     let q' = sqls $ show $ placeholders 1 $ sqlTokens q
-    n <- withPG c $ \pg -> pgPrepare pg q' []
+    n <- withPGConnection c $ \pg -> pgPrepare pg q' []
     cr <- newIORef $ error "Cursor"
     let
-      execute v = withPG c $ \pg -> do
+      execute v = withPGConnection c $ \pg -> do
         d <- pgBind pg n (map encode v)
         (r, e) <- pgFetch pg n (connectionFetchSize c)
         modifyIORef' cr $ \p -> p
@@ -181,10 +183,10 @@ instance HDBC.IConnection Connection where
         { HDBC.execute = execute
         , HDBC.executeRaw = void $ execute []
         , HDBC.executeMany = mapM_ execute
-        , HDBC.finish = withPG c $ \pg -> do
+        , HDBC.finish = withPGConnection c $ \pg -> do
           writeIORef cr $ noCursor stmt
           pgClose pg n
-        , HDBC.fetchRow = withPG c $ \pg -> do
+        , HDBC.fetchRow = withPGConnection c $ \pg -> do
           p <- readIORef cr
           fmap (zipWith colDescDecode (cursorDesc p)) <$> case cursorRow p of
             [] | cursorActive p -> do
@@ -207,9 +209,9 @@ instance HDBC.IConnection Connection where
           map (colDescName &&& colDesc) . cursorDesc <$> readIORef cr
         }
     writeIORef cr $ noCursor stmt
-    addFinalizer stmt $ withPG c $ \pg -> pgClose pg n
+    addFinalizer stmt $ withPGConnection c $ \pg -> pgClose pg n
     return stmt
-  clone c = withPG c $ \pg -> do
+  clone c = withPGConnection c $ \pg -> do
     pg' <- pgConnect $ pgConnectionDatabase pg
     pgv <- takePGConnection pg'
     return c{ connectionPG = pgv }
@@ -219,16 +221,15 @@ instance HDBC.IConnection Connection where
   proxiedClientVer = HDBC.hdbcClientVer
   dbServerVer = connectionServerVer
   dbTransactionSupport _ = True
-  getTables c = withPG c $ \pg ->
+  getTables c = withPGConnection c $ \pg ->
     map (pgDecodeRep . head) . snd <$> pgSimpleQuery pg (BSLC.fromChunks
-      [ "SELECT relname "
-      ,   "FROM pg_class "
-      ,   "JOIN pg_namespace "
-      ,     "ON relnamespace = pg_namespace.oid "
-      ,  "WHERE nspname = ANY (current_schemas(false)) "
-      ,    "AND relkind IN ('r','v','m','f')"
+      [ "SELECT relname"
+      ,  " FROM pg_class"
+      ,  " JOIN pg_namespace ON relnamespace = pg_namespace.oid"
+      , " WHERE nspname = ANY (current_schemas(false))"
+      ,   " AND relkind IN ('r','v','m','f')"
       ])
-  describeTable c t = withPG c $ \pg -> do
+  describeTable c t = withPGConnection c $ \pg -> do
     let makecol ~[attname, attrelid, attnum, atttypid, attlen, atttypmod, attnotnull] =
           colDescName &&& colDesc $ getType c pg (Just $ not $ pgDecodeRep attnotnull) PGColDescription
             { colName = pgDecodeRep attname
@@ -240,17 +241,11 @@ instance HDBC.IConnection Connection where
             , colBinary = False
             }
     map makecol . snd <$> pgSimpleQuery pg (BSLC.fromChunks
-      [ "SELECT attname, attrelid, attnum, atttypid, attlen, atttypmod, attnotnull "
-      ,   "FROM pg_attribute "
-      ,   "JOIN pg_class "
-      ,     "ON attrelid = pg_class.oid "
-      ,   "JOIN pg_namespace "
-      ,     "ON relnamespace = pg_namespace.oid "
-      ,  "WHERE nspname = ANY (current_schemas(false)) "
-      ,    "AND relkind IN ('r','v','m','f') "
-      ,    "AND relname = ", pgLiteralRep t
-      ,   " AND attnum > 0 AND NOT attisdropped "
-      ,    "ORDER BY attnum"
+      [ "SELECT attname, attrelid, attnum, atttypid, attlen, atttypmod, attnotnull"
+      ,  " FROM pg_attribute"
+      , " WHERE attrelid = ", pgLiteralRep t, "::regclass::oid"
+      , "   AND attnum > 0 AND NOT attisdropped"
+      , " ORDER BY attrelid, attnum"
       ])
 
 encodeRep :: PGRep a => a -> PGValue
@@ -318,13 +313,13 @@ typeId "numeric"                      = HDBC.SqlDecimalT
 typeId "uuid"                         = HDBC.SqlGUIDT
 typeId t = HDBC.SqlUnknownT t
 
-decodeRep :: PGColumn t a => PGTypeName t -> PGTypeEnv -> (a -> HDBC.SqlValue) -> PGValue -> HDBC.SqlValue
+decodeRep :: PGColumn t a => PGTypeID t -> PGTypeEnv -> (a -> HDBC.SqlValue) -> PGValue -> HDBC.SqlValue
 decodeRep t e f (PGBinaryValue v) = f $ pgDecodeBinary e t v
 decodeRep t _ f (PGTextValue v) = f $ pgDecode t v
 decodeRep _ _ _ PGNullValue = HDBC.SqlNull
 
 #define DECODE(T) \
-  decode T e = decodeRep (PGTypeProxy :: PGTypeName T) e
+  decode T e = decodeRep (PGTypeProxy :: PGTypeID T) e
 
 decode :: String -> PGTypeEnv -> PGValue -> HDBC.SqlValue
 DECODE("boolean")                     HDBC.SqlBool

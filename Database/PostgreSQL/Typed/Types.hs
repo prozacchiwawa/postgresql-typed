@@ -17,7 +17,7 @@ module Database.PostgreSQL.Typed.Types
     OID
   , PGValue(..)
   , PGValues
-  , PGTypeName(..)
+  , PGTypeID(..)
   , PGTypeEnv(..)
   , unknownPGTypeEnv
   , PGRecord(..)
@@ -116,10 +116,11 @@ unknownPGTypeEnv = PGTypeEnv
   }
 
 -- |A proxy type for PostgreSQL types.  The type argument should be an (internal) name of a database type (see @\\dT+@).
-data PGTypeName (t :: Symbol) = PGTypeProxy
+data PGTypeID (t :: Symbol) = PGTypeProxy
 
--- |A valid PostgreSQL type.
--- Unfortunately this will generate orphan instances wherever used.
+-- |A valid PostgreSQL type, its metadata, and corresponding Haskell representation.
+-- For conversion the other way (from Haskell type to PostgreSQL), see 'Database.PostgreSQL.Typed.Dynamic.PGRep'.
+-- Unfortunately any instances of this will be orphans.
 class (KnownSymbol t
 #if __GLASGOW_HASKELL__ >= 800
     , PGParameter t (PGVal t), PGColumn t (PGVal t)
@@ -128,41 +129,41 @@ class (KnownSymbol t
   -- |The default, native Haskell representation of this type, which should be as close as possible to the PostgreSQL representation.
   type PGVal t :: *
   -- |The string name of this type: specialized version of 'symbolVal'.
-  pgTypeName :: PGTypeName t -> String
-  pgTypeName = symbolVal
+  pgTypeID :: PGTypeID t -> String
+  pgTypeID = symbolVal
   -- |Does this type support binary decoding?
   -- If so, 'pgDecodeBinary' must be implemented for every 'PGColumn' instance of this type.
-  pgBinaryColumn :: PGTypeEnv -> PGTypeName t -> Bool
+  pgBinaryColumn :: PGTypeEnv -> PGTypeID t -> Bool
   pgBinaryColumn _ _ = False
 
 -- |A @PGParameter t a@ instance describes how to encode a PostgreSQL type @t@ from @a@.
 class PGType t => PGParameter t a where
   -- |Encode a value to a PostgreSQL text representation.
-  pgEncode :: PGTypeName t -> a -> PGTextValue
+  pgEncode :: PGTypeID t -> a -> PGTextValue
   -- |Encode a value to a (quoted) literal value for use in SQL statements.
   -- Defaults to a quoted version of 'pgEncode'
-  pgLiteral :: PGTypeName t -> a -> BS.ByteString
+  pgLiteral :: PGTypeID t -> a -> BS.ByteString
   pgLiteral t = pgQuote . pgEncode t
   -- |Encode a value to a PostgreSQL representation.
   -- Defaults to the text representation by pgEncode
-  pgEncodeValue :: PGTypeEnv -> PGTypeName t -> a -> PGValue
+  pgEncodeValue :: PGTypeEnv -> PGTypeID t -> a -> PGValue
   pgEncodeValue _ t = PGTextValue . pgEncode t
 
 -- |A @PGColumn t a@ instance describes how te decode a PostgreSQL type @t@ to @a@.
 class PGType t => PGColumn t a where
   -- |Decode the PostgreSQL text representation into a value.
-  pgDecode :: PGTypeName t -> PGTextValue -> a
+  pgDecode :: PGTypeID t -> PGTextValue -> a
   -- |Decode the PostgreSQL binary representation into a value.
   -- Only needs to be implemented if 'pgBinaryColumn' is true.
-  pgDecodeBinary :: PGTypeEnv -> PGTypeName t -> PGBinaryValue -> a
-  pgDecodeBinary _ t _ = error $ "pgDecodeBinary " ++ pgTypeName t ++ ": not supported"
-  pgDecodeValue :: PGTypeEnv -> PGTypeName t -> PGValue -> a
+  pgDecodeBinary :: PGTypeEnv -> PGTypeID t -> PGBinaryValue -> a
+  pgDecodeBinary _ t _ = error $ "pgDecodeBinary " ++ pgTypeID t ++ ": not supported"
+  pgDecodeValue :: PGTypeEnv -> PGTypeID t -> PGValue -> a
   pgDecodeValue _ t (PGTextValue v) = pgDecode t v
   pgDecodeValue e t (PGBinaryValue v) = pgDecodeBinary e t v
-  pgDecodeValue _ t PGNullValue = error $ "NULL in " ++ pgTypeName t ++ " column (use Maybe or COALESCE)"
+  pgDecodeValue _ t PGNullValue = error $ "NULL in " ++ pgTypeID t ++ " column (use Maybe or COALESCE)"
 
 instance PGParameter t a => PGParameter t (Maybe a) where
-  pgEncode t = maybe (error $ "pgEncode " ++ pgTypeName t ++ ": Nothing") (pgEncode t)
+  pgEncode t = maybe (error $ "pgEncode " ++ pgTypeID t ++ ": Nothing") (pgEncode t)
   pgLiteral = maybe (BSC.pack "NULL") . pgLiteral
   pgEncodeValue e = maybe PGNullValue . pgEncodeValue e
 
@@ -173,19 +174,19 @@ instance PGColumn t a => PGColumn t (Maybe a) where
   pgDecodeValue e t v = Just $ pgDecodeValue e t v
 
 -- |Final parameter encoding function used when a (nullable) parameter is passed to a prepared query.
-pgEncodeParameter :: PGParameter t a => PGTypeEnv -> PGTypeName t -> a -> PGValue
+pgEncodeParameter :: PGParameter t a => PGTypeEnv -> PGTypeID t -> a -> PGValue
 pgEncodeParameter = pgEncodeValue
 
 -- |Final parameter escaping function used when a (nullable) parameter is passed to be substituted into a simple query.
-pgEscapeParameter :: PGParameter t a => PGTypeEnv -> PGTypeName t -> a -> BS.ByteString
+pgEscapeParameter :: PGParameter t a => PGTypeEnv -> PGTypeID t -> a -> BS.ByteString
 pgEscapeParameter _ = pgLiteral
 
 -- |Final column decoding function used for a nullable result value.
-pgDecodeColumn :: PGColumn t (Maybe a) => PGTypeEnv -> PGTypeName t -> PGValue -> Maybe a
+pgDecodeColumn :: PGColumn t (Maybe a) => PGTypeEnv -> PGTypeID t -> PGValue -> Maybe a
 pgDecodeColumn = pgDecodeValue
 
 -- |Final column decoding function used for a non-nullable result value.
-pgDecodeColumnNotNull :: PGColumn t a => PGTypeEnv -> PGTypeName t -> PGValue -> a
+pgDecodeColumnNotNull :: PGColumn t a => PGTypeEnv -> PGTypeID t -> PGValue -> a
 pgDecodeColumnNotNull = pgDecodeValue
 
 
@@ -229,8 +230,8 @@ parsePGDQuote blank unsafe isnul = (Just <$> q) <> (mnul <$> uq) where
     | otherwise = Just s
 
 #ifdef VERSION_postgresql_binary
-binDec :: PGType t => BinD.Decoder a -> PGTypeName t -> PGBinaryValue -> a
-binDec d t = either (\e -> error $ "pgDecodeBinary " ++ pgTypeName t ++ ": " ++ show e) id . BinD.run d
+binDec :: PGType t => BinD.Decoder a -> PGTypeID t -> PGBinaryValue -> a
+binDec d t = either (\e -> error $ "pgDecodeBinary " ++ pgTypeID t ++ ": " ++ show e) id . BinD.run d
 
 #define BIN_COL pgBinaryColumn _ _ = True
 #define BIN_ENC(F) pgEncodeValue _ _ = PGBinaryValue . buildPGValue . (F)
@@ -513,19 +514,19 @@ instance PGColumn "date" Time.Day where
   pgDecode _ = readTime "%F" . BSC.unpack
   BIN_DEC(BinD.date)
 
-binColDatetime :: PGTypeEnv -> PGTypeName t -> Bool
+binColDatetime :: PGTypeEnv -> PGTypeID t -> Bool
 #ifdef VERSION_postgresql_binary
 binColDatetime PGTypeEnv{ pgIntegerDatetimes = Just _ } _ = True
 #endif
 binColDatetime _ _ = False
 
 #ifdef VERSION_postgresql_binary
-binEncDatetime :: PGParameter t a => BinE.Encoder a -> BinE.Encoder a -> PGTypeEnv -> PGTypeName t -> a -> PGValue
+binEncDatetime :: PGParameter t a => BinE.Encoder a -> BinE.Encoder a -> PGTypeEnv -> PGTypeID t -> a -> PGValue
 binEncDatetime _ ff PGTypeEnv{ pgIntegerDatetimes = Just False } _ = PGBinaryValue . buildPGValue . ff
 binEncDatetime fi _ PGTypeEnv{ pgIntegerDatetimes = Just True } _ = PGBinaryValue . buildPGValue . fi
 binEncDatetime _ _ PGTypeEnv{ pgIntegerDatetimes = Nothing } t = PGTextValue . pgEncode t
 
-binDecDatetime :: PGColumn t a => BinD.Decoder a -> BinD.Decoder a -> PGTypeEnv -> PGTypeName t -> PGBinaryValue -> a
+binDecDatetime :: PGColumn t a => BinD.Decoder a -> BinD.Decoder a -> PGTypeEnv -> PGTypeID t -> PGBinaryValue -> a
 binDecDatetime _ ff PGTypeEnv{ pgIntegerDatetimes = Just False } = binDec ff
 binDecDatetime fi _ PGTypeEnv{ pgIntegerDatetimes = Just True } = binDec fi
 binDecDatetime _ _ PGTypeEnv{ pgIntegerDatetimes = Nothing } = error "pgDecodeBinary: unknown integer_datetimes value"

@@ -55,7 +55,7 @@ class (PGParameter (PGRepType a) a, PGColumn (PGRepType a) a) => PGRep a where
   -- |The PostgreSOL type that this type should be converted to.
   type PGRepType a :: Symbol
 
-pgTypeOf :: a -> PGTypeName (PGRepType a)
+pgTypeOf :: a -> PGTypeID (PGRepType a)
 pgTypeOf _ = PGTypeProxy
 
 -- |Encode a value using 'pgEncodeValue'.
@@ -68,7 +68,7 @@ pgLiteralRep x = pgLiteral (pgTypeOf x) x
 
 -- |Decode a value using 'pgDecodeValue'.
 pgDecodeRep :: forall a . PGRep a => PGValue -> a
-pgDecodeRep = pgDecodeValue unknownPGTypeEnv (PGTypeProxy :: PGTypeName (PGRepType a))
+pgDecodeRep = pgDecodeValue unknownPGTypeEnv (PGTypeProxy :: PGTypeID (PGRepType a))
 
 -- |Produce a raw SQL literal from a value. Using 'pgSafeLiteral' is usually safer when interpolating in a SQL statement.
 pgLiteralString :: PGRep a => a -> String
@@ -76,11 +76,11 @@ pgLiteralString = BSC.unpack . pgLiteralRep
 
 -- |Produce a safely type-cast literal value for interpolation in a SQL statement, e.g., "'123'::integer".
 pgSafeLiteral :: PGRep a => a -> BS.ByteString
-pgSafeLiteral x = pgLiteralRep x <> BSC.pack "::" <> fromString (pgTypeName (pgTypeOf x))
+pgSafeLiteral x = pgLiteralRep x <> BSC.pack "::" <> fromString (pgTypeID (pgTypeOf x))
 
 -- |Identical to @'BSC.unpack' . 'pgSafeLiteral'@ but more efficient.
 pgSafeLiteralString :: PGRep a => a -> String
-pgSafeLiteralString x = pgLiteralString x ++ "::" ++ pgTypeName (pgTypeOf x)
+pgSafeLiteralString x = pgLiteralString x ++ "::" ++ pgTypeID (pgTypeOf x)
 
 instance PGRep a => PGRep (Maybe a) where
   type PGRepType (Maybe a) = PGRepType a

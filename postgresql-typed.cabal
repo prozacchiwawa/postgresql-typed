@@ -83,6 +83,7 @@ Library
     Database.PostgreSQL.Typed.ErrCodes
   Other-Modules:
     Paths_postgresql_typed
+    Database.PostgreSQL.Typed.TypeCache
   GHC-Options: -Wall
   if flag(md5)
     Build-Depends: cryptonite >= 0.5, memory >= 0.5

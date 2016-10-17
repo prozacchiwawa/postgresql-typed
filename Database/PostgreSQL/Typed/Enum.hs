@@ -44,7 +44,7 @@ pgEnumValues = map (\e -> (e, show e)) $ enumFromTo minBound maxBound
 -- > instance PGRep "foo" Foo
 -- > instance PGEnum Foo where pgEnumValues = [(Foo_abc, "abc"), (Foo_DEF, "DEF")]
 --
--- Requires language extensions: TemplateHaskell, FlexibleInstances, MultiParamTypeClasses, DeriveDataTypeable, DataKinds
+-- Requires language extensions: TemplateHaskell, FlexibleInstances, MultiParamTypeClasses, DeriveDataTypeable, DataKinds, TypeFamilies
 makePGEnum :: String -- ^ PostgreSQL enum type name
   -> String -- ^ Haskell type to create
   -> (String -> String) -- ^ How to generate constructor names from enum values, e.g. @(\"Type_\"++)@

@@ -32,8 +32,9 @@ import           Database.PostgreSQL.Typed.TH
 -- > instance PGColumn "foo" (Maybe Foo) where ... -- to handle NULL in not null columns
 -- > instance PGRep Foo where PGRepType = "foo"
 -- > instance PGRecordType "foo"
+-- > uncurryFoo :: (PGVal "integer", Maybe (PGVal "text")) -> Foo
 --
--- (Note that @type PGVal "integer" = Int32@ and @type PGVal "text" = Text@ by default.)
+-- (Note that @PGVal "integer" = Int32@ and @PGVal "text" = Text@ by default.)
 -- This provides instances for marshalling the corresponding composite/record types, e.g., using @SELECT foo.*::foo FROM foo@.
 -- If you want any derived instances, you'll need to create them yourself using StandaloneDeriving.
 --
@@ -144,6 +145,17 @@ dataPGTable typs pgtab colf = do
       [ TH.TySynInstD ''PGRepType $ TH.TySynEqn [typt] typl
       ]
     , instanceD [] (TH.ConT ''PGRecordType `TH.AppT` typl) []
+    , TH.SigD (TH.mkName ("uncurry" ++ typs)) $ TH.ArrowT `TH.AppT`
+      foldl (\f (_, t, n) -> f `TH.AppT`
+          (if n then (TH.ConT ''Maybe `TH.AppT`) else id)
+          (TH.ConT ''PGVal `TH.AppT` t))
+        (TH.ConT (TH.tupleTypeName (length cols)))
+        cols `TH.AppT` typt
+    , TH.FunD (TH.mkName ("uncurry" ++ typs))
+      [ TH.Clause [TH.ConP (TH.tupleDataName (length cols)) (map (\(v, _, _) -> TH.VarP v) cols)]
+        (TH.NormalB $ foldl (\f (v, _, _) -> f `TH.AppE` TH.VarE v) (TH.ConE typn) cols)
+        []
+      ]
     ]
   where
   typn = TH.mkName typs

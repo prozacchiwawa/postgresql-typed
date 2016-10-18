@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, FlexibleInstances, MultiParamTypeClasses, DataKinds, DeriveDataTypeable, TypeFamilies #-}
+{-# LANGUAGE OverloadedStrings, FlexibleInstances, MultiParamTypeClasses, DataKinds, DeriveDataTypeable, TypeFamilies, PatternGuards #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 --{-# OPTIONS_GHC -ddump-splices #-}
 module Main (main) where
@@ -32,14 +32,14 @@ useTPGDatabase db
 -- This runs at compile-time:
 [pgSQL|!CREATE TYPE myenum AS enum ('abc', 'DEF', 'XX_ye')|]
 
-dataPGEnum "MyEnum" "myenum" ("MyEnum_" ++)
-
 [pgSQL|!CREATE TABLE myfoo (id serial primary key, adx myenum, bar char(4))|]
+
+dataPGEnum "MyEnum" "myenum" ("MyEnum_" ++)
 
 dataPGTable "MyFoo" "myfoo" (\(c:s) -> "foo" ++ toUpper c : s)
 
-fooRow :: MyFoo
-fooRow = MyFoo{ fooId = 1, fooAdx = Just MyEnum_DEF, fooBar = Just "abcd" }
+_fooRow :: MyFoo
+_fooRow = MyFoo{ fooId = 1, fooAdx = Just MyEnum_DEF, fooBar = Just "abcd" }
 
 instance Q.Arbitrary MyEnum where
   arbitrary = Q.arbitraryBoundedEnum

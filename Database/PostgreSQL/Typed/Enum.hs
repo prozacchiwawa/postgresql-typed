@@ -1,4 +1,5 @@
 {-# LANGUAGE CPP, TemplateHaskell, FlexibleInstances, MultiParamTypeClasses, DataKinds #-}
+{-# LANGUAGE OverloadedStrings #-}
 -- |
 -- Module: Database.PostgreSQL.Typed.Enum
 -- Copyright: 2015 Dylan Simon
@@ -12,19 +13,18 @@ module Database.PostgreSQL.Typed.Enum
   , makePGEnum
   ) where
 
-import Control.Monad (when)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BSL
 import Data.Ix (Ix)
-import Data.String (fromString)
 import Data.Typeable (Typeable)
 import qualified Language.Haskell.TH as TH
 
-import Database.PostgreSQL.Typed.Protocol
-import Database.PostgreSQL.Typed.TH
 import Database.PostgreSQL.Typed.Types
 import Database.PostgreSQL.Typed.Dynamic
+import Database.PostgreSQL.Typed.Protocol
+import Database.PostgreSQL.Typed.TypeCache
+import Database.PostgreSQL.Typed.TH
 
 -- |A type based on a PostgreSQL enum. Automatically instantiated by 'dataPGEnum'.
 class (Eq a, Ord a, Enum a, Bounded a, Show a) => PGEnum a
@@ -39,10 +39,10 @@ pgEnumValues = map (\e -> (e, show e)) $ enumFromTo minBound maxBound
 -- 
 -- > data Foo = Foo_abc | Foo_DEF deriving (Eq, Ord, Enum, Bounded, Typeable)
 -- > instance Show Foo where show Foo_abc = "abc" ...
--- > instance PGType "foo"
+-- > instance PGType "foo" where PGVal "foo" = Foo
 -- > instance PGParameter "foo" Foo where ...
 -- > instance PGColumn "foo" Foo where ...
--- > instance PGRep "foo" Foo
+-- > instance PGRep Foo where PGRepType = "foo"
 -- > instance PGEnum Foo where pgEnumValues = [(Foo_abc, "abc"), (Foo_DEF, "DEF")]
 --
 -- Requires language extensions: TemplateHaskell, FlexibleInstances, MultiParamTypeClasses, DeriveDataTypeable, DataKinds, TypeFamilies
@@ -50,12 +50,23 @@ dataPGEnum :: String -- ^ Haskell type to create
   -> String -- ^ PostgreSQL enum type name
   -> (String -> String) -- ^ How to generate constructor names from enum values, e.g. @(\"Type_\"++)@
   -> TH.DecsQ
-dataPGEnum typs name valnf = do
-  (_, vals) <- TH.runIO $ withTPGConnection $ \c ->
-    pgSimpleQuery c $ BSL.fromChunks [BSC.pack "SELECT enumlabel FROM pg_catalog.pg_enum JOIN pg_catalog.pg_type t ON enumtypid = t.oid WHERE typtype = 'e' AND format_type(t.oid, -1) = ", pgQuote (fromString name), BSC.pack " ORDER BY enumsortorder"]
-  when (null vals) $ fail $ "dataPGEnum: enum " ++ name ++ " not found"
-  let 
-    valn = map (\[PGTextValue v] -> let u = BSC.unpack v in (TH.mkName $ valnf u, map (TH.IntegerL . fromIntegral) $ BS.unpack v, TH.StringL u)) vals
+dataPGEnum typs pgenum valnf = do
+  (pgid, vals) <- TH.runIO $ withTPGTypeConnection $ \tpg -> do
+    vals <- map (\([eo, PGTextValue v]) -> (pgDecodeRep eo, v)) . snd
+      <$> pgSimpleQuery (pgConnection tpg) (BSL.fromChunks 
+        [ "SELECT enumtypid, enumlabel"
+        ,  " FROM pg_catalog.pg_enum"
+        , " WHERE enumtypid = ", pgLiteralRep pgenum, "::regtype"
+        , " ORDER BY enumsortorder"
+        ])
+    case vals of
+      [] -> fail $ "dataPGEnum " ++ typs ++ " = " ++ pgenum ++ ": no values found"
+      (eo, _):_ -> do
+        et <- maybe (fail $ "dataPGEnum " ++ typs ++ " = " ++ pgenum ++ ": enum type not found (you may need to use reloadTPGTypes or adjust search_path)") return
+          =<< lookupPGType tpg eo
+        return (et, map snd vals)
+  let valn = map (\v -> let u = BSC.unpack v in (TH.mkName $ valnf u, map (TH.IntegerL . fromIntegral) $ BS.unpack v, TH.StringL u)) vals
+      typl = TH.LitT (TH.StrTyLit pgid)
   dv <- TH.newName "x"
   return
     [ TH.DataD [] typn []
@@ -83,7 +94,7 @@ dataPGEnum typs name valnf = do
         (TH.NormalB $ TH.CaseE (TH.VarE 'BS.unpack `TH.AppE` TH.VarE dv) $ map (\(n, l, _) ->
           TH.Match (TH.ListP (map TH.LitP l)) (TH.NormalB $ TH.ConE n) []) valn ++
           [TH.Match TH.WildP (TH.NormalB $ TH.AppE (TH.VarE 'error) $
-            TH.InfixE (Just $ TH.LitE (TH.StringL ("pgDecode " ++ name ++ ": "))) (TH.VarE '(++)) (Just $ TH.VarE 'BSC.unpack `TH.AppE` TH.VarE dv))
+            TH.InfixE (Just $ TH.LitE (TH.StringL ("pgDecode " ++ pgid ++ ": "))) (TH.VarE '(++)) (Just $ TH.VarE 'BSC.unpack `TH.AppE` TH.VarE dv))
             []])
         []] 
       ]
@@ -95,7 +106,6 @@ dataPGEnum typs name valnf = do
   where
   typn = TH.mkName typs
   typt = TH.ConT typn
-  typl = TH.LitT (TH.StrTyLit name)
   instanceD = TH.InstanceD
 #if MIN_VERSION_template_haskell(2,11,0)
       Nothing

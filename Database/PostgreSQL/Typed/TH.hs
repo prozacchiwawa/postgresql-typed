@@ -104,7 +104,7 @@ reloadTPGTypes = TH.runIO $ [] <$ withMVar tpgState (mapM_ flushPGTypeConnection
 -- Error if not found.
 tpgType :: PGTypeConnection -> OID -> IO PGTypeName
 tpgType c o =
-  maybe (fail $ "Unknown PostgreSQL type: " ++ show o ++ "\nYour postgresql-typed application may need to be rebuilt.") return =<< lookupPGType c o
+  maybe (fail $ "Unknown PostgreSQL type: " ++ show o ++ "\nYou may need to use reloadTPGTypes or adjust search_path, or your postgresql-typed application may need to be rebuilt.") return =<< lookupPGType c o
 
 -- |Lookup a type OID by type name.
 -- This is less common and thus less efficient than going the other way.

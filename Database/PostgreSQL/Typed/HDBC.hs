@@ -224,29 +224,29 @@ instance HDBC.IConnection Connection where
   getTables c = withPGConnection c $ \pg ->
     map (pgDecodeRep . head) . snd <$> pgSimpleQuery pg (BSLC.fromChunks
       [ "SELECT relname"
-      ,  " FROM pg_class"
-      ,  " JOIN pg_namespace ON relnamespace = pg_namespace.oid"
+      ,  " FROM pg_catalog.pg_class"
+      ,  " JOIN pg_catalog.pg_namespace ON relnamespace = pg_namespace.oid"
       , " WHERE nspname = ANY (current_schemas(false))"
       ,   " AND relkind IN ('r','v','m','f')"
       ])
-  describeTable c t = withPGConnection c $ \pg -> do
-    let makecol ~[attname, attrelid, attnum, atttypid, attlen, atttypmod, attnotnull] =
-          colDescName &&& colDesc $ getType c pg (Just $ not $ pgDecodeRep attnotnull) PGColDescription
-            { colName = pgDecodeRep attname
-            , colTable = pgDecodeRep attrelid
-            , colNumber = pgDecodeRep attnum
-            , colType = pgDecodeRep atttypid
-            , colSize = pgDecodeRep attlen
-            , colModifier = pgDecodeRep atttypmod
-            , colBinary = False
-            }
-    map makecol . snd <$> pgSimpleQuery pg (BSLC.fromChunks
-      [ "SELECT attname, attrelid, attnum, atttypid, attlen, atttypmod, attnotnull"
-      ,  " FROM pg_attribute"
-      , " WHERE attrelid = ", pgLiteralRep t, "::regclass::oid"
-      , "   AND attnum > 0 AND NOT attisdropped"
-      , " ORDER BY attrelid, attnum"
-      ])
+  describeTable c t = withPGConnection c $ \pg ->
+    map (\[attname, attrelid, attnum, atttypid, attlen, atttypmod, attnotnull] ->
+      colDescName &&& colDesc $ getType c pg (Just $ not $ pgDecodeRep attnotnull) PGColDescription
+        { colName = pgDecodeRep attname
+        , colTable = pgDecodeRep attrelid
+        , colNumber = pgDecodeRep attnum
+        , colType = pgDecodeRep atttypid
+        , colSize = pgDecodeRep attlen
+        , colModifier = pgDecodeRep atttypmod
+        , colBinary = False
+        })
+      . snd <$> pgSimpleQuery pg (BSLC.fromChunks
+        [ "SELECT attname, attrelid, attnum, atttypid, attlen, atttypmod, attnotnull"
+        ,  " FROM pg_catalog.pg_attribute"
+        , " WHERE attrelid = ", pgLiteralRep t, "::regclass"
+        , "   AND attnum > 0 AND NOT attisdropped"
+        , " ORDER BY attrelid, attnum"
+        ])
 
 encodeRep :: PGRep a => a -> PGValue
 encodeRep x = PGTextValue $ pgEncode (pgTypeOf x) x

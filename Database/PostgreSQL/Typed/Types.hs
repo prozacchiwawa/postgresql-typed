@@ -26,6 +26,8 @@ module Database.PostgreSQL.Typed.Types
   , PGType(..)
   , PGParameter(..)
   , PGColumn(..)
+  , PGStringType
+  , PGRecordType
 
   -- * Marshalling interface
   , pgEncodeParameter

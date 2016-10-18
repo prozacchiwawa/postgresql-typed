@@ -128,7 +128,6 @@ dataPGTable typs pgtab colf = do
             , TH.ConE 'Nothing)
           ])
         [] ]
-#endif
       , TH.FunD 'pgDecodeValue 
         [ TH.Clause [TH.WildP, TH.WildP, TH.ConP 'PGNullValue []]
           (TH.NormalB $ TH.ConE 'Nothing)
@@ -141,6 +140,7 @@ dataPGTable typs pgtab colf = do
           []
         ]
       ]
+#endif
     , instanceD [] (TH.ConT ''PGRep `TH.AppT` typt)
       [ TH.TySynInstD ''PGRepType $ TH.TySynEqn [typt] typl
       ]

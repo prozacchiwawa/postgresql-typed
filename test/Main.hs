@@ -36,7 +36,7 @@ useTPGDatabase db
 
 dataPGEnum "MyEnum" "myenum" ("MyEnum_" ++)
 
-dataPGTable "MyFoo" "myfoo" (\(c:s) -> "foo" ++ toUpper c : s)
+dataPGRelation "MyFoo" "myfoo" (\(c:s) -> "foo" ++ toUpper c : s)
 
 _fooRow :: MyFoo
 _fooRow = MyFoo{ fooId = 1, fooAdx = Just MyEnum_DEF, fooBar = Just "abcd" }

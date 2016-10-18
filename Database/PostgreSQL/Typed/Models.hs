@@ -1,7 +1,11 @@
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
+#if __GLASGOW_HASKELL__ >= 800
+{-# LANGUAGE UndecidableSuperClasses #-}
+#endif
 -- |
 -- Module: Database.PostgreSQL.Typed.Models
 -- Copyright: 2016 Dylan Simon
@@ -9,7 +13,7 @@
 -- Automatically create data models based on tables.
 
 module Database.PostgreSQL.Typed.Models
-  ( dataPGTable
+  ( dataPGRelation
   ) where
 
 import qualified Data.ByteString.Lazy as BSL
@@ -21,9 +25,14 @@ import           Database.PostgreSQL.Typed.Protocol
 import           Database.PostgreSQL.Typed.TypeCache
 import           Database.PostgreSQL.Typed.TH
 
--- |Create a new data type corresponding to the given PostgreSQL table.
--- For example, if you have @CREATE TABLE foo (abc integer NOT NULL, def text);@, then
--- @dataPGTable \"Foo\" \"foo\" (\"foo_\"++)@ will be equivalent to:
+-- |Data types  that are based on database relations.
+class (PGRep a, PGRecordType (PGRepType a)) => PGRelation a where
+  -- |Database names of columns. Argument value is ignored.
+  pgColumnNames :: a -> [String]
+
+-- |Create a new data type corresponding to the given PostgreSQL relation.
+-- For example, if you have @CREATE TABLE foo (abc integer NOT NULL, def text)@, then
+-- @dataPGRelation \"Foo\" \"foo\" (\"foo_\"++)@ will be equivalent to:
 -- 
 -- > data Foo = Foo{ foo_abc :: PGVal "integer", foo_def :: Maybe (PGVal "text") }
 -- > instance PGType "foo" where PGVal "foo" = Foo
@@ -32,6 +41,7 @@ import           Database.PostgreSQL.Typed.TH
 -- > instance PGColumn "foo" (Maybe Foo) where ... -- to handle NULL in not null columns
 -- > instance PGRep Foo where PGRepType = "foo"
 -- > instance PGRecordType "foo"
+-- > instance PGRelation Foo where pgColumnNames _ = ["abc", "def"]
 -- > uncurryFoo :: (PGVal "integer", Maybe (PGVal "text")) -> Foo
 --
 -- (Note that @PGVal "integer" = Int32@ and @PGVal "text" = Text@ by default.)
@@ -39,16 +49,16 @@ import           Database.PostgreSQL.Typed.TH
 -- If you want any derived instances, you'll need to create them yourself using StandaloneDeriving.
 --
 -- Requires language extensions: TemplateHaskell, FlexibleInstances, MultiParamTypeClasses, DataKinds, TypeFamilies, PatternGuards
-dataPGTable :: String -- ^ Haskell type and constructor to create 
+dataPGRelation :: String -- ^ Haskell type and constructor to create 
   -> String -- ^ PostgreSQL table/relation name
   -> (String -> String) -- ^ How to generate field names from column names, e.g. @("table_" ++)@
   -> TH.DecsQ
-dataPGTable typs pgtab colf = do
+dataPGRelation typs pgtab colf = do
   (pgid, cold) <- TH.runIO $ withTPGTypeConnection $ \tpg -> do
     cl <- mapM (\[to, cn, ct, cnn] -> do
       let n = pgDecodeRep cn
           o = pgDecodeRep ct
-      t <- maybe (fail $ "dataPGTable " ++ typs ++ " = " ++ pgtab ++ ": column '" ++ n ++ "' has unknown type " ++ show o) return
+      t <- maybe (fail $ "dataPGRelation " ++ typs ++ " = " ++ pgtab ++ ": column '" ++ n ++ "' has unknown type " ++ show o) return
         =<< lookupPGType tpg o
       return (pgDecodeRep to, (n, TH.LitT (TH.StrTyLit t), pgDecodeRep cnn)))
       . snd =<< pgSimpleQuery (pgConnection tpg) (BSL.fromChunks
@@ -60,9 +70,9 @@ dataPGTable typs pgtab colf = do
         , " ORDER BY attnum"
         ])
     case cl of
-      [] -> fail $ "dataPGTable " ++ typs ++ " = " ++ pgtab ++ ": no columns found"
+      [] -> fail $ "dataPGRelation " ++ typs ++ " = " ++ pgtab ++ ": no columns found"
       (to, _):_ -> do
-        tt <- maybe (fail $ "dataPGTable " ++ typs ++ " = " ++ pgtab ++ ": table type not found (you may need to use reloadTPGTypes or adjust search_path)") return
+        tt <- maybe (fail $ "dataPGRelation " ++ typs ++ " = " ++ pgtab ++ ": table type not found (you may need to use reloadTPGTypes or adjust search_path)") return
           =<< lookupPGType tpg to
         return (tt, map snd cl)
   cols <- mapM (\(n, t, nn) -> do
@@ -145,6 +155,11 @@ dataPGTable typs pgtab colf = do
       [ TH.TySynInstD ''PGRepType $ TH.TySynEqn [typt] typl
       ]
     , instanceD [] (TH.ConT ''PGRecordType `TH.AppT` typl) []
+    , instanceD [] (TH.ConT ''PGRelation `TH.AppT` typt)
+      [ TH.FunD 'pgColumnNames [TH.Clause [TH.WildP]
+        (TH.NormalB $ TH.ListE $ map (\(n, _, _) -> TH.LitE $ TH.StringL n) cold)
+        [] ]
+      ]
     , TH.SigD (TH.mkName ("uncurry" ++ typs)) $ TH.ArrowT `TH.AppT`
       foldl (\f (_, t, n) -> f `TH.AppT`
           (if n then (TH.ConT ''Maybe `TH.AppT`) else id)

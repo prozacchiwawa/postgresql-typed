@@ -1,5 +1,8 @@
 {-# LANGUAGE CPP, TemplateHaskell, FlexibleInstances, MultiParamTypeClasses, DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
+#if __GLASGOW_HASKELL__ >= 800
+{-# LANGUAGE UndecidableSuperClasses #-}
+#endif
 -- |
 -- Module: Database.PostgreSQL.Typed.Enum
 -- Copyright: 2015 Dylan Simon
@@ -27,14 +30,14 @@ import Database.PostgreSQL.Typed.TypeCache
 import Database.PostgreSQL.Typed.TH
 
 -- |A type based on a PostgreSQL enum. Automatically instantiated by 'dataPGEnum'.
-class (Eq a, Ord a, Enum a, Bounded a, Show a) => PGEnum a
+class (Eq a, Ord a, Enum a, Bounded a, Show a, PGRep a) => PGEnum a
 
 -- |List of all the values in the enum along with their database names.
 pgEnumValues :: PGEnum a => [(a, String)]
 pgEnumValues = map (\e -> (e, show e)) $ enumFromTo minBound maxBound
 
 -- |Create a new enum type corresponding to the given PostgreSQL enum type.
--- For example, if you have @CREATE TYPE foo AS ENUM (\'abc\', \'DEF\');@, then
+-- For example, if you have @CREATE TYPE foo AS ENUM (\'abc\', \'DEF\')@, then
 -- @dataPGEnum \"Foo\" \"foo\" (\"Foo_\"++)@ will be equivalent to:
 -- 
 -- > data Foo = Foo_abc | Foo_DEF deriving (Eq, Ord, Enum, Bounded, Typeable)

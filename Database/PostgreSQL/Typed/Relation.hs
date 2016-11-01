@@ -7,12 +7,12 @@
 {-# LANGUAGE UndecidableSuperClasses #-}
 #endif
 -- |
--- Module: Database.PostgreSQL.Typed.Models
+-- Module: Database.PostgreSQL.Typed.Relation
 -- Copyright: 2016 Dylan Simon
 -- 
 -- Automatically create data models based on tables.
 
-module Database.PostgreSQL.Typed.Models
+module Database.PostgreSQL.Typed.Relation
   ( dataPGRelation
   ) where
 

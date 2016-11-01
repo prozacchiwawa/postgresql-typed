@@ -81,7 +81,7 @@ Library
     Database.PostgreSQL.Typed.TemplatePG
     Database.PostgreSQL.Typed.SQLToken
     Database.PostgreSQL.Typed.ErrCodes
-    Database.PostgreSQL.Typed.Models
+    Database.PostgreSQL.Typed.Relation
   Other-Modules:
     Paths_postgresql_typed
     Database.PostgreSQL.Typed.TypeCache

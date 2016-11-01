@@ -19,7 +19,7 @@ import qualified Database.PostgreSQL.Typed.Range as Range
 import Database.PostgreSQL.Typed.Enum
 import Database.PostgreSQL.Typed.Inet
 import Database.PostgreSQL.Typed.SQLToken
-import Database.PostgreSQL.Typed.Models
+import Database.PostgreSQL.Typed.Relation
 
 import Connect
 

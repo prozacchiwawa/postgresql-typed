@@ -170,6 +170,13 @@ newName :: Char -> BS.ByteString -> TH.Q TH.Name
 newName pre = TH.newName . ('_':) . (pre:) . filter (\c -> isAlphaNum c || c == '_') . BSC.unpack
 
 -- |Construct a 'PGQuery' from a SQL string.
+-- This is the underlying template function for 'pgSQL' which you can use in largely the same way when you want to construct query strings from other variables.
+-- For example:
+--
+-- > selectQuery = "SELECT * FROM"
+-- > selectFoo = $(makePGQuery simpleQueryFlags (selectQuery ++ " foo"))
+--
+-- The only caveat is that variables or functions like @selectQuery@ need to be defined in a different module (due to TH stage restrictions).
 makePGQuery :: QueryFlags -> String -> TH.ExpQ
 makePGQuery QueryFlags{ flagQuery = False } sqle = pgSubstituteLiterals sqle
 makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
@@ -257,6 +264,8 @@ qqTop err sql = do
 -- 
 -- 'pgSQL' can also be used at the top-level to execute SQL statements at compile-time (without any parameters and ignoring results).
 -- Here the query can only be prefixed with @!@ to make errors non-fatal.
+--
+-- If you want to construct queries out of string variables rather than quasi-quoted strings, you can use the lower-level 'makePGQuery' instead.
 pgSQL :: QuasiQuoter
 pgSQL = QuasiQuoter
   { quoteExp = qqQuery

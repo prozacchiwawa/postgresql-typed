@@ -25,8 +25,12 @@ import           Database.PostgreSQL.Typed.Protocol
 import           Database.PostgreSQL.Typed.TypeCache
 import           Database.PostgreSQL.Typed.TH
 
--- |Data types  that are based on database relations.
+-- |Data types that are based on database relations.
+-- Normally these instances are created using 'dataPGRelation'.
 class (PGRep a, PGRecordType (PGRepType a)) => PGRelation a where
+  -- |Database name of table/relation (i.e., second argument to 'dataPGRelation').  Normally this is the same as @'pgTypeID' . 'pgTypeOf'@, but this preserves any specified schema qualification.  Argument value is ignored.
+  pgRelationName :: a -> String
+  pgRelationName = pgTypeID . pgTypeOf
   -- |Database names of columns. Argument value is ignored.
   pgColumnNames :: a -> [String]
 
@@ -156,7 +160,10 @@ dataPGRelation typs pgtab colf = do
       ]
     , instanceD [] (TH.ConT ''PGRecordType `TH.AppT` typl) []
     , instanceD [] (TH.ConT ''PGRelation `TH.AppT` typt)
-      [ TH.FunD 'pgColumnNames [TH.Clause [TH.WildP]
+      [ TH.FunD 'pgRelationName [TH.Clause [TH.WildP]
+        (TH.NormalB $ TH.LitE $ TH.StringL pgtab)
+        [] ]
+      , TH.FunD 'pgColumnNames [TH.Clause [TH.WildP]
         (TH.NormalB $ TH.ListE $ map (\(n, _, _) -> TH.LitE $ TH.StringL n) cold)
         [] ]
       ]

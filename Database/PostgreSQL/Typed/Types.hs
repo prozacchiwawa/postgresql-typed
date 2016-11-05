@@ -117,7 +117,8 @@ unknownPGTypeEnv = PGTypeEnv
   { pgIntegerDatetimes = Nothing
   }
 
--- |A proxy type for PostgreSQL types.  The type argument should be an (internal) name of a database type (see @\\dT+@).
+-- |A proxy type for PostgreSQL types.  The type argument should be an (internal) name of a database type, as per @format_type(OID)@ (usually the same as @\\dT+@).
+-- When the type's namespace (schema) is not in @search_path@, this will be explicitly qualified, so you should be sure to have a consistent @search_path@ for all database connections.
 data PGTypeID (t :: Symbol) = PGTypeProxy
 
 -- |A valid PostgreSQL type, its metadata, and corresponding Haskell representation.

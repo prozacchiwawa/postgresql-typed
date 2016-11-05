@@ -46,7 +46,7 @@ flushPGTypeConnection c =
 pgGetTypes :: PGConnection -> IO PGTypes
 pgGetTypes c =
   IntMap.fromAscList . map (\[to, tn] -> (fromIntegral (pgDecodeRep to :: OID), pgDecodeRep tn)) .
-    snd <$> pgSimpleQuery c "SELECT typ.oid, format_type(CASE WHEN typtype = 'd' THEN typbasetype ELSE typ.oid END, -1) FROM pg_catalog.pg_type typ JOIN pg_catalog.pg_namespace nsp ON typnamespace = nsp.oid WHERE nspname = ANY (current_schemas(true)) ORDER BY typ.oid"
+    snd <$> pgSimpleQuery c "SELECT oid, format_type(CASE WHEN typtype = 'd' THEN typbasetype ELSE oid END, -1) FROM pg_catalog.pg_type ORDER BY oid"
 
 -- |Get a cached map of types.
 getPGTypes :: PGTypeConnection -> IO PGTypes

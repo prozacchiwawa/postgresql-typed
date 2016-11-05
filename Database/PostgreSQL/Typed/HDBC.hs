@@ -105,7 +105,7 @@ connect d = sqlError $ do
 reloadTypes :: Connection -> IO Connection
 reloadTypes c = withPGConnection c $ \pg -> do
   t <- pgGetTypes pg
-  return c{ connectionTypes = IntMap.map (sqlType $ pgTypeEnv pg) t }
+  return c{ connectionTypes = IntMap.map (sqlType (pgTypeEnv pg) . pgNameString) t }
 
 -- |Change the 'connectionFetchSize' for new 'HDBC.Statement's created with 'HDBC.prepare'.
 -- Ideally this could be set with each call to 'HDBC.execute' and 'HDBC.fetchRow', but the HDBC interface provides no way to do this.

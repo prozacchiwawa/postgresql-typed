@@ -12,6 +12,7 @@
 module Database.PostgreSQL.Typed.Dynamic 
   ( PGRep(..)
   , pgTypeOf
+  , pgTypeOfProxy
   , pgEncodeRep
   , pgDecodeRep
   , pgLiteralRep
@@ -30,8 +31,9 @@ import qualified Data.Aeson as JSON
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BSL
-import Data.Monoid ((<>))
 import Data.Int
+import Data.Monoid ((<>))
+import Data.Proxy (Proxy)
 #ifdef VERSION_scientific
 import Data.Scientific (Scientific)
 #endif
@@ -58,6 +60,9 @@ class (PGParameter (PGRepType a) a, PGColumn (PGRepType a) a) => PGRep a where
 pgTypeOf :: a -> PGTypeID (PGRepType a)
 pgTypeOf _ = PGTypeProxy
 
+pgTypeOfProxy :: Proxy a -> PGTypeID (PGRepType a)
+pgTypeOfProxy _ = PGTypeProxy
+
 -- |Encode a value using 'pgEncodeValue'.
 pgEncodeRep :: PGRep a => a -> PGValue
 pgEncodeRep x = pgEncodeValue unknownPGTypeEnv (pgTypeOf x) x
@@ -76,11 +81,11 @@ pgLiteralString = BSC.unpack . pgLiteralRep
 
 -- |Produce a safely type-cast literal value for interpolation in a SQL statement, e.g., "'123'::integer".
 pgSafeLiteral :: PGRep a => a -> BS.ByteString
-pgSafeLiteral x = pgLiteralRep x <> BSC.pack "::" <> fromString (pgTypeID (pgTypeOf x))
+pgSafeLiteral x = pgLiteralRep x <> BSC.pack "::" <> pgNameBS (pgTypeName (pgTypeOf x))
 
 -- |Identical to @'BSC.unpack' . 'pgSafeLiteral'@ but more efficient.
 pgSafeLiteralString :: PGRep a => a -> String
-pgSafeLiteralString x = pgLiteralString x ++ "::" ++ pgTypeID (pgTypeOf x)
+pgSafeLiteralString x = pgLiteralString x ++ "::" ++ BSC.unpack (pgNameBS (pgTypeName (pgTypeOf x)))
 
 instance PGRep a => PGRep (Maybe a) where
   type PGRepType (Maybe a) = PGRepType a
@@ -107,6 +112,8 @@ instance PGRep String where
   type PGRepType String = "text"
 instance PGRep BS.ByteString where
   type PGRepType BS.ByteString = "text"
+instance PGRep PGName where
+  type PGRepType PGName = "text" -- superset of "name"
 #ifdef VERSION_text
 instance PGRep T.Text where
   type PGRepType T.Text = "text"

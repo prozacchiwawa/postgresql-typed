@@ -10,13 +10,15 @@
 -- Module: Database.PostgreSQL.Typed.Relation
 -- Copyright: 2016 Dylan Simon
 -- 
--- Automatically create data models based on tables.
+-- Automatically create data types based on tables and other relations.
 
 module Database.PostgreSQL.Typed.Relation
   ( dataPGRelation
   ) where
 
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
+import           Data.Proxy (Proxy(..))
 import qualified Language.Haskell.TH as TH
 
 import           Database.PostgreSQL.Typed.Types
@@ -28,11 +30,11 @@ import           Database.PostgreSQL.Typed.TH
 -- |Data types that are based on database relations.
 -- Normally these instances are created using 'dataPGRelation'.
 class (PGRep a, PGRecordType (PGRepType a)) => PGRelation a where
-  -- |Database name of table/relation (i.e., second argument to 'dataPGRelation').  Normally this is the same as @'pgTypeID' . 'pgTypeOf'@, but this preserves any specified schema qualification.  Argument value is ignored.
-  pgRelationName :: a -> String
-  pgRelationName = pgTypeID . pgTypeOf
-  -- |Database names of columns. Argument value is ignored.
-  pgColumnNames :: a -> [String]
+  -- |Database name of table/relation (i.e., second argument to 'dataPGRelation').  Normally this is the same as @'pgTypeID' . 'pgTypeOfProxy'@, but this preserves any specified schema qualification.
+  pgRelationName :: Proxy a -> PGName
+  pgRelationName = pgTypeName . pgTypeOfProxy
+  -- |Database names of columns.
+  pgColumnNames :: Proxy a -> [PGName]
 
 -- |Create a new data type corresponding to the given PostgreSQL relation.
 -- For example, if you have @CREATE TABLE foo (abc integer NOT NULL, def text)@, then
@@ -54,17 +56,17 @@ class (PGRep a, PGRecordType (PGRepType a)) => PGRelation a where
 --
 -- Requires language extensions: TemplateHaskell, FlexibleInstances, MultiParamTypeClasses, DataKinds, TypeFamilies, PatternGuards
 dataPGRelation :: String -- ^ Haskell type and constructor to create 
-  -> String -- ^ PostgreSQL table/relation name
-  -> (String -> String) -- ^ How to generate field names from column names, e.g. @("table_" ++)@
+  -> PGName -- ^ PostgreSQL table/relation name
+  -> (String -> String) -- ^ How to generate field names from column names, e.g. @("table_"++)@ (input is 'pgNameString')
   -> TH.DecsQ
 dataPGRelation typs pgtab colf = do
   (pgid, cold) <- TH.runIO $ withTPGTypeConnection $ \tpg -> do
     cl <- mapM (\[to, cn, ct, cnn] -> do
       let n = pgDecodeRep cn
           o = pgDecodeRep ct
-      t <- maybe (fail $ "dataPGRelation " ++ typs ++ " = " ++ pgtab ++ ": column '" ++ n ++ "' has unknown type " ++ show o) return
+      t <- maybe (fail $ "dataPGRelation " ++ typs ++ " = " ++ show pgtab ++ ": column '" ++ show n ++ "' has unknown type " ++ show o) return
         =<< lookupPGType tpg o
-      return (pgDecodeRep to, (n, TH.LitT (TH.StrTyLit t), pgDecodeRep cnn)))
+      return (pgDecodeRep to, (n, TH.LitT (TH.StrTyLit $ pgNameString t), pgDecodeRep cnn)))
       . snd =<< pgSimpleQuery (pgConnection tpg) (BSL.fromChunks
         [ "SELECT reltype, attname, atttypid, attnotnull"
         ,  " FROM pg_catalog.pg_attribute"
@@ -74,16 +76,16 @@ dataPGRelation typs pgtab colf = do
         , " ORDER BY attnum"
         ])
     case cl of
-      [] -> fail $ "dataPGRelation " ++ typs ++ " = " ++ pgtab ++ ": no columns found"
+      [] -> fail $ "dataPGRelation " ++ typs ++ " = " ++ show pgtab ++ ": no columns found"
       (to, _):_ -> do
-        tt <- maybe (fail $ "dataPGRelation " ++ typs ++ " = " ++ pgtab ++ ": table type not found (you may need to use reloadTPGTypes or adjust search_path)") return
+        tt <- maybe (fail $ "dataPGRelation " ++ typs ++ " = " ++ show pgtab ++ ": table type not found (you may need to use reloadTPGTypes or adjust search_path)") return
           =<< lookupPGType tpg to
         return (tt, map snd cl)
   cols <- mapM (\(n, t, nn) -> do
-      v <- TH.newName n
+      v <- TH.newName $ pgNameString n
       return (v, t, not nn))
     cold
-  let typl = TH.LitT (TH.StrTyLit pgid)
+  let typl = TH.LitT (TH.StrTyLit $ pgNameString pgid)
       encfun f = TH.FunD f [TH.Clause [TH.WildP, TH.ConP typn (map (\(v, _, _) -> TH.VarP v) cols)]
         (TH.NormalB $ pgcall f rect `TH.AppE`
           (TH.ConE 'PGRecord `TH.AppE` TH.ListE (map (colenc f) cols)))
@@ -100,7 +102,7 @@ dataPGRelation typs pgtab colf = do
       Nothing
 #endif
       [ TH.RecC typn $ map (\(n, t, nn) ->
-        ( TH.mkName (colf n)
+        ( TH.mkName (colf $ pgNameString n)
 #if MIN_VERSION_template_haskell(2,11,0)
         , TH.Bang TH.NoSourceUnpackedness TH.NoSourceStrictness
 #else
@@ -161,10 +163,10 @@ dataPGRelation typs pgtab colf = do
     , instanceD [] (TH.ConT ''PGRecordType `TH.AppT` typl) []
     , instanceD [] (TH.ConT ''PGRelation `TH.AppT` typt)
       [ TH.FunD 'pgRelationName [TH.Clause [TH.WildP]
-        (TH.NormalB $ TH.LitE $ TH.StringL pgtab)
+        (TH.NormalB $ namelit pgtab)
         [] ]
       , TH.FunD 'pgColumnNames [TH.Clause [TH.WildP]
-        (TH.NormalB $ TH.ListE $ map (\(n, _, _) -> TH.LitE $ TH.StringL n) cold)
+        (TH.NormalB $ TH.ListE $ map (\(n, _, _) -> namelit n) cold)
         [] ]
       ]
     , TH.SigD (TH.mkName ("uncurry" ++ typs)) $ TH.ArrowT `TH.AppT`
@@ -196,3 +198,5 @@ dataPGRelation typs pgtab colf = do
   coldec (v, t, False) = pgcall 'pgDecode t `TH.AppE` TH.VarE v
   coldec (v, t, True) = TH.VarE 'fmap `TH.AppE` pgcall 'pgDecode t `TH.AppE` TH.VarE v
   rect = TH.LitT $ TH.StrTyLit "record"
+  namelit n = TH.ConE 'PGName `TH.AppE`
+    (TH.VarE 'BS.pack `TH.AppE` TH.ListE (map (TH.LitE . TH.IntegerL . fromIntegral) $ BS.unpack $ pgNameBS n))

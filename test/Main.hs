@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, FlexibleInstances, MultiParamTypeClasses, DataKinds, DeriveDataTypeable, TypeFamilies, PatternGuards #-}
+{-# LANGUAGE OverloadedStrings, FlexibleInstances, MultiParamTypeClasses, DataKinds, DeriveDataTypeable, TypeFamilies, PatternGuards, StandaloneDeriving #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 --{-# OPTIONS_GHC -ddump-splices #-}
 module Main (main) where
@@ -35,6 +35,8 @@ useTPGDatabase db
 [pgSQL|!CREATE TABLE myfoo (id serial primary key, adx myenum, bar char(4))|]
 
 dataPGEnum "MyEnum" "myenum" ("MyEnum_" ++)
+
+deriving instance Show MyEnum
 
 dataPGRelation "MyFoo" "myfoo" (\(c:s) -> "foo" ++ toUpper c : s)
 

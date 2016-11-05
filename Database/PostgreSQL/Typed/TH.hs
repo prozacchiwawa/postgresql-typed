@@ -31,6 +31,7 @@ import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.UTF8 as BSU
 import qualified Data.Foldable as Fold
 import Data.Maybe (isJust, fromMaybe)
+import Data.String (fromString)
 import qualified Data.Traversable as Tv
 import qualified Language.Haskell.TH as TH
 import Network (PortID(UnixSocket, PortNumber), PortNumber)
@@ -102,28 +103,28 @@ reloadTPGTypes = TH.runIO $ [] <$ withMVar tpgState (mapM_ flushPGTypeConnection
 
 -- |Lookup a type name by OID.
 -- Error if not found.
-tpgType :: PGTypeConnection -> OID -> IO PGTypeName
+tpgType :: PGTypeConnection -> OID -> IO PGName
 tpgType c o =
   maybe (fail $ "Unknown PostgreSQL type: " ++ show o ++ "\nYou may need to use reloadTPGTypes or adjust search_path, or your postgresql-typed application may need to be rebuilt.") return =<< lookupPGType c o
 
 -- |Lookup a type OID by type name.
 -- This is less common and thus less efficient than going the other way.
 -- Fail if not found.
-getTPGTypeOID :: PGTypeConnection -> PGTypeName -> IO OID
+getTPGTypeOID :: PGTypeConnection -> PGName -> IO OID
 getTPGTypeOID c t =
-  maybe (fail $ "Unknown PostgreSQL type: " ++ t ++ "; be sure to use the exact type name from \\dTS") return =<< findPGType c t
+  maybe (fail $ "Unknown PostgreSQL type: " ++ show t ++ "; be sure to use the exact type name from \\dTS") return =<< findPGType c t
 
 data TPGValueInfo = TPGValueInfo
   { tpgValueName :: BS.ByteString
   , tpgValueTypeOID :: !OID
-  , tpgValueType :: PGTypeName
+  , tpgValueType :: PGName
   , tpgValueNullable :: Bool
   }
 
 -- |A type-aware wrapper to 'pgDescribe'
 tpgDescribe :: BS.ByteString -> [String] -> Bool -> IO ([TPGValueInfo], [TPGValueInfo])
 tpgDescribe sql types nulls = withTPGTypeConnection $ \tpg -> do
-  at <- mapM (getTPGTypeOID tpg) types
+  at <- mapM (getTPGTypeOID tpg . fromString) types
   (pt, rt) <- pgDescribe (pgConnection tpg) (BSL.fromStrict sql) at nulls
   (,)
     <$> mapM (\o -> do
@@ -143,10 +144,10 @@ tpgDescribe sql types nulls = withTPGTypeConnection $ \tpg -> do
         , tpgValueNullable = n && o /= 2278 -- "void"
         }) rt
 
-typeApply :: PGTypeName -> TH.Name -> TH.Name -> TH.Exp
+typeApply :: PGName -> TH.Name -> TH.Name -> TH.Exp
 typeApply t f e =
   TH.VarE f `TH.AppE` TH.VarE e
-    `TH.AppE` (TH.ConE 'PGTypeProxy `TH.SigE` (TH.ConT ''PGTypeID `TH.AppT` TH.LitT (TH.StrTyLit t)))
+    `TH.AppE` (TH.ConE 'PGTypeProxy `TH.SigE` (TH.ConT ''PGTypeID `TH.AppT` TH.LitT (TH.StrTyLit $ pgNameString $ t)))
 
 
 -- |TH expression to encode a 'PGParameter' value to a 'Maybe' 'L.ByteString'.

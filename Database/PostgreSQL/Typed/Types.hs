@@ -18,8 +18,8 @@ module Database.PostgreSQL.Typed.Types
   , PGValue(..)
   , PGValues
   , PGTypeID(..)
-  , PGTypeEnv(..)
-  , unknownPGTypeEnv
+  , PGTypeEnv(..), unknownPGTypeEnv
+  , PGName(..), pgNameString
   , PGRecord(..)
 
   -- * Marshalling classes
@@ -71,6 +71,7 @@ import Data.Ratio ((%), numerator, denominator)
 #ifdef VERSION_scientific
 import Data.Scientific (Scientific)
 #endif
+import Data.String (IsString(..))
 #ifdef VERSION_text
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -117,8 +118,22 @@ unknownPGTypeEnv = PGTypeEnv
   { pgIntegerDatetimes = Nothing
   }
 
+-- |A PostgreSQL literal identifier, generally corresponding to the \"name\" type (63-byte strings), but as it would be entered in a query, so may include double-quoting for special characters or schema-qualification.
+newtype PGName = PGName{ pgNameBS :: BS.ByteString }
+  deriving (Eq, Ord)
+
+-- Applies utf-8 encoding.
+instance IsString PGName where
+  fromString = PGName . BSU.fromString
+instance Show PGName where
+  show = pgNameString
+
+pgNameString :: PGName -> String
+pgNameString = BSU.toString . pgNameBS
+
 -- |A proxy type for PostgreSQL types.  The type argument should be an (internal) name of a database type, as per @format_type(OID)@ (usually the same as @\\dT+@).
 -- When the type's namespace (schema) is not in @search_path@, this will be explicitly qualified, so you should be sure to have a consistent @search_path@ for all database connections.
+-- The underlying 'Symbol' should be considered a lifted 'PGName'.
 data PGTypeID (t :: Symbol) = PGTypeProxy
 
 -- |A valid PostgreSQL type, its metadata, and corresponding Haskell representation.
@@ -132,8 +147,8 @@ class (KnownSymbol t
   -- |The default, native Haskell representation of this type, which should be as close as possible to the PostgreSQL representation.
   type PGVal t :: *
   -- |The string name of this type: specialized version of 'symbolVal'.
-  pgTypeID :: PGTypeID t -> String
-  pgTypeID = symbolVal
+  pgTypeName :: PGTypeID t -> PGName
+  pgTypeName = fromString . symbolVal
   -- |Does this type support binary decoding?
   -- If so, 'pgDecodeBinary' must be implemented for every 'PGColumn' instance of this type.
   pgBinaryColumn :: PGTypeEnv -> PGTypeID t -> Bool
@@ -159,14 +174,14 @@ class PGType t => PGColumn t a where
   -- |Decode the PostgreSQL binary representation into a value.
   -- Only needs to be implemented if 'pgBinaryColumn' is true.
   pgDecodeBinary :: PGTypeEnv -> PGTypeID t -> PGBinaryValue -> a
-  pgDecodeBinary _ t _ = error $ "pgDecodeBinary " ++ pgTypeID t ++ ": not supported"
+  pgDecodeBinary _ t _ = error $ "pgDecodeBinary " ++ pgNameString (pgTypeName t) ++ ": not supported"
   pgDecodeValue :: PGTypeEnv -> PGTypeID t -> PGValue -> a
   pgDecodeValue _ t (PGTextValue v) = pgDecode t v
   pgDecodeValue e t (PGBinaryValue v) = pgDecodeBinary e t v
-  pgDecodeValue _ t PGNullValue = error $ "NULL in " ++ pgTypeID t ++ " column (use Maybe or COALESCE)"
+  pgDecodeValue _ t PGNullValue = error $ "NULL in " ++ pgNameString (pgTypeName t) ++ " column (use Maybe or COALESCE)"
 
 instance PGParameter t a => PGParameter t (Maybe a) where
-  pgEncode t = maybe (error $ "pgEncode " ++ pgTypeID t ++ ": Nothing") (pgEncode t)
+  pgEncode t = maybe (error $ "pgEncode " ++ pgNameString (pgTypeName t) ++ ": Nothing") (pgEncode t)
   pgLiteral = maybe (BSC.pack "NULL") . pgLiteral
   pgEncodeValue e = maybe PGNullValue . pgEncodeValue e
 
@@ -234,7 +249,7 @@ parsePGDQuote blank unsafe isnul = (Just <$> q) <> (mnul <$> uq) where
 
 #ifdef VERSION_postgresql_binary
 binDec :: PGType t => BinD.Decoder a -> PGTypeID t -> PGBinaryValue -> a
-binDec d t = either (\e -> error $ "pgDecodeBinary " ++ pgTypeID t ++ ": " ++ show e) id . BinD.run d
+binDec d t = either (\e -> error $ "pgDecodeBinary " ++ pgNameString (pgTypeName t) ++ ": " ++ show e) id . BinD.run d
 
 #define BIN_COL pgBinaryColumn _ _ = True
 #define BIN_ENC(F) pgEncodeValue _ _ = PGBinaryValue . buildPGValue . (F)
@@ -396,6 +411,21 @@ instance
     PGStringType t => PGColumn t BS.ByteString where
   pgDecode _ = id
   BIN_DEC(TE.encodeUtf8 <$> BinD.text_strict)
+
+instance
+#if __GLASGOW_HASKELL__ >= 710
+    {-# OVERLAPPABLE #-}
+#endif
+    PGStringType t => PGParameter t PGName where
+  pgEncode _ = pgNameBS
+  BIN_ENC(BinE.text_strict . TE.decodeUtf8 . pgNameBS)
+instance
+#if __GLASGOW_HASKELL__ >= 710
+    {-# OVERLAPPABLE #-}
+#endif
+    PGStringType t => PGColumn t PGName where
+  pgDecode _ = PGName
+  BIN_DEC(PGName . TE.encodeUtf8 <$> BinD.text_strict)
 
 instance
 #if __GLASGOW_HASKELL__ >= 710

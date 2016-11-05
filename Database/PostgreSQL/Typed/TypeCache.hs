@@ -1,7 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Database.PostgreSQL.Typed.TypeCache
-  ( PGTypeName
-  , PGTypes
+  ( PGTypes
   , pgGetTypes
   , PGTypeConnection
   , pgConnection
@@ -15,15 +14,12 @@ import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import qualified Data.IntMap as IntMap
 import Data.List (find)
 
-import Database.PostgreSQL.Typed.Types (OID)
+import Database.PostgreSQL.Typed.Types (PGName, OID)
 import Database.PostgreSQL.Typed.Dynamic
 import Database.PostgreSQL.Typed.Protocol
 
--- |A particular PostgreSQL type, identified by full formatted name (from @format_type@ or @\\dT@).
-type PGTypeName = String
-
 -- |Map keyed on fromIntegral OID.
-type PGTypes = IntMap.IntMap PGTypeName
+type PGTypes = IntMap.IntMap PGName
 
 -- |A 'PGConnection' along with cached information about types.
 data PGTypeConnection = PGTypeConnection
@@ -60,12 +56,12 @@ getPGTypes (PGTypeConnection c tr) =
 
 -- |Lookup a type name by OID.
 -- This is an efficient, often pure operation.
-lookupPGType :: PGTypeConnection -> OID -> IO (Maybe PGTypeName)
+lookupPGType :: PGTypeConnection -> OID -> IO (Maybe PGName)
 lookupPGType c o =
   IntMap.lookup (fromIntegral o) <$> getPGTypes c
 
 -- |Lookup a type OID by type name.
 -- This is less common and thus less efficient than going the other way.
-findPGType :: PGTypeConnection -> PGTypeName -> IO (Maybe OID)
+findPGType :: PGTypeConnection -> PGName -> IO (Maybe OID)
 findPGType c t =
   fmap (fromIntegral . fst) . find ((==) t . snd) . IntMap.toList <$> getPGTypes c

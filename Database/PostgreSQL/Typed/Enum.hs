@@ -69,15 +69,15 @@ dataPGEnum typs pgenum valnf = do
         , " ORDER BY enumsortorder"
         ])
     case vals of
-      [] -> fail $ "dataPGEnum " ++ typs ++ " = " ++ pgNameString pgenum ++ ": no values found"
+      [] -> fail $ "dataPGEnum " ++ typs ++ " = " ++ show pgenum ++ ": no values found"
       (eo, _):_ -> do
-        et <- maybe (fail $ "dataPGEnum " ++ typs ++ " = " ++ pgNameString pgenum ++ ": enum type not found (you may need to use reloadTPGTypes or adjust search_path)") return
+        et <- maybe (fail $ "dataPGEnum " ++ typs ++ " = " ++ show pgenum ++ ": enum type not found (you may need to use reloadTPGTypes or adjust search_path)") return
           =<< lookupPGType tpg eo
         return (et, map snd vals)
-  let valn = map (TH.mkName . valnf . pgNameString &&& map (TH.IntegerL . fromIntegral) . BS.unpack . pgNameBS) vals
+  let valn = map (TH.mkName . valnf . pgNameString &&& map (TH.IntegerL . fromIntegral) . pgNameBytes) vals
       typl = TH.LitT (TH.StrTyLit $ pgNameString pgid)
   dv <- TH.newName "x"
-  return
+  return $
     [ TH.DataD [] typn []
 #if MIN_VERSION_template_haskell(2,11,0)
       Nothing
@@ -97,10 +97,11 @@ dataPGEnum typs pgenum valnf = do
       ]
     , instanceD [] (TH.ConT ''PGColumn `TH.AppT` typl `TH.AppT` typt)
       [ TH.FunD 'pgDecode [TH.Clause [TH.WildP, TH.VarP dv]
-        (TH.NormalB $ TH.VarE 'fromMaybe `TH.AppE` 
-          (TH.AppE (TH.VarE 'error) $
-            TH.InfixE (Just $ TH.LitE (TH.StringL ("pgEnumValue " ++ pgNameString pgid ++ ": "))) (TH.VarE '(++)) (Just $ TH.VarE 'BSC.unpack `TH.AppE` TH.VarE dv))
-          `TH.AppE` (TH.VarE 'pgEnumValue `TH.AppE` (TH.ConE 'PGName `TH.AppE` TH.VarE dv)))
+        (TH.NormalB $ TH.VarE 'fromMaybe
+          `TH.AppE` (TH.AppE (TH.VarE 'error) $
+            TH.InfixE (Just $ TH.LitE (TH.StringL ("pgEnumValue " ++ show pgid ++ ": "))) (TH.VarE '(++)) (Just $ TH.VarE 'BSC.unpack `TH.AppE` TH.VarE dv))
+          `TH.AppE` (TH.VarE 'pgEnumValue `TH.AppE` (TH.ConE 'PGName
+            `TH.AppE` (TH.VarE 'BS.unpack `TH.AppE` TH.VarE dv))))
         []]
       ]
     , instanceD [] (TH.ConT ''PGRep `TH.AppT` typt)
@@ -110,18 +111,20 @@ dataPGEnum typs pgenum valnf = do
       [ TH.FunD 'pgEnumName $ map (\(n, l) -> TH.Clause [TH.ConP n []]
         (TH.NormalB $ namelit l)
         []) valn
-      , TH.FunD 'pgEnumValue [TH.Clause [TH.ConP 'PGName [TH.VarP dv]]
-        (TH.NormalB $ TH.CaseE (TH.VarE 'BS.unpack `TH.AppE` TH.VarE dv) $ map (\(n, l) ->
-          TH.Match (TH.ListP (map TH.LitP l)) (TH.NormalB $ TH.ConE 'Just `TH.AppE` TH.ConE n) []) valn ++
-          [TH.Match TH.WildP (TH.NormalB $ TH.ConE 'Nothing)
-            []])
-        []]
+      , TH.FunD 'pgEnumValue $ map (\(n, l) ->
+          TH.Clause [TH.ConP 'PGName [TH.ListP (map TH.LitP l)]]
+            (TH.NormalB $ TH.ConE 'Just `TH.AppE` TH.ConE n)
+            []) valn
+          ++ [TH.Clause [TH.WildP] (TH.NormalB $ TH.ConE 'Nothing) []]
       , TH.FunD 'pgEnumValues [TH.Clause []
         (TH.NormalB $ TH.ListE $ map (\(n, l) ->
           TH.ConE '(,) `TH.AppE` TH.ConE n `TH.AppE` namelit l) valn)
         []]
       ]
+    , TH.PragmaD $ TH.AnnP (TH.TypeAnnotation typn) $ namelit $ map (TH.IntegerL . fromIntegral) $ pgNameBytes pgid
     ]
+    ++ map (\(n, l) ->
+      TH.PragmaD $ TH.AnnP (TH.ValueAnnotation n) $ namelit l) valn
   where
   typn = TH.mkName typs
   typt = TH.ConT typn
@@ -129,5 +132,4 @@ dataPGEnum typs pgenum valnf = do
 #if MIN_VERSION_template_haskell(2,11,0)
       Nothing
 #endif
-  namelit l = TH.ConE 'PGName `TH.AppE`
-    (TH.VarE 'BS.pack `TH.AppE` TH.ListE (map TH.LitE l))
+  namelit l = TH.ConE 'PGName `TH.AppE` TH.ListE (map TH.LitE l)

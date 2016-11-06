@@ -16,7 +16,6 @@ module Database.PostgreSQL.Typed.Relation
   ( dataPGRelation
   ) where
 
-import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import           Data.Proxy (Proxy(..))
 import qualified Language.Haskell.TH as TH
@@ -62,11 +61,12 @@ dataPGRelation :: String -- ^ Haskell type and constructor to create
 dataPGRelation typs pgtab colf = do
   (pgid, cold) <- TH.runIO $ withTPGTypeConnection $ \tpg -> do
     cl <- mapM (\[to, cn, ct, cnn] -> do
-      let n = pgDecodeRep cn
+      let c = pgDecodeRep cn
+          n = TH.mkName $ colf $ pgNameString c
           o = pgDecodeRep ct
-      t <- maybe (fail $ "dataPGRelation " ++ typs ++ " = " ++ show pgtab ++ ": column '" ++ show n ++ "' has unknown type " ++ show o) return
+      t <- maybe (fail $ "dataPGRelation " ++ typs ++ " = " ++ show pgtab ++ ": column '" ++ show c ++ "' has unknown type " ++ show o) return
         =<< lookupPGType tpg o
-      return (pgDecodeRep to, (n, TH.LitT (TH.StrTyLit $ pgNameString t), pgDecodeRep cnn)))
+      return (pgDecodeRep to, (c, n, TH.LitT (TH.StrTyLit $ pgNameString t), not $ pgDecodeRep cnn)))
       . snd =<< pgSimpleQuery (pgConnection tpg) (BSL.fromChunks
         [ "SELECT reltype, attname, atttypid, attnotnull"
         ,  " FROM pg_catalog.pg_attribute"
@@ -81,9 +81,9 @@ dataPGRelation typs pgtab colf = do
         tt <- maybe (fail $ "dataPGRelation " ++ typs ++ " = " ++ show pgtab ++ ": table type not found (you may need to use reloadTPGTypes or adjust search_path)") return
           =<< lookupPGType tpg to
         return (tt, map snd cl)
-  cols <- mapM (\(n, t, nn) -> do
-      v <- TH.newName $ pgNameString n
-      return (v, t, not nn))
+  cols <- mapM (\(c, _, t, nn) -> do
+      v <- TH.newName $ pgNameString c
+      return (v, t, nn))
     cold
   let typl = TH.LitT (TH.StrTyLit $ pgNameString pgid)
       encfun f = TH.FunD f [TH.Clause [TH.WildP, TH.ConP typn (map (\(v, _, _) -> TH.VarP v) cols)]
@@ -93,7 +93,7 @@ dataPGRelation typs pgtab colf = do
   dv <- TH.newName "x"
   tv <- TH.newName "t"
   ev <- TH.newName "e"
-  return
+  return $
     [ TH.DataD
       []
       typn
@@ -101,14 +101,14 @@ dataPGRelation typs pgtab colf = do
 #if MIN_VERSION_template_haskell(2,11,0)
       Nothing
 #endif
-      [ TH.RecC typn $ map (\(n, t, nn) ->
-        ( TH.mkName (colf $ pgNameString n)
+      [ TH.RecC typn $ map (\(_, n, t, nn) ->
+        ( n
 #if MIN_VERSION_template_haskell(2,11,0)
         , TH.Bang TH.NoSourceUnpackedness TH.NoSourceStrictness
 #else
         , TH.NotStrict
 #endif
-        , (if nn then id else (TH.ConT ''Maybe `TH.AppT`))
+        , (if nn then (TH.ConT ''Maybe `TH.AppT`) else id)
           (TH.ConT ''PGVal `TH.AppT` t)))
         cold
       ]
@@ -166,7 +166,7 @@ dataPGRelation typs pgtab colf = do
         (TH.NormalB $ namelit pgtab)
         [] ]
       , TH.FunD 'pgColumnNames [TH.Clause [TH.WildP]
-        (TH.NormalB $ TH.ListE $ map (\(n, _, _) -> namelit n) cold)
+        (TH.NormalB $ TH.ListE $ map (\(c, _, _, _) -> namelit c) cold)
         [] ]
       ]
     , TH.SigD (TH.mkName ("uncurry" ++ typs)) $ TH.ArrowT `TH.AppT`
@@ -180,7 +180,10 @@ dataPGRelation typs pgtab colf = do
         (TH.NormalB $ foldl (\f (v, _, _) -> f `TH.AppE` TH.VarE v) (TH.ConE typn) cols)
         []
       ]
-    ]
+    , TH.PragmaD $ TH.AnnP (TH.TypeAnnotation typn) $ namelit pgid
+    , TH.PragmaD $ TH.AnnP (TH.ValueAnnotation typn) $ namelit pgid
+    ] ++ map (\(c, n, _, _) ->
+      TH.PragmaD $ TH.AnnP (TH.ValueAnnotation n) $ namelit c) cold
   where
   typn = TH.mkName typs
   typt = TH.ConT typn
@@ -199,4 +202,4 @@ dataPGRelation typs pgtab colf = do
   coldec (v, t, True) = TH.VarE 'fmap `TH.AppE` pgcall 'pgDecode t `TH.AppE` TH.VarE v
   rect = TH.LitT $ TH.StrTyLit "record"
   namelit n = TH.ConE 'PGName `TH.AppE`
-    (TH.VarE 'BS.pack `TH.AppE` TH.ListE (map (TH.LitE . TH.IntegerL . fromIntegral) $ BS.unpack $ pgNameBS n))
+    TH.ListE (map (TH.LitE . TH.IntegerL . fromIntegral) $ pgNameBytes n)

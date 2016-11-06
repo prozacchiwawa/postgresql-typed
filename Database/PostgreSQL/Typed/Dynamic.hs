@@ -30,6 +30,7 @@ import qualified Data.Aeson as JSON
 #endif
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
+import Data.ByteString.Internal (w2c)
 import qualified Data.ByteString.Lazy as BSL
 import Data.Int
 import Data.Monoid ((<>))
@@ -85,7 +86,7 @@ pgSafeLiteral x = pgLiteralRep x <> BSC.pack "::" <> pgNameBS (pgTypeName (pgTyp
 
 -- |Identical to @'BSC.unpack' . 'pgSafeLiteral'@ but more efficient.
 pgSafeLiteralString :: PGRep a => a -> String
-pgSafeLiteralString x = pgLiteralString x ++ "::" ++ BSC.unpack (pgNameBS (pgTypeName (pgTypeOf x)))
+pgSafeLiteralString x = pgLiteralString x ++ "::" ++ map w2c (pgNameBytes (pgTypeName (pgTypeOf x)))
 
 instance PGRep a => PGRep (Maybe a) where
   type PGRepType (Maybe a) = PGRepType a

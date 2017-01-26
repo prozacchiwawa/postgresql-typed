@@ -9,7 +9,7 @@
 -- 
 -- Support for PostgreSQL enums.
 
-module Database.PostgreSQL.Typed.Enum 
+module Database.PostgreSQL.Typed.Enum
   ( PGEnum(..)
   , dataPGEnum
   ) where
@@ -55,14 +55,14 @@ class (Eq a, Ord a, Enum a, Bounded a, PGRep a) => PGEnum a where
 -- > instance PGEnum Foo where pgEnumValues = [(Foo_abc, "abc"), (Foo_DEF, "DEF")]
 --
 -- Requires language extensions: TemplateHaskell, FlexibleInstances, MultiParamTypeClasses, DeriveDataTypeable, DataKinds, TypeFamilies
-dataPGEnum :: String -- ^ Haskell type to create 
+dataPGEnum :: String -- ^ Haskell type to create
   -> PGName -- ^ PostgreSQL enum type name
   -> (String -> String) -- ^ How to generate constructor names from enum values, e.g. @(\"Type_\"++)@ (input is 'pgNameString')
   -> TH.DecsQ
 dataPGEnum typs pgenum valnf = do
   (pgid, vals) <- TH.runIO $ withTPGTypeConnection $ \tpg -> do
     vals <- map (\([eo, v]) -> (pgDecodeRep eo, pgDecodeRep v)) . snd
-      <$> pgSimpleQuery (pgConnection tpg) (BSL.fromChunks 
+      <$> pgSimpleQuery (pgConnection tpg) (BSL.fromChunks
         [ "SELECT enumtypid, enumlabel"
         ,  " FROM pg_catalog.pg_enum"
         , " WHERE enumtypid = ", pgLiteralRep pgenum, "::regtype"

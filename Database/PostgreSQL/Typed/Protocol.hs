@@ -411,22 +411,26 @@ pgRecv :: Bool -> PGConnection -> IO (Maybe PGBackendMessage)
 pgRecv block c@PGConnection{ connHandle = h, connInput = dr, connState = sr } =
   go =<< readIORef dr where
   next = writeIORef dr
-  state s d = writeIORef sr s >> next d
   new = G.pushChunk getMessage
   go (G.Done b _ m) = do
     when (connDebug c) $ putStrLn $ "< " ++ show m
-    got (new b) m =<< readIORef sr
+    got (new b) m
   go (G.Fail _ _ r) = next (new BS.empty) >> fail r -- not clear how can recover
   go d@(G.Partial r) = do
     b <- (if block then BS.hGetSome else BS.hGetNonBlocking) h smallChunkSize
     if BS.null b
       then Nothing <$ next d
       else go $ r (Just b)
-  got :: G.Decoder PGBackendMessage -> PGBackendMessage -> PGState -> IO (Maybe PGBackendMessage)
-  got d (NoticeResponse m) _ = connLogMessage c m >> go d
-  got d m@(ReadyForQuery s) _ = Just m <$ state s d
-  got d m@(ErrorResponse _) _ = Just m <$ state StateUnsync d
-  got d m _ = Just m <$ next d
+  got :: G.Decoder PGBackendMessage -> PGBackendMessage -> IO (Maybe PGBackendMessage)
+  got d (NoticeResponse m) = connLogMessage c m >> go d
+  got d m@(ReadyForQuery s) = do
+    s' <- atomicModifyIORef' sr ((,) s)
+    if s == s'
+      then go d
+      else done d m
+  got d m@(ErrorResponse _) = writeIORef sr StateUnsync >> done d m
+  got d m = done d m
+  done d m = Just m <$ next d
 
 -- |Receive the next message from PostgreSQL (low-level). Note that this will
 -- block until it gets a message.
@@ -534,10 +538,14 @@ pgSync c@PGConnection{ connState = sr } = do
   wait s = do
     r <- pgRecv s c
     case r of
-      Nothing -> do
-        pgSend c Sync
-        pgFlush c
-        wait True
+      Nothing
+        | s -> do
+          writeIORef sr StateClosed
+          fail $ "pgReceive: connection closed"
+        | otherwise -> do
+          pgSend c Sync
+          pgFlush c
+          wait True
       (Just (ErrorResponse{ messageFields = m })) -> do
         connLogMessage c m
         wait s

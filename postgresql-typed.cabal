@@ -3,7 +3,7 @@ Version:       0.5.0
 Cabal-Version: >= 1.8
 License:       BSD3
 License-File:  COPYING
-Copyright:     2010-2013 Chris Forno, 2014-2016 Dylan Simon
+Copyright:     2010-2013 Chris Forno, 2014-2017 Dylan Simon
 Author:        Dylan Simon
 Maintainer:    Dylan Simon <dylan-pgtyped@dylex.net>
 Stability:     provisional

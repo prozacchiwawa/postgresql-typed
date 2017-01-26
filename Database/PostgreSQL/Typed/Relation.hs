@@ -54,7 +54,7 @@ class (PGRep a, PGRecordType (PGRepType a)) => PGRelation a where
 -- If you want any derived instances, you'll need to create them yourself using StandaloneDeriving.
 --
 -- Requires language extensions: TemplateHaskell, FlexibleInstances, MultiParamTypeClasses, DataKinds, TypeFamilies, PatternGuards
-dataPGRelation :: String -- ^ Haskell type and constructor to create 
+dataPGRelation :: String -- ^ Haskell type and constructor to create
   -> PGName -- ^ PostgreSQL table/relation name
   -> (String -> String) -- ^ How to generate field names from column names, e.g. @("table_"++)@ (input is 'pgNameString')
   -> TH.DecsQ
@@ -144,7 +144,7 @@ dataPGRelation typs pgtab colf = do
             , TH.ConE 'Nothing)
           ])
         [] ]
-      , TH.FunD 'pgDecodeValue 
+      , TH.FunD 'pgDecodeValue
         [ TH.Clause [TH.WildP, TH.WildP, TH.ConP 'PGNullValue []]
           (TH.NormalB $ TH.ConE 'Nothing)
           []

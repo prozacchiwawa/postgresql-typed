@@ -1,4 +1,5 @@
 /dist
+/.stack-work/
 /errcodes
 /errcodes.hi
 /errcodes.o

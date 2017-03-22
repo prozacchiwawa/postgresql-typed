@@ -94,8 +94,13 @@ import Data.Word (Word8, Word32)
 import GHC.TypeLits (Symbol, symbolVal, KnownSymbol)
 import Numeric (readFloat)
 #ifdef VERSION_postgresql_binary
+#if MIN_VERSION_postgresql_binary(0,12,0)
+import qualified PostgreSQL.Binary.Decoding as BinD
+import qualified PostgreSQL.Binary.Encoding as BinE
+#else
 import qualified PostgreSQL.Binary.Decoder as BinD
 import qualified PostgreSQL.Binary.Encoder as BinE
+#endif
 #endif
 
 type PGTextValue = BS.ByteString
@@ -259,11 +264,31 @@ parsePGDQuote blank unsafe isnul = (Just <$> q) <> (mnul <$> uq) where
     | otherwise = Just s
 
 #ifdef VERSION_postgresql_binary
-binDec :: PGType t => BinD.Decoder a -> PGTypeID t -> PGBinaryValue -> a
-binDec d t = either (\e -> error $ "pgDecodeBinary " ++ show (pgTypeName t) ++ ": " ++ show e) id . BinD.run d
+binEnc :: BinEncoder a -> a -> BS.ByteString
+binEnc = (.)
+#if MIN_VERSION_postgresql_binary(0,12,0)
+  BinE.encodingBytes
+
+type BinDecoder = BinD.Value
+type BinEncoder a = a -> BinE.Encoding
+#else
+  buildPGValue
+
+type BinDecoder = BinD.Decoder
+type BinEncoder a = BinE.Encoder a
+#endif
+
+binDec :: PGType t => BinDecoder a -> PGTypeID t -> PGBinaryValue -> a
+binDec d t = either (\e -> error $ "pgDecodeBinary " ++ show (pgTypeName t) ++ ": " ++ show e) id . 
+#if MIN_VERSION_postgresql_binary(0,12,0)
+  BinD.valueParser
+#else
+  BinD.run
+#endif
+  d
 
 #define BIN_COL pgBinaryColumn _ _ = True
-#define BIN_ENC(F) pgEncodeValue _ _ = PGBinaryValue . buildPGValue . (F)
+#define BIN_ENC(F) pgEncodeValue _ _ = PGBinaryValue . binEnc (F)
 #define BIN_DEC(F) pgDecodeBinary _ = binDec (F)
 #else
 #define BIN_COL
@@ -382,21 +407,18 @@ instance PGColumn "double precision" Double where
   pgDecode _ = read . BSC.unpack
   BIN_DEC(BinD.float8)
 
+-- XXX need real encoding as text; single byte as binary
+-- but then no one should be using this type really...
 instance PGType "\"char\"" where
   type PGVal "\"char\"" = Word8
-  BIN_COL
 instance PGParameter "\"char\"" Word8 where
   pgEncode _ = BS.singleton
-  BIN_ENC(BinE.char . w2c)
 instance PGColumn "\"char\"" Word8 where
   pgDecode _ = BS.head
-  BIN_DEC(c2w <$> BinD.char)
 instance PGParameter "\"char\"" Char where
   pgEncode _ = BSC.singleton
-  BIN_ENC(BinE.char)
 instance PGColumn "\"char\"" Char where
   pgDecode _ = BSC.head
-  BIN_DEC(BinD.char)
 
 
 class PGType t => PGStringType t
@@ -565,12 +587,12 @@ binColDatetime PGTypeEnv{ pgIntegerDatetimes = Just _ } _ = True
 binColDatetime _ _ = False
 
 #ifdef VERSION_postgresql_binary
-binEncDatetime :: PGParameter t a => BinE.Encoder a -> BinE.Encoder a -> PGTypeEnv -> PGTypeID t -> a -> PGValue
-binEncDatetime _ ff PGTypeEnv{ pgIntegerDatetimes = Just False } _ = PGBinaryValue . buildPGValue . ff
-binEncDatetime fi _ PGTypeEnv{ pgIntegerDatetimes = Just True } _ = PGBinaryValue . buildPGValue . fi
+binEncDatetime :: PGParameter t a => BinEncoder a -> BinEncoder a -> PGTypeEnv -> PGTypeID t -> a -> PGValue
+binEncDatetime _ ff PGTypeEnv{ pgIntegerDatetimes = Just False } _ = PGBinaryValue . binEnc ff
+binEncDatetime fi _ PGTypeEnv{ pgIntegerDatetimes = Just True } _ = PGBinaryValue . binEnc fi
 binEncDatetime _ _ PGTypeEnv{ pgIntegerDatetimes = Nothing } t = PGTextValue . pgEncode t
 
-binDecDatetime :: PGColumn t a => BinD.Decoder a -> BinD.Decoder a -> PGTypeEnv -> PGTypeID t -> PGBinaryValue -> a
+binDecDatetime :: PGColumn t a => BinDecoder a -> BinDecoder a -> PGTypeEnv -> PGTypeID t -> PGBinaryValue -> a
 binDecDatetime _ ff PGTypeEnv{ pgIntegerDatetimes = Just False } = binDec ff
 binDecDatetime fi _ PGTypeEnv{ pgIntegerDatetimes = Just True } = binDec fi
 binDecDatetime _ _ PGTypeEnv{ pgIntegerDatetimes = Nothing } = error "pgDecodeBinary: unknown integer_datetimes value"

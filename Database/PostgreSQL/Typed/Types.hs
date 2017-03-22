@@ -407,18 +407,23 @@ instance PGColumn "double precision" Double where
   pgDecode _ = read . BSC.unpack
   BIN_DEC(BinD.float8)
 
--- XXX need real encoding as text; single byte as binary
+-- XXX need real encoding as text
 -- but then no one should be using this type really...
 instance PGType "\"char\"" where
   type PGVal "\"char\"" = Word8
+  BIN_COL
 instance PGParameter "\"char\"" Word8 where
   pgEncode _ = BS.singleton
+  pgEncodeValue _ _ = PGBinaryValue . BS.singleton
 instance PGColumn "\"char\"" Word8 where
   pgDecode _ = BS.head
+  pgDecodeBinary _ _ = BS.head
 instance PGParameter "\"char\"" Char where
   pgEncode _ = BSC.singleton
+  pgEncodeValue _ _ = PGBinaryValue . BSC.singleton
 instance PGColumn "\"char\"" Char where
   pgDecode _ = BSC.head
+  pgDecodeBinary _ _ = BSC.head
 
 
 class PGType t => PGStringType t

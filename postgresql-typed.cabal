@@ -10,7 +10,7 @@ Stability:     provisional
 Bug-Reports:   https://github.com/dylex/postgresql-typed/issues
 Homepage:      https://github.com/dylex/postgresql-typed
 Category:      Database
-Synopsis:      A PostgreSQL library with compile-time SQL type inference and optional HDBC backend
+Synopsis:      PostgreSQL interface with compile-time SQL type checking, optional HDBC backend
 Description:   Automatically type-check SQL statements at compile time.
                Uses Template Haskell and the raw PostgreSQL protocol to describe SQL statements at compile time and provide appropriate type marshalling for both parameters and results.
                Allows not only syntax verification of your SQL but also full type safety between your SQL and Haskell.

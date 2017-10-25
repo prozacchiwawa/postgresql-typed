@@ -84,6 +84,9 @@ dataPGEnum typs pgenum valnf = do
 #endif
       (map (\(n, _) -> TH.NormalC n []) valn) $
 #if MIN_VERSION_template_haskell(2,11,0)
+#if MIN_VERSION_template_haskell(2,12,0)
+      return $ TH.DerivClause Nothing $
+#endif
       map TH.ConT
 #endif
       [''Eq, ''Ord, ''Enum, ''Ix, ''Bounded, ''Typeable]

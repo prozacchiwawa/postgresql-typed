@@ -62,7 +62,7 @@ Library
     old-locale,
     time,
     bytestring >= 0.10.2,
-    template-haskell < 2.12,
+    template-haskell,
     haskell-src-meta,
     network,
     attoparsec >= 0.12 && < 0.14,

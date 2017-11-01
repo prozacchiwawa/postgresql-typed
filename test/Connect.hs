@@ -6,8 +6,7 @@ import Network (PortID(UnixSocket))
 
 db :: PGDatabase
 db = defaultPGDatabase
-  { pgDBPort = UnixSocket "/tmp/.s.PGSQL.5432"
-  , pgDBName = "templatepg"
+  { pgDBName = "templatepg"
   , pgDBUser = "templatepg"
   , pgDBDebug = True
   , pgDBParams = [("TimeZone", "UTC")]

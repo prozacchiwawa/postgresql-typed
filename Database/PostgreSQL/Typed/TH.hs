@@ -34,11 +34,11 @@ import Data.Maybe (isJust, fromMaybe)
 import Data.String (fromString)
 import qualified Data.Traversable as Tv
 import qualified Language.Haskell.TH as TH
-#ifdef mingw32_HOST_OS
-import Network (PortID(PortNumber), PortNumber)
-#else
-import Network (PortID(UnixSocket, PortNumber), PortNumber)
+import Network (PortID(PortNumber
+#ifndef mingw32_HOST_OS
+  , UnixSocket
 #endif
+  ), PortNumber)
 import System.Environment (lookupEnv)
 import System.IO.Unsafe (unsafePerformIO, unsafeInterleaveIO)
 

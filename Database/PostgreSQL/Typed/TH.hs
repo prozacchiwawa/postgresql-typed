@@ -34,7 +34,11 @@ import Data.Maybe (isJust, fromMaybe)
 import Data.String (fromString)
 import qualified Data.Traversable as Tv
 import qualified Language.Haskell.TH as TH
-import Network (PortID(UnixSocket, PortNumber), PortNumber)
+import Network (PortID(PortNumber
+#ifndef mingw32_HOST_OS
+  , UnixSocket
+#endif
+  ), PortNumber)
 import System.Environment (lookupEnv)
 import System.IO.Unsafe (unsafePerformIO, unsafeInterleaveIO)
 
@@ -50,7 +54,11 @@ getTPGDatabase = do
   db   <- fromMaybe user <$> lookupEnv "TPG_DB"
   host <- fromMaybe "localhost" <$> lookupEnv "TPG_HOST"
   pnum <- maybe (5432 :: PortNumber) ((fromIntegral :: Int -> PortNumber) . read) <$> lookupEnv "TPG_PORT"
+#ifdef mingw32_HOST_OS
+  let port = PortNumber pnum
+#else
   port <- maybe (PortNumber pnum) UnixSocket <$> lookupEnv "TPG_SOCK"
+#endif
   pass <- fromMaybe "" <$> lookupEnv "TPG_PASS"
   debug <- isJust <$> lookupEnv "TPG_DEBUG"
   return $ defaultPGDatabase

@@ -621,6 +621,7 @@ pgSimpleQuery h sql = do
   start (RowDescription rd) = go $ row (map colBinary rd) id
   start (CommandComplete c) = got c []
   start EmptyQueryResponse = return (0, [])
+  start (ReadyForQuery StateTransactionFailed) = go start
   start m = fail $ "pgSimpleQuery: unexpected response: " ++ show m
   row bc r (DataRow fs) = go $ row bc (r . (fixBinary bc fs :))
   row _ r (CommandComplete c) = got c (r [])

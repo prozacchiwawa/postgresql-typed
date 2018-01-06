@@ -3,6 +3,7 @@
 --{-# OPTIONS_GHC -ddump-splices #-}
 module Main (main) where
 
+import Control.Exception (try)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import Data.Char (isDigit, toUpper)
@@ -14,13 +15,15 @@ import qualified Test.QuickCheck as Q
 import Test.QuickCheck.Test (isSuccess)
 
 import Database.PostgreSQL.Typed
-import Database.PostgreSQL.Typed.Types (OID)
+import Database.PostgreSQL.Typed.Types
+import Database.PostgreSQL.Typed.Protocol
 import Database.PostgreSQL.Typed.Array ()
 import qualified Database.PostgreSQL.Typed.Range as Range
 import Database.PostgreSQL.Typed.Enum
 import Database.PostgreSQL.Typed.Inet
 import Database.PostgreSQL.Typed.SQLToken
 import Database.PostgreSQL.Typed.Relation
+import qualified Database.PostgreSQL.Typed.ErrCodes as PGErr
 
 import Connect
 
@@ -155,6 +158,13 @@ main = do
   ["box"] <- preparedApply c 603
   [Just "line"] <- prepared c 628 "line"
   ["line"] <- preparedApply c 628
+
+  pgTransaction c $ do
+    (1, [[PGTextValue "1"]]) <- pgSimpleQuery c "SELECT 1"
+    Left e1 <- try $ pgSimpleQuery c "SYNTAX_ERROR"
+    assert $ pgErrorCode e1 == PGErr.syntax_error
+    Left e2 <- try $ pgSimpleQuery c "SELECT 1"
+    assert $ pgErrorCode e2 == PGErr.in_failed_sql_transaction
 
   pgDisconnect c
   exitSuccess

@@ -87,7 +87,7 @@ import Database.PostgreSQL.Typed.Dynamic
 
 data PGState
   = StateUnsync -- no Sync
-  | StatePending -- Sync sent
+  | StatePending -- expecting ReadyForQuery
   -- ReadyForQuery received:
   | StateIdle
   | StateTransaction
@@ -237,7 +237,16 @@ defaultLogMessage = hPutStrLn stderr . displayMessage
 -- |A database connection with sane defaults:
 -- localhost:5432:postgres
 defaultPGDatabase :: PGDatabase
-defaultPGDatabase = PGDatabase "localhost" (PortNumber 5432) (BSC.pack "postgres") (BSC.pack "postgres") BS.empty [] False defaultLogMessage
+defaultPGDatabase = PGDatabase
+  { pgDBHost = "localhost"
+  , pgDBPort = PortNumber 5432
+  , pgDBName = BSC.pack "postgres"
+  , pgDBUser = BSC.pack "postgres"
+  , pgDBPass = BS.empty
+  , pgDBParams = []
+  , pgDBDebug = False
+  , pgDBLogMessage = defaultLogMessage
+  }
 
 connDebug :: PGConnection -> Bool
 connDebug = pgDBDebug . connDatabase
@@ -326,6 +335,7 @@ pgSend c@PGConnection{ connHandle = h, connState = sr } msg = do
   (t, b) = second (BSL.toStrict . B.toLazyByteString) $ messageBody msg
   state _ StateClosed = StateClosed
   state Sync _ = StatePending
+  state SimpleQuery{} _ = StatePending
   state Terminate _ = StateClosed
   state _ _ = StateUnsync
 
@@ -423,12 +433,8 @@ pgRecv block c@PGConnection{ connHandle = h, connInput = dr, connState = sr } =
       else go $ r (Just b)
   got :: G.Decoder PGBackendMessage -> PGBackendMessage -> IO (Maybe PGBackendMessage)
   got d (NoticeResponse m) = connLogMessage c m >> go d
-  got d m@(ReadyForQuery s) = do
-    s' <- atomicModifyIORef' sr ((,) s)
-    if s == s'
-      then go d
-      else done d m
-  got d m@(ErrorResponse _) = writeIORef sr StateUnsync >> done d m
+  got d m@(ReadyForQuery s) = writeIORef sr s >> done d m
+  got d m@AuthenticationOk = writeIORef sr StatePending >> done d m
   got d m = done d m
   done d m = Just m <$ next d
 
@@ -531,28 +537,26 @@ pgSync c@PGConnection{ connState = sr } = do
   s <- readIORef sr
   case s of
     StateClosed -> fail "pgSync: operation on closed connection"
-    StatePending -> wait True
-    StateUnsync -> wait False
+    StatePending -> wait
+    StateUnsync -> do
+      pgSend c Sync
+      pgFlush c
+      wait
     _ -> return ()
   where
-  wait s = do
-    r <- pgRecv s c
+  wait = do
+    r <- pgRecv True c
     case r of
-      Nothing
-        | s -> do
-          writeIORef sr StateClosed
-          fail $ "pgReceive: connection closed"
-        | otherwise -> do
-          pgSend c Sync
-          pgFlush c
-          wait True
+      Nothing -> do
+        writeIORef sr StateClosed
+        fail $ "pgReceive: connection closed"
       (Just (ErrorResponse{ messageFields = m })) -> do
         connLogMessage c m
-        wait s
+        wait
       (Just (ReadyForQuery _)) -> return ()
       (Just m) -> do
         connLogMessage c $ makeMessage (BSC.pack $ "Unexpected server message: " ++ show m) $ BSC.pack "Each statement should only contain a single query"
-        wait s
+        wait
     
 rowDescription :: PGBackendMessage -> PGRowDescription
 rowDescription (RowDescription d) = d
@@ -642,7 +646,7 @@ pgSimpleQueries_ h sql = do
   res EmptyQueryResponse = go
   res (DataRow _) = go
   res (ParameterStatus _ _) = go
-  res (ReadyForQuery _) = return ()
+  res (ReadyForQuery _) = return () -- theoretically we don't have to wait for this
   res m = fail $ "pgSimpleQueries_: unexpected response: " ++ show m
 
 pgPreparedBind :: PGConnection -> BS.ByteString -> [OID] -> PGValues -> [Bool] -> IO (IO ())

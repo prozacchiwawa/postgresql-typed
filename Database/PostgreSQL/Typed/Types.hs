@@ -119,11 +119,13 @@ type PGValues = [PGValue]
 -- Nothing values represent unknown.
 data PGTypeEnv = PGTypeEnv
   { pgIntegerDatetimes :: Maybe Bool -- ^ If @integer_datetimes@ is @on@; only relevant for binary encoding.
+  , pgServerVersion :: Maybe BS.ByteString -- ^ The @server_version@ parameter
   } deriving (Show)
 
 unknownPGTypeEnv :: PGTypeEnv
 unknownPGTypeEnv = PGTypeEnv
   { pgIntegerDatetimes = Nothing
+  , pgServerVersion = Nothing
   }
 
 -- |A PostgreSQL literal identifier, generally corresponding to the \"name\" type (63-byte strings), but as it would be entered in a query, so may include double-quoting for special characters or schema-qualification.

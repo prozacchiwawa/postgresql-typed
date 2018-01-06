@@ -1,6 +1,10 @@
-{-# LANGUAGE CPP, DeriveDataTypeable, PatternGuards, DataKinds #-}
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternGuards #-}
 -- Copyright 2010, 2011, 2012, 2013 Chris Forno
--- Copyright 2014-2015 Dylan Simon
+-- Copyright 2014-2018 Dylan Simon
 
 -- |The Protocol module allows for direct, low-level communication with a
 --  PostgreSQL server over TCP/IP. You probably don't want to use this module
@@ -14,7 +18,6 @@ module Database.PostgreSQL.Typed.Protocol (
   , pgErrorCode
   , pgConnectionDatabase
   , pgTypeEnv
-  , pgServerVersion
   , pgConnect
   , pgDisconnect
   , pgReconnect
@@ -45,11 +48,11 @@ module Database.PostgreSQL.Typed.Protocol (
   ) where
 
 #if !MIN_VERSION_base(4,8,0)
-import Control.Applicative ((<$>), (<$))
+import           Control.Applicative ((<$>), (<$))
 #endif
-import Control.Arrow ((&&&), first, second)
-import Control.Exception (Exception, throwIO, onException)
-import Control.Monad (void, liftM2, replicateM, when, unless)
+import           Control.Arrow ((&&&), first, second)
+import           Control.Exception (Exception, throwIO, onException)
+import           Control.Monad (void, liftM2, replicateM, when, unless)
 #ifdef VERSION_cryptonite
 import qualified Crypto.Hash as Hash
 import qualified Data.ByteArray.Encoding as BA
@@ -58,29 +61,29 @@ import qualified Data.Binary.Get as G
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Builder as B
 import qualified Data.ByteString.Char8 as BSC
-import Data.ByteString.Internal (w2c)
+import           Data.ByteString.Internal (w2c)
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.Lazy.Char8 as BSLC
-import Data.ByteString.Lazy.Internal (smallChunkSize)
+import           Data.ByteString.Lazy.Internal (smallChunkSize)
 import qualified Data.Foldable as Fold
-import Data.IORef (IORef, newIORef, writeIORef, readIORef, atomicModifyIORef, atomicModifyIORef', modifyIORef, modifyIORef')
-import Data.Int (Int32, Int16)
+import           Data.IORef (IORef, newIORef, writeIORef, readIORef, atomicModifyIORef, atomicModifyIORef', modifyIORef')
+import           Data.Int (Int32, Int16)
 import qualified Data.Map.Lazy as Map
-import Data.Maybe (fromMaybe)
-import Data.Monoid ((<>))
+import           Data.Maybe (fromMaybe)
+import           Data.Monoid ((<>))
 #if !MIN_VERSION_base(4,8,0)
-import Data.Monoid (mempty)
+import           Data.Monoid (mempty)
 #endif
-import Data.Tuple (swap)
-import Data.Typeable (Typeable)
+import           Data.Tuple (swap)
+import           Data.Typeable (Typeable)
 #if !MIN_VERSION_base(4,8,0)
-import Data.Word (Word)
+import           Data.Word (Word)
 #endif
-import Data.Word (Word32)
-import Network (HostName, PortID(..), connectTo)
-import System.IO (Handle, hFlush, hClose, stderr, hPutStrLn, hSetBuffering, BufferMode(BlockBuffering))
-import System.IO.Unsafe (unsafeInterleaveIO)
-import Text.Read (readMaybe)
+import           Data.Word (Word32)
+import           Network (HostName, PortID(..), connectTo)
+import           System.IO (Handle, hFlush, hClose, stderr, hPutStrLn, hSetBuffering, BufferMode(BlockBuffering))
+import           System.IO.Unsafe (unsafeInterleaveIO)
+import           Text.Read (readMaybe)
 
 import Database.PostgreSQL.Typed.Types
 import Database.PostgreSQL.Typed.Dynamic
@@ -124,8 +127,8 @@ data PGConnection = PGConnection
   , connDatabase :: !PGDatabase
   , connPid :: !Word32 -- unused
   , connKey :: !Word32 -- unused
-  , connParameters :: Map.Map BS.ByteString BS.ByteString
   , connTypeEnv :: PGTypeEnv
+  , connParameters :: IORef (Map.Map BS.ByteString BS.ByteString)
   , connPreparedStatementCount :: IORef Integer
   , connPreparedStatementMap :: IORef (Map.Map (BS.ByteString, [OID]) PGPreparedStatement)
   , connState :: IORef PGState
@@ -240,8 +243,8 @@ defaultPGDatabase :: PGDatabase
 defaultPGDatabase = PGDatabase
   { pgDBHost = "localhost"
   , pgDBPort = PortNumber 5432
-  , pgDBName = BSC.pack "postgres"
-  , pgDBUser = BSC.pack "postgres"
+  , pgDBName = "postgres"
+  , pgDBUser = "postgres"
   , pgDBPass = BS.empty
   , pgDBParams = []
   , pgDBDebug = False
@@ -262,10 +265,6 @@ pgConnectionDatabase = connDatabase
 pgTypeEnv :: PGConnection -> PGTypeEnv
 pgTypeEnv = connTypeEnv
 
--- |Retrieve the \"server_version\" parameter from the connection, if any.
-pgServerVersion :: PGConnection -> Maybe BS.ByteString
-pgServerVersion PGConnection{ connParameters = p } = Map.lookup (BSC.pack "server_version") p
-
 #ifdef VERSION_cryptonite
 md5 :: BS.ByteString -> BS.ByteString
 md5 = BA.convertToBase BA.Base16 . (Hash.hash :: BS.ByteString -> Hash.Digest Hash.MD5)
@@ -281,7 +280,7 @@ byteStringNul s = B.byteString s <> nul
 lazyByteStringNul :: BSL.ByteString -> B.Builder
 lazyByteStringNul s = B.lazyByteString s <> nul
 
--- |Given a message, determin the (optional) type ID and the body
+-- |Given a message, determine the (optional) type ID and the body
 messageBody :: PGFrontendMessage -> (Maybe Char, B.Builder)
 messageBody (StartupMessage kv) = (Nothing, B.word32BE 0x30000
   <> Fold.foldMap (\(k, v) -> byteStringNul k <> byteStringNul v) kv <> nul)
@@ -434,6 +433,9 @@ pgRecv block c@PGConnection{ connHandle = h, connInput = dr, connState = sr } =
   got :: G.Decoder PGBackendMessage -> PGBackendMessage -> IO (Maybe PGBackendMessage)
   got d (NoticeResponse m) = connLogMessage c m >> go d
   got d m@(ReadyForQuery s) = writeIORef sr s >> done d m
+  got d (ParameterStatus k v) = do
+    modifyIORef' (connParameters c) $ Map.insert k v
+    go d
   got d m@AuthenticationOk = writeIORef sr StatePending >> done d m
   got d m = done d m
   done d m = Just m <$ next d
@@ -458,6 +460,7 @@ pgConnect db = do
   prepm <- newIORef Map.empty
   input <- newIORef getMessage
   tr <- newIORef 0
+  param <- newIORef Map.empty
   h <- connectTo (pgDBHost db) (pgDBPort db)
   hSetBuffering h (BlockBuffering Nothing)
   let c = PGConnection
@@ -465,7 +468,7 @@ pgConnect db = do
         , connDatabase = db
         , connPid = 0
         , connKey = 0
-        , connParameters = Map.empty
+        , connParameters = param
         , connPreparedStatementCount = prepc
         , connPreparedStatementMap = prepm
         , connState = state
@@ -474,25 +477,27 @@ pgConnect db = do
         , connTransaction = tr
         }
   pgSend c $ StartupMessage $
-    [ (BSC.pack "user", pgDBUser db)
-    , (BSC.pack "database", pgDBName db)
-    , (BSC.pack "client_encoding", BSC.pack "UTF8")
-    , (BSC.pack "standard_conforming_strings", BSC.pack "on")
-    , (BSC.pack "bytea_output", BSC.pack "hex")
-    , (BSC.pack "DateStyle", BSC.pack "ISO, YMD")
-    , (BSC.pack "IntervalStyle", BSC.pack "iso_8601")
+    [ ("user", pgDBUser db)
+    , ("database", pgDBName db)
+    , ("client_encoding", "UTF8")
+    , ("standard_conforming_strings", "on")
+    , ("bytea_output", "hex")
+    , ("DateStyle", "ISO, YMD")
+    , ("IntervalStyle", "iso_8601")
     ] ++ pgDBParams db
   pgFlush c
   conn c
   where
   conn c = pgReceive c >>= msg c
-  msg c (ReadyForQuery _) = return c
-    { connTypeEnv = PGTypeEnv
-      { pgIntegerDatetimes = fmap (BSC.pack "on" ==) $ Map.lookup (BSC.pack "integer_datetimes") (connParameters c)
+  msg c (ReadyForQuery _) = do
+    cp <- readIORef (connParameters c)
+    return c
+      { connTypeEnv = PGTypeEnv
+        { pgIntegerDatetimes = fmap ("on" ==) $ Map.lookup "integer_datetimes" cp
+        , pgServerVersion = Map.lookup "server_version" cp
+        }
       }
-    }
   msg c (BackendKeyData p k) = conn c{ connPid = p, connKey = k }
-  msg c (ParameterStatus k v) = conn c{ connParameters = Map.insert k v $ connParameters c }
   msg c AuthenticationOk = conn c
   msg c AuthenticationCleartextPassword = do
     pgSend c $ PasswordMessage $ pgDBPass db
@@ -500,7 +505,7 @@ pgConnect db = do
     conn c
 #ifdef VERSION_cryptonite
   msg c (AuthenticationMD5Password salt) = do
-    pgSend c $ PasswordMessage $ BSC.pack "md5" `BS.append` md5 (md5 (pgDBPass db <> pgDBUser db) `BS.append` salt)
+    pgSend c $ PasswordMessage $ "md5" `BS.append` md5 (md5 (pgDBPass db <> pgDBUser db) `BS.append` salt)
     pgFlush c
     conn c
 #endif
@@ -555,7 +560,7 @@ pgSync c@PGConnection{ connState = sr } = do
         wait
       (Just (ReadyForQuery _)) -> return ()
       (Just m) -> do
-        connLogMessage c $ makeMessage (BSC.pack $ "Unexpected server message: " ++ show m) $ BSC.pack "Each statement should only contain a single query"
+        connLogMessage c $ makeMessage (BSC.pack $ "Unexpected server message: " ++ show m) "Each statement should only contain a single query"
         wait
     
 rowDescription :: PGBackendMessage -> PGRowDescription
@@ -591,7 +596,7 @@ pgDescribe h sql types nulls = do
     | nulls && oid /= 0 = do
       -- In cases where the resulting field is tracable to the column of a
       -- table, we can check there.
-      (_, r) <- pgPreparedQuery h (BSC.pack "SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = $1 AND attnum = $2") [26, 21] [pgEncodeRep (oid :: OID), pgEncodeRep (col :: Int16)] []
+      (_, r) <- pgPreparedQuery h "SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = $1 AND attnum = $2" [26, 21] [pgEncodeRep (oid :: OID), pgEncodeRep (col :: Int16)] []
       case r of
         [[s]] -> return $ not $ pgDecodeRep s
         [] -> return True
@@ -645,7 +650,6 @@ pgSimpleQueries_ h sql = do
   res (CommandComplete _) = go
   res EmptyQueryResponse = go
   res (DataRow _) = go
-  res (ParameterStatus _ _) = go
   res (ReadyForQuery _) = return () -- theoretically we don't have to wait for this
   res m = fail $ "pgSimpleQueries_: unexpected response: " ++ show m
 
@@ -662,7 +666,7 @@ pgPreparedBind c sql types bind bc = do
   let
     go = pgReceive c >>= start
     start ParseComplete = do
-      modifyIORef (connPreparedStatementMap c) $
+      modifyIORef' (connPreparedStatementMap c) $
         Map.insert key n
       go
     start BindComplete = return ()

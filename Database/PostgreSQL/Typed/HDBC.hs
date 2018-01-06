@@ -89,7 +89,7 @@ fromPGConnection pg = do
   pgv <- takePGConnection pg
   reloadTypes Connection
     { connectionPG = pgv
-    , connectionServerVer = maybe "" BSC.unpack $ pgServerVersion pg
+    , connectionServerVer = maybe "" BSC.unpack $ pgServerVersion $ pgTypeEnv pg
     , connectionTypes = mempty
     , connectionFetchSize = 1
     }

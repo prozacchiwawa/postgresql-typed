@@ -11,7 +11,7 @@ db = defaultPGDatabase
   , pgDBPort = UnixSocket "/tmp/.s.PGSQL.5432"
 #endif
   , pgDBUser = "templatepg"
-  , pgDBDebug = True
+  -- , pgDBDebug = True
   , pgDBParams = [("TimeZone", "UTC")]
   }
 

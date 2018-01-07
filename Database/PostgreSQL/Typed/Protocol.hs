@@ -1,8 +1,11 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE ViewPatterns #-}
 -- Copyright 2010, 2011, 2012, 2013 Chris Forno
 -- Copyright 2014-2018 Dylan Simon
 
@@ -45,13 +48,16 @@ module Database.PostgreSQL.Typed.Protocol (
   , PGRowDescription
   , pgBind
   , pgFetch
+  -- * Notifications
+  , PGNotification(..)
+  , pgGetNotifications
   ) where
 
 #if !MIN_VERSION_base(4,8,0)
 import           Control.Applicative ((<$>), (<$))
 #endif
 import           Control.Arrow ((&&&), first, second)
-import           Control.Exception (Exception, throwIO, onException)
+import           Control.Exception (Exception, throwIO, onException, finally)
 import           Control.Monad (void, liftM2, replicateM, when, unless)
 #ifdef VERSION_cryptonite
 import qualified Crypto.Hash as Hash
@@ -135,6 +141,7 @@ data PGConnection = PGConnection
   , connState :: IORef PGState
   , connInput :: IORef (G.Decoder PGBackendMessage)
   , connTransaction :: IORef Word
+  , connNotifications :: IORef (Queue PGNotification)
   }
 
 data PGColDescription = PGColDescription
@@ -149,6 +156,29 @@ data PGColDescription = PGColDescription
 type PGRowDescription = [PGColDescription]
 
 type MessageFields = Map.Map Char BS.ByteString
+
+data PGNotification = PGNotification
+  { pgNotificationPid :: !Word32
+  , pgNotificationChannel :: !BS.ByteString
+  , pgNotificationPayload :: BSL.ByteString
+  } deriving (Show)
+
+-- |Simple amortized fifo
+data Queue a = Queue [a] [a]
+
+emptyQueue :: Queue a
+emptyQueue = Queue [] []
+
+enQueue :: a -> Queue a -> Queue a
+enQueue a (Queue e d) = Queue (a:e) d
+
+deQueue :: Queue a -> (Queue a, Maybe a)
+deQueue (Queue e (x:d)) = (Queue e d, Just x)
+deQueue (Queue (reverse -> x:d) []) = (Queue [] d, Just x)
+deQueue q = (q, Nothing)
+
+queueToList :: Queue a -> [a]
+queueToList (Queue e d) = d ++ reverse e
 
 -- |PGFrontendMessage represents a PostgreSQL protocol message that we'll send.
 -- See <http://www.postgresql.org/docs/current/interactive/protocol-message-formats.html>.
@@ -194,6 +224,7 @@ data PGBackendMessage
   | ErrorResponse { messageFields :: MessageFields }
   | NoData
   | NoticeResponse { messageFields :: MessageFields }
+  | NotificationResponse PGNotification
   -- |A ParameterDescription describes the type of a given SQL
   --  query/statement parameter ($1, $2, etc.). Unfortunately,
   --  PostgreSQL does not give us nullability information for the
@@ -403,6 +434,13 @@ getMessageBody 'I' = return EmptyQueryResponse
 getMessageBody 'n' = return NoData
 getMessageBody 's' = return PortalSuspended
 getMessageBody 'N' = NoticeResponse <$> getMessageFields
+getMessageBody 'A' = NotificationResponse <$> do
+  len <- G.getWord32be
+  G.isolate (fromIntegral len - 4) $
+    PGNotification
+      <$> G.getWord32be
+      <*> getByteStringNul
+      <*> G.getLazyByteStringNul
 getMessageBody t = fail $ "pgGetMessage: unknown message type: " ++ show t
 
 getMessage :: G.Decoder PGBackendMessage
@@ -411,42 +449,95 @@ getMessage = G.runGetIncremental $ do
   len <- G.getWord32be
   G.isolate (fromIntegral len - 4) $ getMessageBody (w2c typ)
 
-pgRecv :: PGConnection -> IO PGBackendMessage
-pgRecv c@PGConnection{ connHandle = h, connInput = dr, connState = sr } =
-  go =<< readIORef dr where
+class Show m => RecvMsg m where
+  -- |Read from connection, returning immediate value or non-empty data
+  recvMsgData :: PGConnection -> IO (Either m BS.ByteString)
+  recvMsgData c = do
+    r <- BS.hGetSome (connHandle c) smallChunkSize
+    if BS.null r
+      then do
+        writeIORef (connState c) StateClosed
+        hClose (connHandle c)
+        -- Should this instead be a special PGError?
+        ioError $ mkIOError eofErrorType "PGConnection" (Just (connHandle c)) Nothing
+      else
+        return (Right r)
+  -- |Expected ReadyForQuery message
+  recvMsgSync :: Maybe m
+  recvMsgSync = Nothing
+  -- |NotificationResponse message
+  recvMsgNotif :: Maybe m
+  recvMsgNotif = Nothing
+  -- |Any other unhandled message
+  recvMsg :: PGConnection -> PGBackendMessage -> IO (Maybe m)
+  recvMsg c (ErrorResponse m) = Nothing <$
+    connLogMessage c m
+  recvMsg c m = Nothing <$ 
+    connLogMessage c (makeMessage (BSC.pack $ "Unexpected server message: " ++ show m) "Each statement should only contain a single query")
+
+-- |Process all pending messages
+data RecvNonBlock = RecvNonBlock deriving (Show)
+instance RecvMsg RecvNonBlock where
+  recvMsgData c = do
+    r <- BS.hGetNonBlocking (connHandle c) smallChunkSize
+    if BS.null r
+      then return (Left RecvNonBlock)
+      else return (Right r)
+
+-- |Wait for ReadyForQuery
+data RecvSync = RecvSync deriving (Show)
+instance RecvMsg RecvSync where
+  recvMsgSync = Just RecvSync
+
+-- |Wait for NotificationResponse
+data RecvNotif = RecvNotif deriving (Show)
+instance RecvMsg RecvNotif where
+  recvMsgNotif = Just RecvNotif
+
+-- |Return any message (throwing errors)
+instance RecvMsg PGBackendMessage where
+  recvMsg _ (ErrorResponse m) = throwIO (PGError m)
+  recvMsg _ m = return $ Just m
+
+-- |Return any message or ReadyForQuery
+instance RecvMsg (Either PGBackendMessage RecvSync) where
+  recvMsgSync = Just $ Right RecvSync
+  recvMsg _ (ErrorResponse m) = throwIO (PGError m)
+  recvMsg _ m = return $ Just $ Left m
+
+-- |Receive the next message from PostgreSQL (low-level).
+pgRecv :: RecvMsg m => PGConnection -> IO m
+pgRecv c@PGConnection{ connInput = dr, connState = sr } =
+  rcv =<< readIORef dr where
   next = writeIORef dr
   new = G.pushChunk getMessage
-  go (G.Done b _ m) = do
+
+  -- read and parse
+  rcv (G.Done b _ m) = do
     when (connDebug c) $ putStrLn $ "< " ++ show m
     got (new b) m
-  go (G.Fail _ _ r) = next (new BS.empty) >> fail r -- not clear how can recover
-  go d@(G.Partial r) = do
-    b <- BS.hGetSome {- BS.hGetNonBlocking -} h smallChunkSize
-    if BS.null b
-      then do
-        next d
-        writeIORef sr StateClosed
-        -- Should this instead be a special PGError?
-        ioError $ mkIOError eofErrorType "PGConnection" (Just h) Nothing
-      else go $ r (Just b)
-  got :: G.Decoder PGBackendMessage -> PGBackendMessage -> IO PGBackendMessage
-  got d (NoticeResponse m) = connLogMessage c m >> go d
-  got d m@(ReadyForQuery s) = writeIORef sr s >> done d m
-  got d (ParameterStatus k v) = do
-    modifyIORef' (connParameters c) $ Map.insert k v
-    go d
-  got d m@AuthenticationOk = writeIORef sr StatePending >> done d m
-  got d m = done d m
-  done d m = m <$ next d
+  rcv (G.Fail _ _ r) = next (new BS.empty) >> fail r -- not clear how can recover
+  rcv d@(G.Partial r) = recvMsgData c `onException` next d >>=
+    either (<$ next d) (rcv . r . Just)
 
--- |Receive the next message from PostgreSQL (low-level). Note that this will
--- block until it gets a message.
-pgReceive :: PGConnection -> IO PGBackendMessage
-pgReceive c = do
-  r <- pgRecv c
-  case r of
-    ErrorResponse{ messageFields = m } -> throwIO (PGError m)
-    m -> return m
+  -- process message
+  msg (NoticeResponse m) = Nothing <$
+    connLogMessage c m
+  msg (ParameterStatus k v) = Nothing <$
+    modifyIORef' (connParameters c) (Map.insert k v)
+  msg m@(ReadyForQuery s) = do
+    s' <- atomicModifyIORef' sr (s, )
+    if s' == StatePending
+      then return recvMsgSync -- expected
+      else recvMsg c m -- unexpected
+  msg (NotificationResponse n) = recvMsgNotif <$
+    modifyIORef' (connNotifications c) (enQueue n)
+  msg m@AuthenticationOk = do
+    writeIORef sr StatePending
+    recvMsg c m
+  msg m = recvMsg c m
+  got d m = msg m `onException` next d >>=
+    maybe (rcv d) (<$ next d)
 
 -- |Connect to a PostgreSQL server.
 pgConnect :: PGDatabase -> IO PGConnection
@@ -457,6 +548,7 @@ pgConnect db = do
   prepm <- newIORef Map.empty
   input <- newIORef getMessage
   tr <- newIORef 0
+  notif <- newIORef emptyQueue
   h <- connectTo (pgDBHost db) (pgDBPort db)
   hSetBuffering h (BlockBuffering Nothing)
   let c = PGConnection
@@ -471,6 +563,7 @@ pgConnect db = do
         , connTypeEnv = unknownPGTypeEnv
         , connInput = input
         , connTransaction = tr
+        , connNotifications = notif
         }
   pgSend c $ StartupMessage $
     [ ("user", pgDBUser db)
@@ -484,8 +577,8 @@ pgConnect db = do
   pgFlush c
   conn c
   where
-  conn c = pgReceive c >>= msg c
-  msg c (ReadyForQuery _) = do
+  conn c = pgRecv c >>= msg c
+  msg c (Right RecvSync) = do
     cp <- readIORef (connParameters c)
     return c
       { connTypeEnv = PGTypeEnv
@@ -493,26 +586,25 @@ pgConnect db = do
         , pgServerVersion = Map.lookup "server_version" cp
         }
       }
-  msg c (BackendKeyData p k) = conn c{ connPid = p, connKey = k }
-  msg c AuthenticationOk = conn c
-  msg c AuthenticationCleartextPassword = do
+  msg c (Left (BackendKeyData p k)) = conn c{ connPid = p, connKey = k }
+  msg c (Left AuthenticationOk) = conn c
+  msg c (Left AuthenticationCleartextPassword) = do
     pgSend c $ PasswordMessage $ pgDBPass db
     pgFlush c
     conn c
 #ifdef VERSION_cryptonite
-  msg c (AuthenticationMD5Password salt) = do
+  msg c (Left (AuthenticationMD5Password salt)) = do
     pgSend c $ PasswordMessage $ "md5" `BS.append` md5 (md5 (pgDBPass db <> pgDBUser db) `BS.append` salt)
     pgFlush c
     conn c
 #endif
-  msg _ m = fail $ "pgConnect: unexpected response: " ++ show m
+  msg _ (Left m) = fail $ "pgConnect: unexpected response: " ++ show m
 
 -- |Disconnect cleanly from the PostgreSQL server.
 pgDisconnect :: PGConnection -- ^ a handle from 'pgConnect'
              -> IO ()
-pgDisconnect c@PGConnection{ connHandle = h } = do
-  pgSend c Terminate
-  hClose h
+pgDisconnect c@PGConnection{ connHandle = h } =
+  pgSend c Terminate `finally` hClose h
 
 -- |Disconnect cleanly from the PostgreSQL server, but only if it's still connected.
 pgDisconnectOnce :: PGConnection -- ^ a handle from 'pgConnect'
@@ -530,7 +622,7 @@ pgReconnect c@PGConnection{ connDatabase = cd, connState = cs } d = do
   if cd == d && s /= StateClosed
     then return c{ connDatabase = d }
     else do
-      when (s /= StateClosed) $ pgDisconnect c
+      pgDisconnectOnce c
       pgConnect d
 
 pgSync :: PGConnection -> IO ()
@@ -546,15 +638,8 @@ pgSync c@PGConnection{ connState = sr } = do
     _ -> return ()
   where
   wait = do
-    r <- pgRecv c
-    case r of
-      ErrorResponse{ messageFields = m } -> do
-        connLogMessage c m
-        wait
-      ReadyForQuery _ -> return ()
-      m -> do
-        connLogMessage c $ makeMessage (BSC.pack $ "Unexpected server message: " ++ show m) "Each statement should only contain a single query"
-        wait
+    RecvSync <- pgRecv c
+    return ()
     
 rowDescription :: PGBackendMessage -> PGRowDescription
 rowDescription (RowDescription d) = d
@@ -575,9 +660,9 @@ pgDescribe h sql types nulls = do
   pgSend h DescribeStatement{ statementName = BS.empty }
   pgSend h Sync
   pgFlush h
-  ParseComplete <- pgReceive h
-  ParameterDescription ps <- pgReceive h
-  (,) ps <$> (mapM desc . rowDescription =<< pgReceive h)
+  ParseComplete <- pgRecv h
+  ParameterDescription ps <- pgRecv h
+  (,) ps <$> (mapM desc . rowDescription =<< pgRecv h)
   where
   desc (PGColDescription{ pgColName = name, pgColTable = tab, pgColNumber = col, pgColType = typ }) = do
     n <- nullable tab col
@@ -619,7 +704,7 @@ pgSimpleQuery h sql = do
   pgSend h $ SimpleQuery sql
   pgFlush h
   go start where 
-  go = (pgReceive h >>=)
+  go = (pgRecv h >>=)
   start (RowDescription rd) = go $ row (map pgColBinary rd) id
   start (CommandComplete c) = got c []
   start EmptyQueryResponse = return (0, [])
@@ -638,12 +723,12 @@ pgSimpleQueries_ h sql = do
   pgSend h $ SimpleQuery sql
   pgFlush h
   go where
-  go = pgReceive h >>= res
-  res (RowDescription _) = go
-  res (CommandComplete _) = go
-  res EmptyQueryResponse = go
-  res (DataRow _) = go
-  res (ReadyForQuery _) = return () -- theoretically we don't have to wait for this
+  go = pgRecv h >>= res
+  res (Left (RowDescription _)) = go
+  res (Left (CommandComplete _)) = go
+  res (Left EmptyQueryResponse) = go
+  res (Left (DataRow _)) = go
+  res (Right RecvSync) = return ()
   res m = fail $ "pgSimpleQueries_: unexpected response: " ++ show m
 
 pgPreparedBind :: PGConnection -> BS.ByteString -> [OID] -> PGValues -> [Bool] -> IO (IO ())
@@ -657,7 +742,7 @@ pgPreparedBind c sql types bind bc = do
     pgSend c Parse{ queryString = BSL.fromStrict sql, statementName = preparedStatementName n, parseTypes = types }
   pgSend c Bind{ portalName = BS.empty, statementName = preparedStatementName n, bindParameters = bind, binaryColumns = bc }
   let
-    go = pgReceive c >>= start
+    go = pgRecv c >>= start
     start ParseComplete = do
       modifyIORef' (connPreparedStatementMap c) $
         Map.insert key n
@@ -682,7 +767,7 @@ pgPreparedQuery c sql types bind bc = do
   start
   go id
   where
-  go r = pgReceive c >>= row r
+  go r = pgRecv c >>= row r
   row r (DataRow fs) = go (r . (fixBinary bc fs :))
   row r (CommandComplete d) = return (rowsAffected d, r [])
   row r EmptyQueryResponse = return (0, r [])
@@ -703,7 +788,7 @@ pgPreparedLazyQuery c sql types bind bc count = do
     pgSend c Execute{ portalName = BS.empty, executeRows = count }
     pgSend c Flush
     pgFlush c
-  go r = pgReceive c >>= row r
+  go r = pgRecv c >>= row r
   row r (DataRow fs) = go (r . (fixBinary bc fs :))
   row r PortalSuspended = r <$> unsafeInterleaveIO (execute >> go id)
   row r (CommandComplete _) = return (r [])
@@ -771,7 +856,7 @@ pgRun c sql types bind = do
   pgSend c Sync
   pgFlush c
   go where
-  go = pgReceive c >>= res
+  go = pgRecv c >>= res
   res ParseComplete = go
   res BindComplete = go
   res (DataRow _) = go
@@ -788,7 +873,7 @@ pgPrepare c sql types = do
   pgSend c Parse{ queryString = sql, statementName = preparedStatementName n, parseTypes = types }
   pgSend c Sync
   pgFlush c
-  ParseComplete <- pgReceive c
+  ParseComplete <- pgRecv c
   return n
 
 -- |Close a previously prepared query.
@@ -799,8 +884,8 @@ pgClose c n = do
   pgSend c CloseStatement{ statementName = preparedStatementName n }
   pgSend c Sync
   pgFlush c
-  CloseComplete <- pgReceive c
-  CloseComplete <- pgReceive c
+  CloseComplete <- pgRecv c
+  CloseComplete <- pgRecv c
   return ()
 
 -- |Bind a prepared statement, and return the row description.
@@ -813,9 +898,9 @@ pgBind c n bind = do
   pgSend c DescribePortal{ portalName = sn }
   pgSend c Sync
   pgFlush c
-  CloseComplete <- pgReceive c
-  BindComplete <- pgReceive c
-  rowDescription <$> pgReceive c
+  CloseComplete <- pgRecv c
+  BindComplete <- pgRecv c
+  rowDescription <$> pgRecv c
   where sn = preparedStatementName n
 
 -- |Fetch a single row from an executed prepared statement, returning the next N result rows (if any) and number of affected rows when complete.
@@ -827,7 +912,7 @@ pgFetch c n count = do
   pgSend c Sync
   pgFlush c
   go where
-  go = pgReceive c >>= res
+  go = pgRecv c >>= res
   res (DataRow v) = first (v :) <$> go
   res PortalSuspended = return ([], Nothing)
   res (CommandComplete d) = do
@@ -835,7 +920,13 @@ pgFetch c n count = do
     pgSend c ClosePortal{ portalName = preparedStatementName n }
     pgSend c Sync
     pgFlush c
-    CloseComplete <- pgReceive c
+    CloseComplete <- pgRecv c
     return ([], Just $ rowsAffected d)
   res EmptyQueryResponse = return ([], Just 0)
   res m = fail $ "pgFetch: unexpected response: " ++ show m
+
+-- |Retrieve any pending notifications.  Non-blocking.
+pgGetNotifications :: PGConnection -> IO [PGNotification]
+pgGetNotifications c = do
+  -- pgRecv
+  return []

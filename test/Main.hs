@@ -159,12 +159,20 @@ main = do
   [Just "line"] <- prepared c 628 "line"
   ["line"] <- preparedApply c 628
 
+  pgSimpleQueries_ c "LISTEN channame; NOTIFY channame, 'oh hello'; SELECT pg_notify('channame', 'there')"
+  PGNotification _ "channame" "oh hello" <- pgGetNotification c
+  (-1, []) <- pgSimpleQuery c "NOTIFY channame"
+
   pgTransaction c $ do
     (1, [[PGTextValue "1"]]) <- pgSimpleQuery c "SELECT 1"
+    (-1, []) <- pgSimpleQuery c "NOTIFY channame, 'nope'"
     Left e1 <- try $ pgSimpleQuery c "SYNTAX_ERROR"
     assert $ pgErrorCode e1 == PGErr.syntax_error
     Left e2 <- try $ pgSimpleQuery c "SELECT 1"
     assert $ pgErrorCode e2 == PGErr.in_failed_sql_transaction
+
+  [PGNotification _ "channame" "there", PGNotification _ "channame" ""] <- pgGetNotifications c
+  [] <- pgGetNotifications c
 
   pgDisconnect c
   exitSuccess

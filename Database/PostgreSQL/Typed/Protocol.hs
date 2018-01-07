@@ -51,6 +51,7 @@ module Database.PostgreSQL.Typed.Protocol (
   -- * Notifications
   , PGNotification(..)
   , pgGetNotifications
+  , pgGetNotification
   ) where
 
 #if !MIN_VERSION_base(4,8,0)
@@ -242,7 +243,7 @@ data PGBackendMessage
 
 -- |PGException is thrown upon encountering an 'ErrorResponse' with severity of
 --  ERROR, FATAL, or PANIC. It holds the message of the error.
-data PGError = PGError { pgErrorFields :: MessageFields }
+newtype PGError = PGError { pgErrorFields :: MessageFields }
   deriving (Typeable)
 
 instance Show PGError where
@@ -435,12 +436,10 @@ getMessageBody 'n' = return NoData
 getMessageBody 's' = return PortalSuspended
 getMessageBody 'N' = NoticeResponse <$> getMessageFields
 getMessageBody 'A' = NotificationResponse <$> do
-  len <- G.getWord32be
-  G.isolate (fromIntegral len - 4) $
-    PGNotification
-      <$> G.getWord32be
-      <*> getByteStringNul
-      <*> G.getLazyByteStringNul
+  PGNotification
+    <$> G.getWord32be
+    <*> getByteStringNul
+    <*> G.getLazyByteStringNul
 getMessageBody t = fail $ "pgGetMessage: unknown message type: " ++ show t
 
 getMessage :: G.Decoder PGBackendMessage
@@ -466,12 +465,15 @@ class Show m => RecvMsg m where
   recvMsgSync :: Maybe m
   recvMsgSync = Nothing
   -- |NotificationResponse message
-  recvMsgNotif :: Maybe m
-  recvMsgNotif = Nothing
+  recvMsgNotif :: PGConnection -> PGNotification -> IO (Maybe m)
+  recvMsgNotif c n = Nothing <$
+    modifyIORef' (connNotifications c) (enQueue n)
+  -- |ErrorResponse message
+  recvMsgErr :: PGConnection -> MessageFields -> IO (Maybe m)
+  recvMsgErr c m = Nothing <$
+    connLogMessage c m
   -- |Any other unhandled message
   recvMsg :: PGConnection -> PGBackendMessage -> IO (Maybe m)
-  recvMsg c (ErrorResponse m) = Nothing <$
-    connLogMessage c m
   recvMsg c m = Nothing <$ 
     connLogMessage c (makeMessage (BSC.pack $ "Unexpected server message: " ++ show m) "Each statement should only contain a single query")
 
@@ -490,20 +492,19 @@ instance RecvMsg RecvSync where
   recvMsgSync = Just RecvSync
 
 -- |Wait for NotificationResponse
-data RecvNotif = RecvNotif deriving (Show)
-instance RecvMsg RecvNotif where
-  recvMsgNotif = Just RecvNotif
+instance RecvMsg PGNotification where
+  recvMsgNotif _ = return . Just
 
 -- |Return any message (throwing errors)
 instance RecvMsg PGBackendMessage where
-  recvMsg _ (ErrorResponse m) = throwIO (PGError m)
-  recvMsg _ m = return $ Just m
+  recvMsgErr _ = throwIO . PGError
+  recvMsg _ = return . Just
 
 -- |Return any message or ReadyForQuery
 instance RecvMsg (Either PGBackendMessage RecvSync) where
   recvMsgSync = Just $ Right RecvSync
-  recvMsg _ (ErrorResponse m) = throwIO (PGError m)
-  recvMsg _ m = return $ Just $ Left m
+  recvMsgErr _ = throwIO . PGError
+  recvMsg _ = return . Just . Left
 
 -- |Receive the next message from PostgreSQL (low-level).
 pgRecv :: RecvMsg m => PGConnection -> IO m
@@ -521,17 +522,19 @@ pgRecv c@PGConnection{ connInput = dr, connState = sr } =
     either (<$ next d) (rcv . r . Just)
 
   -- process message
-  msg (NoticeResponse m) = Nothing <$
-    connLogMessage c m
   msg (ParameterStatus k v) = Nothing <$
     modifyIORef' (connParameters c) (Map.insert k v)
+  msg (NoticeResponse m) = Nothing <$
+    connLogMessage c m
+  msg (ErrorResponse m) =
+    recvMsgErr c m
   msg m@(ReadyForQuery s) = do
     s' <- atomicModifyIORef' sr (s, )
     if s' == StatePending
       then return recvMsgSync -- expected
       else recvMsg c m -- unexpected
-  msg (NotificationResponse n) = recvMsgNotif <$
-    modifyIORef' (connNotifications c) (enQueue n)
+  msg (NotificationResponse n) =
+    recvMsgNotif c n
   msg m@AuthenticationOk = do
     writeIORef sr StatePending
     recvMsg c m
@@ -928,5 +931,11 @@ pgFetch c n count = do
 -- |Retrieve any pending notifications.  Non-blocking.
 pgGetNotifications :: PGConnection -> IO [PGNotification]
 pgGetNotifications c = do
-  -- pgRecv
-  return []
+  RecvNonBlock <- pgRecv c
+  queueToList <$> atomicModifyIORef' (connNotifications c) (emptyQueue, )
+
+-- |Retrieve a notifications, blocking if necessary.
+pgGetNotification :: PGConnection -> IO PGNotification
+pgGetNotification c =
+  maybe (pgRecv c) return
+   =<< atomicModifyIORef' (connNotifications c) deQueue

@@ -139,16 +139,16 @@ noCursor = Cursor [] [] False
 
 getType :: Connection -> PGConnection -> Maybe Bool -> PGColDescription -> ColDesc
 getType c pg nul PGColDescription{..} = ColDesc
-  { colDescName = BSC.unpack colName
+  { colDescName = BSC.unpack pgColName
   , colDesc = HDBC.SqlColDesc
     { HDBC.colType = sqlTypeId t
-    , HDBC.colSize = fromIntegral colModifier <$ guard (colModifier >= 0)
-    , HDBC.colOctetLength = fromIntegral colSize <$ guard (colSize >= 0)
+    , HDBC.colSize = fromIntegral pgColModifier <$ guard (pgColModifier >= 0)
+    , HDBC.colOctetLength = fromIntegral pgColSize <$ guard (pgColSize >= 0)
     , HDBC.colDecDigits = Nothing
     , HDBC.colNullable = nul
     }
   , colDescDecode = sqlTypeDecode t
-  } where t = IntMap.findWithDefault (sqlType (pgTypeEnv pg) $ show colType) (fromIntegral colType) (connectionTypes c)
+  } where t = IntMap.findWithDefault (sqlType (pgTypeEnv pg) $ show pgColType) (fromIntegral pgColType) (connectionTypes c)
 
 instance HDBC.IConnection Connection where
   disconnect c = withPGConnection c
@@ -232,13 +232,13 @@ instance HDBC.IConnection Connection where
   describeTable c t = withPGConnection c $ \pg ->
     map (\[attname, attrelid, attnum, atttypid, attlen, atttypmod, attnotnull] ->
       colDescName &&& colDesc $ getType c pg (Just $ not $ pgDecodeRep attnotnull) PGColDescription
-        { colName = pgDecodeRep attname
-        , colTable = pgDecodeRep attrelid
-        , colNumber = pgDecodeRep attnum
-        , colType = pgDecodeRep atttypid
-        , colSize = pgDecodeRep attlen
-        , colModifier = pgDecodeRep atttypmod
-        , colBinary = False
+        { pgColName = pgDecodeRep attname
+        , pgColTable = pgDecodeRep attrelid
+        , pgColNumber = pgDecodeRep attnum
+        , pgColType = pgDecodeRep atttypid
+        , pgColSize = pgDecodeRep attlen
+        , pgColModifier = pgDecodeRep atttypmod
+        , pgColBinary = False
         })
       . snd <$> pgSimpleQuery pg (BSLC.fromChunks
         [ "SELECT attname, attrelid, attnum, atttypid, attlen, atttypmod, attnotnull"

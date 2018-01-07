@@ -82,6 +82,7 @@ import           Data.Word (Word)
 import           Data.Word (Word32)
 import           Network (HostName, PortID(..), connectTo)
 import           System.IO (Handle, hFlush, hClose, stderr, hPutStrLn, hSetBuffering, BufferMode(BlockBuffering))
+import           System.IO.Error (mkIOError, eofErrorType, ioError)
 import           System.IO.Unsafe (unsafeInterleaveIO)
 import           Text.Read (readMaybe)
 
@@ -137,13 +138,13 @@ data PGConnection = PGConnection
   }
 
 data PGColDescription = PGColDescription
-  { colName :: BS.ByteString
-  , colTable :: !OID
-  , colNumber :: !Int16
-  , colType :: !OID
-  , colSize :: !Int16
-  , colModifier :: !Int32
-  , colBinary :: !Bool
+  { pgColName :: BS.ByteString
+  , pgColTable :: !OID
+  , pgColNumber :: !Int16
+  , pgColType :: !OID
+  , pgColSize :: !Int16
+  , pgColModifier :: !Int32
+  , pgColBinary :: !Bool
   } deriving (Show)
 type PGRowDescription = [PGColDescription]
 
@@ -372,13 +373,13 @@ getMessageBody 'T' = do
     tmod <- G.getWord32be -- type modifier
     fmt <- G.getWord16be -- format code
     return $ PGColDescription
-      { colName = name
-      , colTable = oid
-      , colNumber = fromIntegral col
-      , colType = typ'
-      , colSize = fromIntegral siz
-      , colModifier = fromIntegral tmod
-      , colBinary = toEnum (fromIntegral fmt)
+      { pgColName = name
+      , pgColTable = oid
+      , pgColNumber = fromIntegral col
+      , pgColType = typ'
+      , pgColSize = fromIntegral siz
+      , pgColModifier = fromIntegral tmod
+      , pgColBinary = toEnum (fromIntegral fmt)
       }
 getMessageBody 'Z' = ReadyForQuery <$> (rs . w2c =<< G.getWord8) where
   rs 'I' = return StateIdle
@@ -407,17 +408,11 @@ getMessageBody t = fail $ "pgGetMessage: unknown message type: " ++ show t
 getMessage :: G.Decoder PGBackendMessage
 getMessage = G.runGetIncremental $ do
   typ <- G.getWord8
-  s <- G.bytesRead
   len <- G.getWord32be
-  msg <- getMessageBody (w2c typ)
-  e <- G.bytesRead
-  let r = fromIntegral len - fromIntegral (e - s)
-  when (r > 0) $ G.skip r
-  when (r < 0) $ fail "pgReceive: decoder overran message"
-  return msg
+  G.isolate (fromIntegral len - 4) $ getMessageBody (w2c typ)
 
-pgRecv :: Bool -> PGConnection -> IO (Maybe PGBackendMessage)
-pgRecv block c@PGConnection{ connHandle = h, connInput = dr, connState = sr } =
+pgRecv :: PGConnection -> IO PGBackendMessage
+pgRecv c@PGConnection{ connHandle = h, connInput = dr, connState = sr } =
   go =<< readIORef dr where
   next = writeIORef dr
   new = G.pushChunk getMessage
@@ -426,11 +421,15 @@ pgRecv block c@PGConnection{ connHandle = h, connInput = dr, connState = sr } =
     got (new b) m
   go (G.Fail _ _ r) = next (new BS.empty) >> fail r -- not clear how can recover
   go d@(G.Partial r) = do
-    b <- (if block then BS.hGetSome else BS.hGetNonBlocking) h smallChunkSize
+    b <- BS.hGetSome {- BS.hGetNonBlocking -} h smallChunkSize
     if BS.null b
-      then Nothing <$ next d
+      then do
+        next d
+        writeIORef sr StateClosed
+        -- Should this instead be a special PGError?
+        ioError $ mkIOError eofErrorType "PGConnection" (Just h) Nothing
       else go $ r (Just b)
-  got :: G.Decoder PGBackendMessage -> PGBackendMessage -> IO (Maybe PGBackendMessage)
+  got :: G.Decoder PGBackendMessage -> PGBackendMessage -> IO PGBackendMessage
   got d (NoticeResponse m) = connLogMessage c m >> go d
   got d m@(ReadyForQuery s) = writeIORef sr s >> done d m
   got d (ParameterStatus k v) = do
@@ -438,29 +437,26 @@ pgRecv block c@PGConnection{ connHandle = h, connInput = dr, connState = sr } =
     go d
   got d m@AuthenticationOk = writeIORef sr StatePending >> done d m
   got d m = done d m
-  done d m = Just m <$ next d
+  done d m = m <$ next d
 
 -- |Receive the next message from PostgreSQL (low-level). Note that this will
 -- block until it gets a message.
 pgReceive :: PGConnection -> IO PGBackendMessage
 pgReceive c = do
-  r <- pgRecv True c
+  r <- pgRecv c
   case r of
-    Nothing -> do
-      writeIORef (connState c) StateClosed
-      fail $ "pgReceive: connection closed"
-    Just ErrorResponse{ messageFields = m } -> throwIO (PGError m)
-    Just m -> return m
+    ErrorResponse{ messageFields = m } -> throwIO (PGError m)
+    m -> return m
 
 -- |Connect to a PostgreSQL server.
 pgConnect :: PGDatabase -> IO PGConnection
 pgConnect db = do
+  param <- newIORef Map.empty
   state <- newIORef StateUnsync
   prepc <- newIORef 0
   prepm <- newIORef Map.empty
   input <- newIORef getMessage
   tr <- newIORef 0
-  param <- newIORef Map.empty
   h <- connectTo (pgDBHost db) (pgDBPort db)
   hSetBuffering h (BlockBuffering Nothing)
   let c = PGConnection
@@ -550,16 +546,13 @@ pgSync c@PGConnection{ connState = sr } = do
     _ -> return ()
   where
   wait = do
-    r <- pgRecv True c
+    r <- pgRecv c
     case r of
-      Nothing -> do
-        writeIORef sr StateClosed
-        fail $ "pgReceive: connection closed"
-      (Just (ErrorResponse{ messageFields = m })) -> do
+      ErrorResponse{ messageFields = m } -> do
         connLogMessage c m
         wait
-      (Just (ReadyForQuery _)) -> return ()
-      (Just m) -> do
+      ReadyForQuery _ -> return ()
+      m -> do
         connLogMessage c $ makeMessage (BSC.pack $ "Unexpected server message: " ++ show m) "Each statement should only contain a single query"
         wait
     
@@ -586,7 +579,7 @@ pgDescribe h sql types nulls = do
   ParameterDescription ps <- pgReceive h
   (,) ps <$> (mapM desc . rowDescription =<< pgReceive h)
   where
-  desc (PGColDescription{ colName = name, colTable = tab, colNumber = col, colType = typ }) = do
+  desc (PGColDescription{ pgColName = name, pgColTable = tab, pgColNumber = col, pgColType = typ }) = do
     n <- nullable tab col
     return (name, typ, n)
   -- We don't get nullability indication from PostgreSQL, at least not directly.
@@ -627,7 +620,7 @@ pgSimpleQuery h sql = do
   pgFlush h
   go start where 
   go = (pgReceive h >>=)
-  start (RowDescription rd) = go $ row (map colBinary rd) id
+  start (RowDescription rd) = go $ row (map pgColBinary rd) id
   start (CommandComplete c) = got c []
   start EmptyQueryResponse = return (0, [])
   start m = fail $ "pgSimpleQuery: unexpected response: " ++ show m

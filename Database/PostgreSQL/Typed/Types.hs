@@ -37,6 +37,7 @@ module Database.PostgreSQL.Typed.Types
 
   -- * Conversion utilities
   , pgQuote
+  , pgDQuote'
   , pgDQuote
   , parsePGDQuote
   , buildPGValue
@@ -237,16 +238,19 @@ pgQuote = pgQuoteUnsafe . BSC.intercalate (BSC.pack "''") . BSC.split '\''
 buildPGValue :: BSB.Builder -> BS.ByteString
 buildPGValue = BSL.toStrict . BSB.toLazyByteString
 
+-- |Double-quote a value.
+pgDQuote' :: BS.ByteString -> BSB.Builder
+pgDQuote' s = dq <> BSBP.primMapByteStringBounded ec s <> dq where
+  dq = BSB.char7 '"'
+  ec = BSBP.condB (\c -> c == c2w '"' || c == c2w '\\') bs (BSBP.liftFixedToBounded BSBP.word8)
+  bs = BSBP.liftFixedToBounded $ ((,) '\\') BSBP.>$< (BSBP.char7 BSBP.>*< BSBP.word8)
+
 -- |Double-quote a value if it's \"\", \"null\", or contains any whitespace, \'\"\', \'\\\', or the characters given in the first argument.
 -- Checking all these things may not be worth it.  We could just double-quote everything.
 pgDQuote :: [Char] -> BS.ByteString -> BSB.Builder
 pgDQuote unsafe s
-  | BS.null s || BSC.any (\c -> isSpace c || c == '"' || c == '\\' || c `elem` unsafe) s || BSC.map toLower s == BSC.pack "null" =
-    dq <> BSBP.primMapByteStringBounded ec s <> dq
-  | otherwise = BSB.byteString s where
-  dq = BSB.char7 '"'
-  ec = BSBP.condB (\c -> c == c2w '"' || c == c2w '\\') bs (BSBP.liftFixedToBounded BSBP.word8)
-  bs = BSBP.liftFixedToBounded $ ((,) '\\') BSBP.>$< (BSBP.char7 BSBP.>*< BSBP.word8)
+  | BS.null s || BSC.any (\c -> isSpace c || c == '"' || c == '\\' || c `elem` unsafe) s || BSC.map toLower s == BSC.pack "null" = pgDQuote' s
+  | otherwise = BSB.byteString s
 
 -- |Parse double-quoted values ala 'pgDQuote'.
 parsePGDQuote :: Bool -> [Char] -> (BS.ByteString -> Bool) -> P.Parser (Maybe BS.ByteString)

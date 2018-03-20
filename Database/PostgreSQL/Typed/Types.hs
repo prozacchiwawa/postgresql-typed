@@ -37,8 +37,8 @@ module Database.PostgreSQL.Typed.Types
 
   -- * Conversion utilities
   , pgQuote
-  , pgDQuote'
   , pgDQuote
+  , pgDQuoteFrom
   , parsePGDQuote
   , buildPGValue
   ) where
@@ -238,18 +238,18 @@ pgQuote = pgQuoteUnsafe . BSC.intercalate (BSC.pack "''") . BSC.split '\''
 buildPGValue :: BSB.Builder -> BS.ByteString
 buildPGValue = BSL.toStrict . BSB.toLazyByteString
 
--- |Double-quote a value.
-pgDQuote' :: BS.ByteString -> BSB.Builder
-pgDQuote' s = dq <> BSBP.primMapByteStringBounded ec s <> dq where
+-- |Double-quote a value (e.g., as an identifier).
+-- Does not properly handle unicode escaping (yet).
+pgDQuote :: BS.ByteString -> BSB.Builder
+pgDQuote s = dq <> BSBP.primMapByteStringBounded ec s <> dq where
   dq = BSB.char7 '"'
   ec = BSBP.condB (\c -> c == c2w '"' || c == c2w '\\') bs (BSBP.liftFixedToBounded BSBP.word8)
   bs = BSBP.liftFixedToBounded $ ((,) '\\') BSBP.>$< (BSBP.char7 BSBP.>*< BSBP.word8)
 
 -- |Double-quote a value if it's \"\", \"null\", or contains any whitespace, \'\"\', \'\\\', or the characters given in the first argument.
--- Checking all these things may not be worth it.  We could just double-quote everything.
-pgDQuote :: [Char] -> BS.ByteString -> BSB.Builder
-pgDQuote unsafe s
-  | BS.null s || BSC.any (\c -> isSpace c || c == '"' || c == '\\' || c `elem` unsafe) s || BSC.map toLower s == BSC.pack "null" = pgDQuote' s
+pgDQuoteFrom :: [Char] -> BS.ByteString -> BSB.Builder
+pgDQuoteFrom unsafe s
+  | BS.null s || BSC.any (\c -> isSpace c || c == '"' || c == '\\' || c `elem` unsafe) s || BSC.map toLower s == BSC.pack "null" = pgDQuote s
   | otherwise = BSB.byteString s
 
 -- |Parse double-quoted values ala 'pgDQuote'.
@@ -776,7 +776,7 @@ newtype PGRecord = PGRecord [Maybe PGTextValue]
 class PGType t => PGRecordType t
 instance PGRecordType t => PGParameter t PGRecord where
   pgEncode _ (PGRecord l) =
-    buildPGValue $ BSB.char7 '(' <> mconcat (intersperse (BSB.char7 ',') $ map (maybe mempty (pgDQuote "(),")) l) <> BSB.char7 ')'
+    buildPGValue $ BSB.char7 '(' <> mconcat (intersperse (BSB.char7 ',') $ map (maybe mempty (pgDQuoteFrom "(),")) l) <> BSB.char7 ')'
   pgLiteral _ (PGRecord l) =
     BSC.pack "ROW(" <> BS.intercalate (BSC.singleton ',') (map (maybe (BSC.pack "NULL") pgQuote) l) `BSC.snoc` ')'
 instance PGRecordType t => PGColumn t PGRecord where

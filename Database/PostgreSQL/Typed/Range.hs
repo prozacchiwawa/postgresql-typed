@@ -235,7 +235,7 @@ instance (PGRangeType t, PGParameter (PGSubType t) a) => PGParameter t (Range a)
       <> pc ']' ')' u
     where
     pb Nothing = mempty
-    pb (Just b) = pgDQuote "(),[]" $ pgEncode (pgRangeElementType tr) b
+    pb (Just b) = pgDQuoteFrom "(),[]" $ pgEncode (pgRangeElementType tr) b
     pc c o b = BSB.char7 $ if boundClosed b then c else o
 instance (PGRangeType t, PGColumn (PGSubType t) a) => PGColumn t (Range a) where
   pgDecode tr a = either (error . ("pgDecode range (" ++) . (++ ("): " ++ BSC.unpack a))) id $ P.parseOnly per a where

@@ -54,7 +54,7 @@ instance
     (PGArrayType t, PGParameter (PGElemType t) a) => PGParameter t (PGArray a) where
   pgEncode ta l = buildPGValue $ BSB.char7 '{' <> mconcat (intersperse (BSB.char7 $ pgArrayDelim ta) $ map el l) <> BSB.char7 '}' where
     el Nothing = BSB.string7 "null"
-    el (Just e) = pgDQuote (pgArrayDelim ta : "{}") $ pgEncode (pgArrayElementType ta) e
+    el (Just e) = pgDQuoteFrom (pgArrayDelim ta : "{}") $ pgEncode (pgArrayElementType ta) e
 #if __GLASGOW_HASKELL__ >= 710
 -- |Allow entirely non-null arrays as parameter inputs only.
 -- (Only supported on ghc >= 7.10 due to instance overlap.)

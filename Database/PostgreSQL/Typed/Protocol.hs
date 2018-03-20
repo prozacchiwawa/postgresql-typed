@@ -906,7 +906,7 @@ pgBind c n bind = do
   rowDescription <$> pgRecv c
   where sn = preparedStatementName n
 
--- |Fetch a single row from an executed prepared statement, returning the next N result rows (if any) and number of affected rows when complete.
+-- |Fetch some rows from an executed prepared statement, returning the next N result rows (if any) and number of affected rows when complete.
 pgFetch :: PGConnection -> PGPreparedStatement -> Word32 -- ^Maximum number of rows to return, or 0 for all
   -> IO ([PGValues], Maybe Integer)
 pgFetch c n count = do

@@ -14,17 +14,21 @@
 module Database.PostgreSQL.Typed.Range where
 
 #if !MIN_VERSION_base(4,8,0)
-import Control.Applicative ((<$>), (<$))
+import           Control.Applicative ((<$>), (<$))
 #endif
-import Control.Monad (guard)
+import           Control.Monad (guard)
 import qualified Data.Attoparsec.ByteString.Char8 as P
 import qualified Data.ByteString.Builder as BSB
 import qualified Data.ByteString.Char8 as BSC
-import Data.Monoid ((<>))
+#if MIN_VERSION_base(4,9,0)
+import           Data.Semigroup (Semigroup(..))
+#else
+import           Data.Monoid ((<>))
 #if !MIN_VERSION_base(4,8,0)
-import Data.Monoid (Monoid(..))
+import           Data.Monoid (Monoid(..))
 #endif
-import GHC.TypeLits (Symbol)
+#endif
+import           GHC.TypeLits (Symbol)
 
 import Database.PostgreSQL.Typed.Types
 
@@ -205,18 +209,25 @@ intersect :: Ord a => Range a -> Range a -> Range a
 intersect (Range la ua) (Range lb ub) = normalize $ Range (max la lb) (min ua ub)
 intersect _ _ = Empty
 
+-- |Union ranges.  Fails if ranges are disjoint.
+union :: Ord a => Range a -> Range a -> Range a
+union Empty r = r
+union r Empty = r
+union _ra@(Range la ua) _rb@(Range lb ub)
+  -- isEmpty _ra = _rb
+  -- isEmpty _rb = _ra
+  | Bounded False False <- compareBounds lb ua = error "union: disjoint Ranges"
+  | Bounded False False <- compareBounds la ub = error "union: disjoint Ranges"
+  | otherwise = Range (min la lb) (max ua ub)
+
+#if MIN_VERSION_base(4,9,0)
+instance Ord a => Semigroup (Range a) where
+  (<>) = union
+#endif
+
 instance Ord a => Monoid (Range a) where
   mempty = Empty
-  -- |Union ranges.  Fails if ranges are disjoint.
-  mappend Empty r = r
-  mappend r Empty = r
-  mappend _ra@(Range la ua) _rb@(Range lb ub)
-    -- isEmpty _ra = _rb
-    -- isEmpty _rb = _ra
-    | Bounded False False <- compareBounds lb ua = error "mappend: disjoint Ranges"
-    | Bounded False False <- compareBounds la ub = error "mappend: disjoint Ranges"
-    | otherwise = Range (min la lb) (max ua ub)
-
+  mappend = union
 
 -- |Class indicating that the first PostgreSQL type is a range of the second.
 -- This implies 'PGParameter' and 'PGColumn' instances that will work for any type.

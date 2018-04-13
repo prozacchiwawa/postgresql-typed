@@ -213,7 +213,7 @@ makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
 #endif
       )
       prep)
-    `TH.AppE` TH.LamE [TH.VarP e, TH.ListP pats] (TH.TupE conv))
+    `TH.AppE` TH.LamE [TH.VarP e, TH.TildeP (TH.ListP pats)] (TH.TupE conv))
     <$> mapM parse exprs
   where
   (sqlp, exprs) = sqlPlaceholders sqle

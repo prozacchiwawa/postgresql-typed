@@ -184,6 +184,7 @@ makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
   when (length pt < length exprs) $ fail "Not all expression placeholders were recognized by PostgreSQL"
 
   e <- TH.newName "_tenv"
+  l <- TH.newName "l"
   (vars, vals) <- mapAndUnzipM (\t -> do
     v <- newName 'p' $ tpgValueName t
     return 
@@ -213,7 +214,10 @@ makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
 #endif
       )
       prep)
-    `TH.AppE` TH.LamE [TH.VarP e, TH.TildeP (TH.ListP pats)] (TH.TupE conv))
+    `TH.AppE` TH.LamE [TH.VarP e, TH.VarP l] (TH.CaseE (TH.VarE l)
+      [ TH.Match (TH.ListP pats) (TH.NormalB $ TH.TupE conv) []
+      , TH.Match TH.WildP (TH.NormalB $ TH.VarE 'error `TH.AppE` TH.LitE (TH.StringL "pgSQL: result arity mismatch")) []
+      ]))
     <$> mapM parse exprs
   where
   (sqlp, exprs) = sqlPlaceholders sqle

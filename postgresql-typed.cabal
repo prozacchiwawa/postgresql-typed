@@ -131,3 +131,16 @@ test-suite hdbc
     build-depends: base, network, time, containers, convertible, postgresql-typed, HDBC, HUnit
   else
     buildable: False
+
+benchmark bench
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is: Bench.hs
+  other-modules: Connect
+  build-depends:
+    base,
+    bytestring,
+    time,
+    network,
+    criterion,
+    postgresql-typed

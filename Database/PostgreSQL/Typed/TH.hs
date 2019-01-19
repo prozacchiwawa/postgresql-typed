@@ -20,27 +20,23 @@ module Database.PostgreSQL.Typed.TH
   ) where
 
 #if !MIN_VERSION_base(4,8,0)
-import Control.Applicative ((<$>), (<$))
+import           Control.Applicative ((<$>), (<$))
 #endif
-import Control.Applicative ((<|>))
-import Control.Concurrent.MVar (MVar, newMVar, takeMVar, putMVar, withMVar)
-import Control.Exception (onException, finally)
-import Control.Monad (liftM2)
+import           Control.Applicative ((<|>))
+import           Control.Concurrent.MVar (MVar, newMVar, takeMVar, putMVar, withMVar)
+import           Control.Exception (onException, finally)
+import           Control.Monad (liftM2)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.UTF8 as BSU
 import qualified Data.Foldable as Fold
-import Data.Maybe (isJust, fromMaybe)
-import Data.String (fromString)
+import           Data.Maybe (isJust, fromMaybe)
+import           Data.String (fromString)
 import qualified Data.Traversable as Tv
 import qualified Language.Haskell.TH as TH
-import Network (PortID(PortNumber
-#ifndef mingw32_HOST_OS
-  , UnixSocket
-#endif
-  ), PortNumber)
-import System.Environment (lookupEnv)
-import System.IO.Unsafe (unsafePerformIO, unsafeInterleaveIO)
+import qualified Network.Socket as Net
+import           System.Environment (lookupEnv)
+import           System.IO.Unsafe (unsafePerformIO, unsafeInterleaveIO)
 
 import Database.PostgreSQL.Typed.Types
 import Database.PostgreSQL.Typed.Protocol
@@ -53,17 +49,16 @@ getTPGDatabase = do
   user <- fromMaybe "postgres" <$> liftM2 (<|>) (lookupEnv "TPG_USER") (lookupEnv "USER")
   db   <- fromMaybe user <$> lookupEnv "TPG_DB"
   host <- fromMaybe "localhost" <$> lookupEnv "TPG_HOST"
-  pnum <- maybe (5432 :: PortNumber) ((fromIntegral :: Int -> PortNumber) . read) <$> lookupEnv "TPG_PORT"
+  pnum <- fromMaybe "5432" <$> lookupEnv "TPG_PORT"
 #ifdef mingw32_HOST_OS
-  let port = PortNumber pnum
+  let port = Right pnum
 #else
-  port <- maybe (PortNumber pnum) UnixSocket <$> lookupEnv "TPG_SOCK"
+  port <- maybe (Right pnum) Left <$> lookupEnv "TPG_SOCK"
 #endif
   pass <- fromMaybe "" <$> lookupEnv "TPG_PASS"
   debug <- isJust <$> lookupEnv "TPG_DEBUG"
   return $ defaultPGDatabase
-    { pgDBHost = host
-    , pgDBPort = port
+    { pgDBAddr = either (Right . Net.SockAddrUnix) (Left . (,) host) port
     , pgDBName = BSU.fromString db
     , pgDBUser = BSU.fromString user
     , pgDBPass = BSU.fromString pass

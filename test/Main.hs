@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings, FlexibleInstances, MultiParamTypeClasses, DataKinds, DeriveDataTypeable, TypeFamilies, PatternGuards, StandaloneDeriving #-}
-{-# OPTIONS_GHC -fno-warn-orphans #-}
+{-# OPTIONS_GHC -fno-warn-orphans -Wincomplete-uni-patterns #-}
 --{-# OPTIONS_GHC -ddump-splices #-}
 module Main (main) where
 

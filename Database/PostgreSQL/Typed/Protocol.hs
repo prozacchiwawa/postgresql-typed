@@ -87,8 +87,8 @@ import           Data.Typeable (Typeable)
 import           Data.Word (Word)
 #endif
 import           Data.Word (Word32)
-import           Network (HostName, PortID(..), connectTo)
-import           System.IO (Handle, hFlush, hClose, stderr, hPutStrLn, hSetBuffering, BufferMode(BlockBuffering))
+import qualified Network.Socket as Net
+import           System.IO (Handle, hFlush, hClose, stderr, hPutStrLn, hSetBuffering, BufferMode(BlockBuffering), IOMode(ReadWriteMode))
 import           System.IO.Error (mkIOError, eofErrorType, ioError)
 import           System.IO.Unsafe (unsafeInterleaveIO)
 import           Text.Read (readMaybe)
@@ -109,8 +109,7 @@ data PGState
 
 -- |Information for how to connect to a database, to be passed to 'pgConnect'.
 data PGDatabase = PGDatabase
-  { pgDBHost :: HostName -- ^ The hostname (ignored if 'pgDBPort' is 'UnixSocket')
-  , pgDBPort :: PortID -- ^ The port, likely either @PortNumber 5432@ or @UnixSocket \"\/tmp\/.s.PGSQL.5432\"@
+  { pgDBAddr :: Either (Net.HostName, Net.ServiceName) Net.SockAddr -- ^ The address to connect to the server
   , pgDBName :: BS.ByteString -- ^ The name of the database
   , pgDBUser, pgDBPass :: BS.ByteString
   , pgDBParams :: [(BS.ByteString, BS.ByteString)] -- ^ Extra parameters to set for the connection (e.g., ("TimeZone", "UTC"))
@@ -119,8 +118,8 @@ data PGDatabase = PGDatabase
   }
 
 instance Eq PGDatabase where
-  PGDatabase h1 s1 n1 u1 p1 l1 _ _ == PGDatabase h2 s2 n2 u2 p2 l2 _ _ =
-    h1 == h2 && s1 == s2 && n1 == n2 && u1 == u2 && p1 == p2 && l1 == l2
+  PGDatabase a1 n1 u1 p1 l1 _ _ == PGDatabase a2 n2 u2 p2 l2 _ _ =
+    a1 == a2 && n1 == n2 && u1 == u2 && p1 == p2 && l1 == l2
 
 newtype PGPreparedStatement = PGPreparedStatement Integer
   deriving (Eq, Show)
@@ -274,8 +273,7 @@ defaultLogMessage = hPutStrLn stderr . displayMessage
 -- localhost:5432:postgres
 defaultPGDatabase :: PGDatabase
 defaultPGDatabase = PGDatabase
-  { pgDBHost = "localhost"
-  , pgDBPort = PortNumber 5432
+  { pgDBAddr = Right $ Net.SockAddrInet 5432 (Net.tupleToHostAddress (127,0,0,1))
   , pgDBName = "postgres"
   , pgDBUser = "postgres"
   , pgDBPass = BS.empty
@@ -552,7 +550,17 @@ pgConnect db = do
   input <- newIORef getMessage
   tr <- newIORef 0
   notif <- newIORef emptyQueue
-  h <- connectTo (pgDBHost db) (pgDBPort db)
+  addr <- either
+    (\(h,p) -> head <$> Net.getAddrInfo (Just defai) (Just h) (Just p))
+    (\a -> return defai{ Net.addrAddress = a, Net.addrFamily = case a of
+      Net.SockAddrInet{}  -> Net.AF_INET
+      Net.SockAddrInet6{} -> Net.AF_INET6
+      Net.SockAddrUnix{}  -> Net.AF_UNIX
+      _ -> Net.AF_UNSPEC })
+    $ pgDBAddr db
+  sock <- Net.socket (Net.addrFamily addr) (Net.addrSocketType addr) (Net.addrProtocol addr)
+  Net.connect sock $ Net.addrAddress addr
+  h <- Net.socketToHandle sock ReadWriteMode
   hSetBuffering h (BlockBuffering Nothing)
   let c = PGConnection
         { connHandle = h
@@ -580,6 +588,7 @@ pgConnect db = do
   pgFlush c
   conn c
   where
+  defai = Net.defaultHints{ Net.addrSocketType = Net.Stream }
   conn c = pgRecv c >>= msg c
   msg c (Right RecvSync) = do
     cp <- readIORef (connParameters c)

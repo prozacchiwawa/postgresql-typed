@@ -9,20 +9,20 @@
 
 module Database.PostgreSQL.Typed.Inet where
 
-import Control.Monad (void, guard, liftM2)
+import           Control.Monad (void, guard, liftM2)
 import qualified Data.ByteString.Char8 as BSC
-import Data.Bits (shiftL, (.|.))
-import Data.Maybe (fromJust)
-import Data.Word (Word8, Word16, Word32)
-import Foreign.Marshal.Array (withArray)
-import Foreign.Ptr (castPtr)
-import Foreign.Storable (peek)
+import           Data.Bits (shiftL, (.|.))
+import           Data.Maybe (fromJust)
+import           Data.Word (Word8, Word16, Word32)
+import           Foreign.Marshal.Array (withArray)
+import           Foreign.Ptr (castPtr)
+import           Foreign.Storable (peek)
 import qualified Network.Socket as Net
-import Numeric (readDec, readHex)
-import System.IO.Unsafe (unsafeDupablePerformIO)
+import           Numeric (readDec, readHex)
+import           System.IO.Unsafe (unsafeDupablePerformIO)
 import qualified Text.ParserCombinators.ReadP as RP
 import qualified Text.ParserCombinators.ReadPrec as RP (lift)
-import Text.Read (Read(readPrec))
+import           Text.Read (Read(readPrec))
 
 import Database.PostgreSQL.Typed.Types
 
@@ -50,7 +50,8 @@ bton32 (b1, b2, b3, b4) = unsafeDupablePerformIO $
 
 instance Show PGInet where
   -- This is how Network.Socket's Show SockAddr does it:
-  show (PGInet a 32) = unsafeDupablePerformIO $ Net.inet_ntoa a
+  show (PGInet a 32) = fromJust $ fst $ unsafeDupablePerformIO $
+    Net.getNameInfo [Net.NI_NUMERICHOST] True False (Net.SockAddrInet 0 a)
   show (PGInet a m) = show (PGInet a 32) ++ '/' : show m
   show (PGInet6 a 128) = fromJust $ fst $ unsafeDupablePerformIO $
     Net.getNameInfo [Net.NI_NUMERICHOST] True False (Net.SockAddrInet6 0 0 a 0)

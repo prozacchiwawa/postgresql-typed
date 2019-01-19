@@ -1,4 +1,5 @@
 {-# LANGUAGE TemplateHaskell #-}
+{-# OPTIONS_GHC -Wno-deprecations #-}
 -- Copyright 2010, 2011, 2012, 2013 Chris Forno
 
 -- |This module exposes the high-level Template Haskell interface for querying
@@ -22,15 +23,16 @@ module Database.PostgreSQL.Typed.TemplatePG
   , PG.pgDisconnect
   ) where
 
-import Control.Exception (catchJust)
-import Control.Monad (liftM, void, guard)
-import Data.ByteString (ByteString)
+import           Control.Exception (catchJust)
+import           Control.Monad (liftM, void, guard)
+import           Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy.Char8 as BSLC
-import Data.Maybe (listToMaybe, isJust)
+import           Data.Maybe (listToMaybe, isJust)
 import qualified Language.Haskell.TH as TH
-import Network (HostName, PortID(..))
-import System.Environment (lookupEnv)
+import           Network (HostName, PortID(..))
+import qualified Network.Socket as Net
+import           System.Environment (lookupEnv)
 
 import qualified Database.PostgreSQL.Typed.Protocol as PG
 import Database.PostgreSQL.Typed.Query
@@ -98,8 +100,10 @@ pgConnect :: HostName   -- ^ the host to connect to
 pgConnect h n d u p = do
   debug <- isJust `liftM` lookupEnv "TPG_DEBUG"
   PG.pgConnect $ PG.defaultPGDatabase
-    { PG.pgDBHost = h
-    , PG.pgDBPort = n
+    { PG.pgDBAddr = case n of
+        PortNumber s -> Left (h, show s)
+        Service    s -> Left (h, s)
+        UnixSocket s -> Right (Net.SockAddrUnix s)
     , PG.pgDBName = d
     , PG.pgDBUser = u
     , PG.pgDBPass = p

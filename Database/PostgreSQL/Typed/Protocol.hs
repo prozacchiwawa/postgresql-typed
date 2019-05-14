@@ -50,7 +50,6 @@ module Database.PostgreSQL.Typed.Protocol (
   , pgFetch
   -- * Notifications
   , PGNotification(..)
-  , pgGetNotifications
   , pgGetNotification
   ) where
 
@@ -88,7 +87,9 @@ import           Data.Word (Word)
 #endif
 import           Data.Word (Word32)
 import qualified Network.Socket as Net
-import           System.IO (Handle, hFlush, hClose, stderr, hPutStrLn, hSetBuffering, BufferMode(BlockBuffering), IOMode(ReadWriteMode))
+import qualified Network.Socket.ByteString as NetBS
+import qualified Network.Socket.ByteString.Lazy as NetBSL
+import           System.IO (stderr, hPutStrLn)
 import           System.IO.Error (mkIOError, eofErrorType, ioError)
 import           System.IO.Unsafe (unsafeInterleaveIO)
 import           Text.Read (readMaybe)
@@ -127,10 +128,28 @@ newtype PGPreparedStatement = PGPreparedStatement Integer
 preparedStatementName :: PGPreparedStatement -> BS.ByteString
 preparedStatementName (PGPreparedStatement n) = BSC.pack $ show n
 
+data PGHandle
+  = PGSocket Net.Socket
+
+pgPutBuilder :: PGHandle -> B.Builder -> IO ()
+pgPutBuilder (PGSocket s) b = NetBSL.sendAll s (B.toLazyByteString b)
+
+pgPut:: PGHandle -> BS.ByteString -> IO ()
+pgPut (PGSocket s) = NetBS.sendAll s
+
+pgGetSome :: PGHandle -> Int -> IO BSC.ByteString
+pgGetSome (PGSocket s) = NetBS.recv s
+
+pgCloseHandle :: PGHandle -> IO ()
+pgCloseHandle (PGSocket s) = Net.close s
+
+pgFlush :: PGConnection -> IO ()
+pgFlush PGConnection{connHandle=PGSocket _} = pure ()
+
 -- |An established connection to the PostgreSQL server.
 -- These objects are not thread-safe and must only be used for a single request at a time.
 data PGConnection = PGConnection
-  { connHandle :: Handle
+  { connHandle :: PGHandle
   , connDatabase :: !PGDatabase
   , connPid :: !Word32 -- unused
   , connKey :: !Word32 -- unused
@@ -176,9 +195,6 @@ deQueue :: Queue a -> (Queue a, Maybe a)
 deQueue (Queue e (x:d)) = (Queue e d, Just x)
 deQueue (Queue (reverse -> x:d) []) = (Queue [] d, Just x)
 deQueue q = (q, Nothing)
-
-queueToList :: Queue a -> [a]
-queueToList (Queue e d) = d ++ reverse e
 
 -- |PGFrontendMessage represents a PostgreSQL protocol message that we'll send.
 -- See <http://www.postgresql.org/docs/current/interactive/protocol-message-formats.html>.
@@ -359,8 +375,8 @@ pgSend :: PGConnection -> PGFrontendMessage -> IO ()
 pgSend c@PGConnection{ connHandle = h, connState = sr } msg = do
   modifyIORef' sr $ state msg
   when (connDebug c) $ putStrLn $ "> " ++ show msg
-  B.hPutBuilder h $ Fold.foldMap B.char7 t <> B.word32BE (fromIntegral $ 4 + BS.length b)
-  BS.hPut h b -- or B.hPutBuilder? But we've already had to convert to BS to get length
+  pgPutBuilder h $ Fold.foldMap B.char7 t <> B.word32BE (fromIntegral $ 4 + BS.length b)
+  pgPut h b -- or B.hPutBuilder? But we've already had to convert to BS to get length
   where
   (t, b) = second (BSL.toStrict . B.toLazyByteString) $ messageBody msg
   state _ StateClosed = StateClosed
@@ -368,9 +384,6 @@ pgSend c@PGConnection{ connHandle = h, connState = sr } msg = do
   state SimpleQuery{} _ = StatePending
   state Terminate _ = StateClosed
   state _ _ = StateUnsync
-
-pgFlush :: PGConnection -> IO ()
-pgFlush = hFlush . connHandle
 
 
 getByteStringNul :: G.Get BS.ByteString
@@ -450,13 +463,13 @@ class Show m => RecvMsg m where
   -- |Read from connection, returning immediate value or non-empty data
   recvMsgData :: PGConnection -> IO (Either m BS.ByteString)
   recvMsgData c = do
-    r <- BS.hGetSome (connHandle c) smallChunkSize
+    r <- pgGetSome (connHandle c) smallChunkSize
     if BS.null r
       then do
         writeIORef (connState c) StateClosed
-        hClose (connHandle c)
+        pgCloseHandle (connHandle c)
         -- Should this instead be a special PGError?
-        ioError $ mkIOError eofErrorType "PGConnection" (Just (connHandle c)) Nothing
+        ioError $ mkIOError eofErrorType "PGConnection" Nothing Nothing
       else
         return (Right r)
   -- |Expected ReadyForQuery message
@@ -474,15 +487,6 @@ class Show m => RecvMsg m where
   recvMsg :: PGConnection -> PGBackendMessage -> IO (Maybe m)
   recvMsg c m = Nothing <$ 
     connLogMessage c (makeMessage (BSC.pack $ "Unexpected server message: " ++ show m) "Each statement should only contain a single query")
-
--- |Process all pending messages
-data RecvNonBlock = RecvNonBlock deriving (Show)
-instance RecvMsg RecvNonBlock where
-  recvMsgData c = do
-    r <- BS.hGetNonBlocking (connHandle c) smallChunkSize
-    if BS.null r
-      then return (Left RecvNonBlock)
-      else return (Right r)
 
 -- |Wait for ReadyForQuery
 data RecvSync = RecvSync deriving (Show)
@@ -560,10 +564,8 @@ pgConnect db = do
     $ pgDBAddr db
   sock <- Net.socket (Net.addrFamily addr) (Net.addrSocketType addr) (Net.addrProtocol addr)
   Net.connect sock $ Net.addrAddress addr
-  h <- Net.socketToHandle sock ReadWriteMode
-  hSetBuffering h (BlockBuffering Nothing)
   let c = PGConnection
-        { connHandle = h
+        { connHandle = PGSocket sock
         , connDatabase = db
         , connPid = 0
         , connKey = 0
@@ -616,7 +618,7 @@ pgConnect db = do
 pgDisconnect :: PGConnection -- ^ a handle from 'pgConnect'
              -> IO ()
 pgDisconnect c@PGConnection{ connHandle = h } =
-  pgSend c Terminate `finally` hClose h
+  pgSend c Terminate `finally` pgCloseHandle h
 
 -- |Disconnect cleanly from the PostgreSQL server, but only if it's still connected.
 pgDisconnectOnce :: PGConnection -- ^ a handle from 'pgConnect'
@@ -936,12 +938,6 @@ pgFetch c n count = do
     return ([], Just $ rowsAffected d)
   res EmptyQueryResponse = return ([], Just 0)
   res m = fail $ "pgFetch: unexpected response: " ++ show m
-
--- |Retrieve any pending notifications.  Non-blocking.
-pgGetNotifications :: PGConnection -> IO [PGNotification]
-pgGetNotifications c = do
-  RecvNonBlock <- pgRecv c
-  queueToList <$> atomicModifyIORef' (connNotifications c) (emptyQueue, )
 
 -- |Retrieve a notifications, blocking if necessary.
 pgGetNotification :: PGConnection -> IO PGNotification

@@ -3,7 +3,7 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ViewPatterns #-}
 -- Copyright 2010, 2011, 2012, 2013 Chris Forno
@@ -57,7 +57,7 @@ module Database.PostgreSQL.Typed.Protocol (
 import           Control.Applicative ((<$>), (<$))
 #endif
 import           Control.Arrow ((&&&), first, second)
-import           Control.Exception (Exception, throwIO, onException, finally)
+import           Control.Exception (Exception, throwIO, onException, finally, catch)
 import           Control.Monad (void, liftM2, replicateM, when, unless)
 #ifdef VERSION_cryptonite
 import qualified Crypto.Hash as Hash
@@ -71,6 +71,7 @@ import           Data.ByteString.Internal (w2c)
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.Lazy.Char8 as BSLC
 import           Data.ByteString.Lazy.Internal (smallChunkSize)
+import           Data.Default (def)
 import qualified Data.Foldable as Fold
 import           Data.IORef (IORef, newIORef, writeIORef, readIORef, atomicModifyIORef, atomicModifyIORef', modifyIORef')
 import           Data.Int (Int32, Int16)
@@ -89,8 +90,10 @@ import           Data.Word (Word32)
 import qualified Network.Socket as Net
 import qualified Network.Socket.ByteString as NetBS
 import qualified Network.Socket.ByteString.Lazy as NetBSL
+import qualified Network.TLS as TLS
+import qualified Network.TLS.Extra.Cipher as TLS
 import           System.IO (stderr, hPutStrLn)
-import           System.IO.Error (mkIOError, eofErrorType, ioError)
+import           System.IO.Error (IOError, mkIOError, eofErrorType, ioError)
 import           System.IO.Unsafe (unsafeInterleaveIO)
 import           Text.Read (readMaybe)
 
@@ -116,11 +119,12 @@ data PGDatabase = PGDatabase
   , pgDBParams :: [(BS.ByteString, BS.ByteString)] -- ^ Extra parameters to set for the connection (e.g., ("TimeZone", "UTC"))
   , pgDBDebug :: Bool -- ^ Log all low-level server messages
   , pgDBLogMessage :: MessageFields -> IO () -- ^ How to log server notice messages (e.g., @print . PGError@)
+  , pgDBTLS :: Bool -- ^ Use TLS
   }
 
 instance Eq PGDatabase where
-  PGDatabase a1 n1 u1 p1 l1 _ _ == PGDatabase a2 n2 u2 p2 l2 _ _ =
-    a1 == a2 && n1 == n2 && u1 == u2 && p1 == p2 && l1 == l2
+  PGDatabase a1 n1 u1 p1 l1 _ _ s1 == PGDatabase a2 n2 u2 p2 l2 _ _ s2 =
+    a1 == a2 && n1 == n2 && u1 == u2 && p1 == p2 && l1 == l2 && s1 && s2
 
 newtype PGPreparedStatement = PGPreparedStatement Integer
   deriving (Eq, Show)
@@ -130,21 +134,29 @@ preparedStatementName (PGPreparedStatement n) = BSC.pack $ show n
 
 data PGHandle
   = PGSocket Net.Socket
+  | PGTlsContext TLS.Context
 
 pgPutBuilder :: PGHandle -> B.Builder -> IO ()
 pgPutBuilder (PGSocket s) b = NetBSL.sendAll s (B.toLazyByteString b)
+pgPutBuilder (PGTlsContext c) b = TLS.sendData c (B.toLazyByteString b)
 
 pgPut:: PGHandle -> BS.ByteString -> IO ()
-pgPut (PGSocket s) = NetBS.sendAll s
+pgPut (PGSocket s) bs = NetBS.sendAll s bs
+pgPut (PGTlsContext c) bs = TLS.sendData c (BSL.fromChunks [bs])
 
 pgGetSome :: PGHandle -> Int -> IO BSC.ByteString
-pgGetSome (PGSocket s) = NetBS.recv s
+pgGetSome (PGSocket s) count = NetBS.recv s count
+pgGetSome (PGTlsContext c) _ = TLS.recvData c
 
 pgCloseHandle :: PGHandle -> IO ()
 pgCloseHandle (PGSocket s) = Net.close s
+pgCloseHandle (PGTlsContext c) = do
+  TLS.bye c `catch` \(_ :: IOError) -> pure ()
+  TLS.contextClose c
 
 pgFlush :: PGConnection -> IO ()
 pgFlush PGConnection{connHandle=PGSocket _} = pure ()
+pgFlush PGConnection{connHandle=PGTlsContext c} = TLS.contextFlush c
 
 -- |An established connection to the PostgreSQL server.
 -- These objects are not thread-safe and must only be used for a single request at a time.
@@ -296,6 +308,7 @@ defaultPGDatabase = PGDatabase
   , pgDBParams = []
   , pgDBDebug = False
   , pgDBLogMessage = defaultLogMessage
+  , pgDBTLS = False
   }
 
 connDebug :: PGConnection -> Bool
@@ -564,8 +577,38 @@ pgConnect db = do
     $ pgDBAddr db
   sock <- Net.socket (Net.addrFamily addr) (Net.addrSocketType addr) (Net.addrProtocol addr)
   Net.connect sock $ Net.addrAddress addr
+  pgHandle <- if pgDBTLS db
+    then do
+      let
+        params = (TLS.defaultParamsClient tlsHost tlsPort)
+          { TLS.clientSupported =
+              def { TLS.supportedCiphers = TLS.ciphersuite_strong }
+          , TLS.clientShared =
+              def { TLS.sharedValidationCache = noValidate } --FIXME: Validate server certificate
+          }
+        tlsHost = case pgDBAddr db of
+          Left (h,_) -> h
+          Right (Net.SockAddrUnix s) -> s
+          Right _ -> "some-socket"
+        tlsPort = case pgDBAddr db of
+          Left (_,p) -> BSC.pack p
+          Right _    -> "socket"
+        noValidate = TLS.ValidationCache
+          (\_ _ _ -> return TLS.ValidationCachePass)
+          (\_ _ _ -> return ())
+        sslRequest = B.toLazyByteString (B.word32BE 8 <> B.word32BE 80877103)
+      NetBSL.sendAll sock sslRequest
+      resp <- NetBS.recv sock 1
+      case resp of
+        "S" -> do
+          ctx <- TLS.contextNew sock params
+          void $ TLS.handshake ctx
+          pure $ PGTlsContext ctx
+        "N" -> throwIO (userError "Server does not support TLS")
+        _ -> throwIO (userError "Unexpected response from server when issuing SSLRequest")
+    else pure (PGSocket sock)
   let c = PGConnection
-        { connHandle = PGSocket sock
+        { connHandle = pgHandle
         , connDatabase = db
         , connPid = 0
         , connKey = 0

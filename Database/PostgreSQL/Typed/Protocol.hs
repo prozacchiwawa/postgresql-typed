@@ -130,7 +130,7 @@ data PGDatabase = PGDatabase
 
 instance Eq PGDatabase where
   PGDatabase a1 n1 u1 p1 l1 _ _ s1 == PGDatabase a2 n2 u2 p2 l2 _ _ s2 =
-    a1 == a2 && n1 == n2 && u1 == u2 && p1 == p2 && l1 == l2 && s1 && s2
+    a1 == a2 && n1 == n2 && u1 == u2 && p1 == p2 && l1 == l2 && s1 == s2
 
 newtype PGPreparedStatement = PGPreparedStatement Integer
   deriving (Eq, Show)

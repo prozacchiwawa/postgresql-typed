@@ -171,5 +171,8 @@ main = do
     Left e2 <- try $ pgSimpleQuery c "SELECT 1"
     assert $ pgErrorCode e2 == PGErr.in_failed_sql_transaction
 
+  [PGNotification _ "channame" "there", PGNotification _ "channame" ""] <- pgGetNotifications c
+  [] <- pgGetNotifications c
+
   pgDisconnect c
   exitSuccess

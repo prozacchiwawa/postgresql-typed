@@ -2,6 +2,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
@@ -51,6 +52,7 @@ module Database.PostgreSQL.Typed.Protocol (
   -- * Notifications
   , PGNotification(..)
   , pgGetNotification
+  , pgGetNotifications
   ) where
 
 #if !MIN_VERSION_base(4,8,0)
@@ -67,7 +69,7 @@ import qualified Data.Binary.Get as G
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Builder as B
 import qualified Data.ByteString.Char8 as BSC
-import           Data.ByteString.Internal (w2c)
+import           Data.ByteString.Internal (w2c, createAndTrim)
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.Lazy.Char8 as BSLC
 import           Data.ByteString.Lazy.Internal (smallChunkSize)
@@ -86,14 +88,18 @@ import           Data.Typeable (Typeable)
 #if !MIN_VERSION_base(4,8,0)
 import           Data.Word (Word)
 #endif
-import           Data.Word (Word32)
+import           Data.Word (Word32, Word8)
+import           Foreign.C.Error (eWOULDBLOCK, getErrno, throwErrno)
+import           Foreign.C.Types (CChar(..), CInt(..), CSize(..))
+import           Foreign.Ptr (Ptr, castPtr)
+import           GHC.IO.Exception (IOErrorType(InvalidArgument))
 import qualified Network.Socket as Net
 import qualified Network.Socket.ByteString as NetBS
 import qualified Network.Socket.ByteString.Lazy as NetBSL
 import qualified Network.TLS as TLS
 import qualified Network.TLS.Extra.Cipher as TLS
 import           System.IO (stderr, hPutStrLn)
-import           System.IO.Error (IOError, mkIOError, eofErrorType, ioError)
+import           System.IO.Error (IOError, mkIOError, eofErrorType, ioError, ioeSetErrorString)
 import           System.IO.Unsafe (unsafeInterleaveIO)
 import           Text.Read (readMaybe)
 
@@ -500,6 +506,17 @@ class Show m => RecvMsg m where
   recvMsg :: PGConnection -> PGBackendMessage -> IO (Maybe m)
   recvMsg c m = Nothing <$ 
     connLogMessage c (makeMessage (BSC.pack $ "Unexpected server message: " ++ show m) "Each statement should only contain a single query")
+
+-- |Process all pending messages
+data RecvNonBlock = RecvNonBlock deriving (Show)
+instance RecvMsg RecvNonBlock where
+  recvMsgData PGConnection{connHandle=PGSocket s} = do
+    r <- recvNoBlock s smallChunkSize
+    if BS.null r
+      then return (Left RecvNonBlock)
+      else return (Right r)
+  recvMsgData PGConnection{connHandle=PGTlsContext _} =
+    throwIO (userError "Non-blocking receive is not supported on TLS connections")
 
 -- |Wait for ReadyForQuery
 data RecvSync = RecvSync deriving (Show)
@@ -987,3 +1004,44 @@ pgGetNotification :: PGConnection -> IO PGNotification
 pgGetNotification c =
   maybe (pgRecv c) return
    =<< atomicModifyIORef' (connNotifications c) deQueue
+
+-- |Retrieve any pending notifications.  Non-blocking.
+pgGetNotifications :: PGConnection -> IO [PGNotification]
+pgGetNotifications c = do
+  RecvNonBlock <- pgRecv c
+  queueToList <$> atomicModifyIORef' (connNotifications c) (emptyQueue, )
+  where
+  queueToList :: Queue a -> [a]
+  queueToList (Queue e d) = d ++ reverse e
+
+
+recvNoBlock
+  :: Net.Socket        -- ^ Connected socket
+  -> Int               -- ^ Maximum number of bytes to receive
+  -> IO BS.ByteString  -- ^ Data received
+recvNoBlock s nbytes
+  | nbytes < 0 = ioError (mkInvalidRecvArgError "Database.PostgreSQL.Typed.Protocol.recvNoBlock")
+  | otherwise  = createAndTrim nbytes $ \ptr -> recvBufNoBlock s ptr nbytes
+
+recvBufNoBlock :: Net.Socket -> Ptr Word8 -> Int -> IO Int
+recvBufNoBlock s ptr nbytes
+ | nbytes <= 0 = ioError (mkInvalidRecvArgError "Database.PostgreSQL.Typed.recvBufNoBlock")
+ | otherwise   = do
+    len <- c_recv (Net.fdSocket s) (castPtr ptr) (fromIntegral nbytes) 0
+    if (len == -1)
+      then do
+        errno <- getErrno
+        if errno == eWOULDBLOCK
+          then return 0
+          else throwErrno "Database.PostgreSQL.Typed.recvBufNoBlock"
+      else
+      return $ fromIntegral len
+
+mkInvalidRecvArgError :: String -> IOError
+mkInvalidRecvArgError loc = ioeSetErrorString (mkIOError
+                                    InvalidArgument
+                                    loc Nothing Nothing) "non-positive length"
+
+
+foreign import ccall unsafe "recv"
+  c_recv :: CInt -> Ptr CChar -> CSize -> CInt -> IO CInt

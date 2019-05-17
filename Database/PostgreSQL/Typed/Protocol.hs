@@ -19,6 +19,8 @@ module Database.PostgreSQL.Typed.Protocol (
   , defaultPGDatabase
   , PGConnection
   , PGError(..)
+  , PGTlsMode(..)
+  , PGTlsValidateMode (..)
   , pgErrorCode
   , pgConnectionDatabase
   , pgTypeEnv
@@ -53,6 +55,8 @@ module Database.PostgreSQL.Typed.Protocol (
   , PGNotification(..)
   , pgGetNotification
   , pgGetNotifications
+  -- * Helpers
+  , pgTlsValidate
   ) where
 
 #if !MIN_VERSION_base(4,8,0)
@@ -89,7 +93,11 @@ import           Data.Typeable (Typeable)
 import           Data.Word (Word)
 #endif
 import           Data.Word (Word32, Word8)
-import           Foreign.C.Error (eWOULDBLOCK, getErrno, throwErrno)
+import           Data.X509 (SignedCertificate, HashALG(HashSHA256))
+import           Data.X509.Memory (readSignedObjectFromMemory)
+import           Data.X509.CertificateStore (makeCertificateStore)
+import qualified Data.X509.Validation
+import           Foreign.C.Error (eWOULDBLOCK, getErrno, errnoToIOError)
 import           Foreign.C.Types (CChar(..), CInt(..), CSize(..))
 import           Foreign.Ptr (Ptr, castPtr)
 import           GHC.IO.Exception (IOErrorType(InvalidArgument))
@@ -117,6 +125,31 @@ data PGState
   | StateClosed
   deriving (Show, Eq)
 
+data PGTlsValidateMode
+  = TlsValidateFull
+  -- ^ Equivalent to sslmode=verify-full. Ie: Check the FQDN against the
+  -- certicate's CN
+  | TlsValidateCA
+  -- ^ Equivalent to sslmode=verify-ca. Ie: Only check that the certificate has
+  -- been signed by the root certificate we provide
+  deriving (Show, Eq)
+
+data PGTlsMode
+  = TlsDisabled
+  -- ^ TLS is disabled
+  | TlsNoValidate
+  | TlsValidate PGTlsValidateMode SignedCertificate
+  deriving (Eq, Show)
+
+-- | Constructs a 'PGTlsMode' to validate the server certificate with given root
+-- certificate (in PEM format)
+pgTlsValidate :: PGTlsValidateMode -> BSC.ByteString -> Either String PGTlsMode
+pgTlsValidate mode certPem =
+  case readSignedObjectFromMemory certPem of
+    [x] -> Right (TlsValidate mode x)
+    []  -> Left "Could not parse any certificate in PEM"
+    _   -> Left "Many certificates in PEM"
+
 -- |Information for how to connect to a database, to be passed to 'pgConnect'.
 data PGDatabase = PGDatabase
   { pgDBAddr :: Either (Net.HostName, Net.ServiceName) Net.SockAddr -- ^ The address to connect to the server
@@ -125,7 +158,7 @@ data PGDatabase = PGDatabase
   , pgDBParams :: [(BS.ByteString, BS.ByteString)] -- ^ Extra parameters to set for the connection (e.g., ("TimeZone", "UTC"))
   , pgDBDebug :: Bool -- ^ Log all low-level server messages
   , pgDBLogMessage :: MessageFields -> IO () -- ^ How to log server notice messages (e.g., @print . PGError@)
-  , pgDBTLS :: Bool -- ^ Use TLS
+  , pgDBTLS :: PGTlsMode -- ^ TLS mode
   }
 
 instance Eq PGDatabase where
@@ -314,7 +347,7 @@ defaultPGDatabase = PGDatabase
   , pgDBParams = []
   , pgDBDebug = False
   , pgDBLogMessage = defaultLogMessage
-  , pgDBTLS = False
+  , pgDBTLS = TlsDisabled
   }
 
 connDebug :: PGConnection -> Bool
@@ -511,12 +544,12 @@ class Show m => RecvMsg m where
 data RecvNonBlock = RecvNonBlock deriving (Show)
 instance RecvMsg RecvNonBlock where
   recvMsgData PGConnection{connHandle=PGSocket s} = do
-    r <- recvNoBlock s smallChunkSize
+    r <- recvNonBlock s smallChunkSize
     if BS.null r
       then return (Left RecvNonBlock)
       else return (Right r)
   recvMsgData PGConnection{connHandle=PGTlsContext _} =
-    throwIO (userError "Non-blocking receive is not supported on TLS connections")
+    throwIO (userError "Non-blocking recvMsgData is not supported on TLS connections")
 
 -- |Wait for ReadyForQuery
 data RecvSync = RecvSync deriving (Show)
@@ -594,36 +627,7 @@ pgConnect db = do
     $ pgDBAddr db
   sock <- Net.socket (Net.addrFamily addr) (Net.addrSocketType addr) (Net.addrProtocol addr)
   Net.connect sock $ Net.addrAddress addr
-  pgHandle <- if pgDBTLS db
-    then do
-      let
-        params = (TLS.defaultParamsClient tlsHost tlsPort)
-          { TLS.clientSupported =
-              def { TLS.supportedCiphers = TLS.ciphersuite_strong }
-          , TLS.clientShared =
-              def { TLS.sharedValidationCache = noValidate } --FIXME: Validate server certificate
-          }
-        tlsHost = case pgDBAddr db of
-          Left (h,_) -> h
-          Right (Net.SockAddrUnix s) -> s
-          Right _ -> "some-socket"
-        tlsPort = case pgDBAddr db of
-          Left (_,p) -> BSC.pack p
-          Right _    -> "socket"
-        noValidate = TLS.ValidationCache
-          (\_ _ _ -> return TLS.ValidationCachePass)
-          (\_ _ _ -> return ())
-        sslRequest = B.toLazyByteString (B.word32BE 8 <> B.word32BE 80877103)
-      NetBSL.sendAll sock sslRequest
-      resp <- NetBS.recv sock 1
-      case resp of
-        "S" -> do
-          ctx <- TLS.contextNew sock params
-          void $ TLS.handshake ctx
-          pure $ PGTlsContext ctx
-        "N" -> throwIO (userError "Server does not support TLS")
-        _ -> throwIO (userError "Unexpected response from server when issuing SSLRequest")
-    else pure (PGSocket sock)
+  pgHandle <- mkPGHandle db sock
   let c = PGConnection
         { connHandle = pgHandle
         , connDatabase = db
@@ -673,6 +677,52 @@ pgConnect db = do
     conn c
 #endif
   msg _ (Left m) = fail $ "pgConnect: unexpected response: " ++ show m
+
+mkPGHandle :: PGDatabase -> Net.Socket -> IO PGHandle
+mkPGHandle db sock =
+  case pgDBTLS db of
+    TlsDisabled     -> pure (PGSocket sock)
+    TlsNoValidate   -> mkTlsContext
+    TlsValidate _ _ -> mkTlsContext
+  where
+    mkTlsContext = do
+      NetBSL.sendAll sock sslRequest
+      resp <- NetBS.recv sock 1
+      case resp of
+        "S" -> do
+          ctx <- TLS.contextNew sock params
+          void $ TLS.handshake ctx
+          pure $ PGTlsContext ctx
+        "N" -> throwIO (userError "Server does not support TLS")
+        _ -> throwIO (userError "Unexpected response from server when issuing SSLRequest")
+    params = (TLS.defaultParamsClient tlsHost tlsPort)
+      { TLS.clientSupported =
+          def { TLS.supportedCiphers = TLS.ciphersuite_strong }
+      , TLS.clientShared = clientShared
+      , TLS.clientHooks = clientHooks
+      }
+    tlsHost = case pgDBAddr db of
+      Left (h,_) -> h
+      Right (Net.SockAddrUnix s) -> s
+      Right _ -> "some-socket"
+    tlsPort = case pgDBAddr db of
+      Left (_,p) -> BSC.pack p
+      Right _    -> "socket"
+    clientShared =
+      case pgDBTLS db of
+        TlsDisabled -> def { TLS.sharedValidationCache = noValidate }
+        TlsNoValidate -> def { TLS.sharedValidationCache = noValidate }
+        TlsValidate _ sc -> def { TLS.sharedCAStore = makeCertificateStore [sc] }
+    clientHooks =
+      case pgDBTLS db of
+        TlsValidate TlsValidateCA _ -> def { TLS.onServerCertificate = validateNoCheckFQHN }
+        _                           -> def
+    validateNoCheckFQHN = Data.X509.Validation.validate HashSHA256 def (def { TLS.checkFQHN = False })
+
+    noValidate = TLS.ValidationCache
+      (\_ _ _ -> return TLS.ValidationCachePass)
+      (\_ _ _ -> return ())
+    sslRequest = B.toLazyByteString (B.word32BE 8 <> B.word32BE 80877103)
 
 -- |Disconnect cleanly from the PostgreSQL server.
 pgDisconnect :: PGConnection -- ^ a handle from 'pgConnect'
@@ -1015,17 +1065,17 @@ pgGetNotifications c = do
   queueToList (Queue e d) = d ++ reverse e
 
 
-recvNoBlock
+recvNonBlock
   :: Net.Socket        -- ^ Connected socket
   -> Int               -- ^ Maximum number of bytes to receive
   -> IO BS.ByteString  -- ^ Data received
-recvNoBlock s nbytes
-  | nbytes < 0 = ioError (mkInvalidRecvArgError "Database.PostgreSQL.Typed.Protocol.recvNoBlock")
-  | otherwise  = createAndTrim nbytes $ \ptr -> recvBufNoBlock s ptr nbytes
+recvNonBlock s nbytes
+  | nbytes < 0 = ioError (mkInvalidRecvArgError "Database.PostgreSQL.Typed.Protocol.recvNonBlock")
+  | otherwise  = createAndTrim nbytes $ \ptr -> recvBufNonBlock s ptr nbytes
 
-recvBufNoBlock :: Net.Socket -> Ptr Word8 -> Int -> IO Int
-recvBufNoBlock s ptr nbytes
- | nbytes <= 0 = ioError (mkInvalidRecvArgError "Database.PostgreSQL.Typed.recvBufNoBlock")
+recvBufNonBlock :: Net.Socket -> Ptr Word8 -> Int -> IO Int
+recvBufNonBlock s ptr nbytes
+ | nbytes <= 0 = ioError (mkInvalidRecvArgError "Database.PostgreSQL.Typed.recvBufNonBlock")
  | otherwise   = do
     len <- c_recv (Net.fdSocket s) (castPtr ptr) (fromIntegral nbytes) 0
     if (len == -1)
@@ -1033,7 +1083,7 @@ recvBufNoBlock s ptr nbytes
         errno <- getErrno
         if errno == eWOULDBLOCK
           then return 0
-          else throwErrno "Database.PostgreSQL.Typed.recvBufNoBlock"
+          else throwIO (errnoToIOError "recvBufNonBlock" errno Nothing (Just "Database.PostgreSQL.Typed"))
       else
       return $ fromIntegral len
 

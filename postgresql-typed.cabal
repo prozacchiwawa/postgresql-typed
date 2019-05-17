@@ -69,7 +69,10 @@ Library
     haskell-src-meta,
     network,
     attoparsec >= 0.12 && < 0.14,
-    utf8-string
+    utf8-string,
+    x509,
+    x509-store,
+    x509-validation
   Exposed-Modules:
     Database.PostgreSQL.Typed
     Database.PostgreSQL.Typed.Protocol

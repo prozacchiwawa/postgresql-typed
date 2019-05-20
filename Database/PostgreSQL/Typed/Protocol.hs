@@ -57,6 +57,7 @@ module Database.PostgreSQL.Typed.Protocol (
   , pgGetNotifications
   -- * Helpers
   , pgTlsValidate
+  , pgSupportsTls
   ) where
 
 #if !MIN_VERSION_base(4,8,0)
@@ -127,7 +128,7 @@ data PGState
 
 data PGTlsValidateMode
   = TlsValidateFull
-  -- ^ Equivalent to sslmode=verify-full. Ie: Check the FQDN against the
+  -- ^ Equivalent to sslmode=verify-full. Ie: Check the FQHN against the
   -- certicate's CN
   | TlsValidateCA
   -- ^ Equivalent to sslmode=verify-ca. Ie: Only check that the certificate has
@@ -213,6 +214,10 @@ data PGConnection = PGConnection
   , connTransaction :: IORef Word
   , connNotifications :: IORef (Queue PGNotification)
   }
+
+pgSupportsTls :: PGConnection -> Bool
+pgSupportsTls PGConnection{connHandle=PGTlsContext _} = True
+pgSupportsTls _ = False
 
 data PGColDescription = PGColDescription
   { pgColName :: BS.ByteString
@@ -1078,14 +1083,14 @@ recvBufNonBlock s ptr nbytes
  | nbytes <= 0 = ioError (mkInvalidRecvArgError "Database.PostgreSQL.Typed.recvBufNonBlock")
  | otherwise   = do
     len <- c_recv (Net.fdSocket s) (castPtr ptr) (fromIntegral nbytes) 0
-    if (len == -1)
+    if len == -1
       then do
         errno <- getErrno
         if errno == eWOULDBLOCK
           then return 0
           else throwIO (errnoToIOError "recvBufNonBlock" errno Nothing (Just "Database.PostgreSQL.Typed"))
       else
-      return $ fromIntegral len
+        return $ fromIntegral len
 
 mkInvalidRecvArgError :: String -> IOError
 mkInvalidRecvArgError loc = ioeSetErrorString (mkIOError

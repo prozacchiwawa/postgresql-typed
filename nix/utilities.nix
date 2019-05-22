@@ -113,8 +113,7 @@ in self: super: {
               export TPG_USER=$PGUSER
               #
               ${pg}/bin/initdb -E UTF8 $PGDATA
-              ${pg}/bin/postgres -D $PGDATA -k $PGHOST -c listen_addresses="" &
-              export pgpid=$!
+              ${pg}/bin/postgres -D $PGDATA -k $PGHOST  &
               echo -n "Waiting for database to start up..."
               while [[ ! -e $PGSOCK ]]; do sleep 0.1; done
               ${pg}/bin/createuser -h $PGHOST -U $(id -u --name) -s $PGUSER
@@ -125,7 +124,7 @@ in self: super: {
             }
             function killPG() {
               echo "Killing postgres database at $PGHOST"
-              kill $pgpid || true
+              pg_ctl stop || true
               echo "Waiting for postgres database to die ..."
               while [[ -e $PGSOCK ]]; do sleep 0.1; done
               echo "Postgres is dead, deleting its data dir"

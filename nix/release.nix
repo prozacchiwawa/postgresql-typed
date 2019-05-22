@@ -7,5 +7,5 @@ in
 {
   inherit (pkgs.myHaskellPackages)
     postgresql-typed
-    postgresql-typed-tls;
+    postgresql-typed-notls;
 }

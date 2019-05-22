@@ -32,18 +32,57 @@ let
   # This overlay extends a haskell package set with postgresql-typed
   haskellOverlay = pkgs: self: super: with pkgs.haskell.lib;
     {
-      # version without TLS
+      # version with TLS
       postgresql-typed =
         let
           src = pkgs.lib.cleanSource ../.;
           drv = self.callCabal2nix "postgresql-typed" src {};
           drvWithPostgres = withPostgres pkgs.${postgresql} drv;
-        in appendConfigureFlag drvWithPostgres "-f-TLS";
+        in pkgs.lib.overrideDerivation drvWithPostgres (old: {
+          checkPhase = ''
+            ${pkgs.openssl}/bin/openssl req -x509 -newkey rsa:2048 \
+              -keyout $PGDATA/server.key \
+              -out $PGDATA/server.crt \
+              -days 1 -nodes \
+              -subj "/C=US/ST=Somewhere/L=Earth/O=Test Network/OU=IT Department/CN=localhost"
+            chmod 0600 $PGDATA/server.key
+            echo 'ssl = on' >> $PGDATA/postgresql.conf
 
-      # version with TLS
-      postgresql-typed-tls = overrideCabal self.postgresql-typed (old: {
-        configureFlags = old.configureFlags or [] ++ ["-fTLS"];
-        #checkPhase = "..."; #TODO
+            # disallow non-ssl connections to make sure we're doing TLS
+            echo 'hostssl templatepg templatepg all trust' > $PGDATA/pg_hba.conf
+            echo 'hostnossl all all all reject' >> $PGDATA/pg_hba.conf
+
+            pg_ctl restart
+
+            export PGTLS=1
+            export PGPORT=5432
+
+            # First test TlsNoValidate
+            ./Setup test
+
+            # Test TlsValidateCA
+            export PGTLS_ROOTCERT=$(cat $PGDATA/server.crt)
+            ./Setup test
+
+            # Test TlsValidateFull
+            export PGTLS_VALIDATEFULL=1
+            ./Setup test
+
+            # Test that cert validation fails with invalid cert
+            ${pkgs.openssl}/bin/openssl req -x509 -newkey rsa:2048 \
+              -keyout other.key \
+              -out other.crt \
+              -days 1 -nodes \
+              -subj "/C=US/ST=Somewhere/L=Earth/O=Test Network/OU=IT Department/CN=localhost"
+            export PGTLS_ROOTCERT=$(cat other.crt)
+            ./Setup test && false || true
+            '';
+          });
+
+      # version without TLS
+      postgresql-typed-notls = pkgs.lib.overrideDerivation self.postgresql-typed (old: {
+        configureFlags = old.configureFlags or [] ++ ["-f-TLS"];
+        checkPhase = "./Setup test";
       });
     };
 in import realPkgsPath

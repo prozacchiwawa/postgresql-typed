@@ -133,7 +133,7 @@ test-suite hdbc
     Testbasics
     Tests
   if flag(HDBC)
-    build-depends: base, network, time, containers, convertible, postgresql-typed, HDBC, HUnit
+    build-depends: base, bytestring, network, time, containers, convertible, postgresql-typed, HDBC, HUnit
   else
     buildable: False
 

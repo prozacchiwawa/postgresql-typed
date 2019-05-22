@@ -3,3 +3,6 @@
 /errcodes
 /errcodes.hi
 /errcodes.o
+.ghc.environment.*
+result*
+dist*

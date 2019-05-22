@@ -102,7 +102,8 @@ in self: super: {
               export TZ='UTC'
               export PGHOST=$(mktemp -d)
               export PGDATA=$PGHOST/db
-              export PGSOCK=$PGHOST/.s.PGSQL.5432
+              export PGPORT=5433
+              export PGSOCK=$PGHOST/.s.PGSQL.$PGPORT
               export PGDATABASE=templatepg
               export PGUSER=templatepg
               # We set these environment variables so postgresql-typed knows how
@@ -113,6 +114,8 @@ in self: super: {
               export TPG_USER=$PGUSER
               #
               ${pg}/bin/initdb -E UTF8 $PGDATA
+              # avoid conflicts on travis and elsewhere
+              echo "port = $PGPORT" >> $PGDATA/postgresql.conf
               ${pg}/bin/postgres -D $PGDATA -k $PGHOST  &
               echo -n "Waiting for database to start up..."
               while [[ ! -e $PGSOCK ]]; do sleep 0.1; done

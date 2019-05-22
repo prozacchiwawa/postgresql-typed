@@ -47,6 +47,8 @@ let
               -subj "/C=US/ST=Somewhere/L=Earth/O=Test Network/OU=IT Department/CN=localhost"
             chmod 0600 $PGDATA/server.key
             echo 'ssl = on' >> $PGDATA/postgresql.conf
+            # avoid conflicts on travis and elsewhere
+            echo 'port = 5433' >> $PGDATA/postgresql.conf
 
             # disallow non-ssl connections to make sure we're doing TLS
             echo 'hostssl templatepg templatepg all trust' > $PGDATA/pg_hba.conf
@@ -55,7 +57,7 @@ let
             pg_ctl restart
 
             export PGTLS=1
-            export PGPORT=5432
+            export PGPORT=5433
 
             # First test TlsNoValidate
             ./Setup test

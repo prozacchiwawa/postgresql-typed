@@ -6,3 +6,4 @@
 .ghc.environment.*
 result*
 dist*
+*.sw?

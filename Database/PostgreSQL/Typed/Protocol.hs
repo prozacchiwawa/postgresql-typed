@@ -19,8 +19,10 @@ module Database.PostgreSQL.Typed.Protocol (
   , defaultPGDatabase
   , PGConnection
   , PGError(..)
+#ifdef HAVE_TLS
   , PGTlsMode(..)
   , PGTlsValidateMode (..)
+#endif
   , pgErrorCode
   , pgConnectionDatabase
   , pgTypeEnv
@@ -55,8 +57,10 @@ module Database.PostgreSQL.Typed.Protocol (
   , PGNotification(..)
   , pgGetNotification
   , pgGetNotifications
-  -- * Helpers
+#ifdef HAVE_TLS
+  -- * TLS Helpers
   , pgTlsValidate
+#endif
   , pgSupportsTls
   ) where
 
@@ -64,7 +68,10 @@ module Database.PostgreSQL.Typed.Protocol (
 import           Control.Applicative ((<$>), (<$))
 #endif
 import           Control.Arrow ((&&&), first, second)
-import           Control.Exception (Exception, throwIO, onException, finally, catch)
+import           Control.Exception (Exception, onException, finally, throwIO)
+#ifdef HAVE_TLS
+import           Control.Exception (catch)
+#endif
 import           Control.Monad (void, liftM2, replicateM, when, unless)
 #ifdef VERSION_cryptonite
 import qualified Crypto.Hash as Hash
@@ -78,7 +85,9 @@ import           Data.ByteString.Internal (w2c, createAndTrim)
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.Lazy.Char8 as BSLC
 import           Data.ByteString.Lazy.Internal (smallChunkSize)
+#ifdef HAVE_TLS
 import           Data.Default (def)
+#endif
 import qualified Data.Foldable as Fold
 import           Data.IORef (IORef, newIORef, writeIORef, readIORef, atomicModifyIORef, atomicModifyIORef', modifyIORef')
 import           Data.Int (Int32, Int16)
@@ -94,19 +103,25 @@ import           Data.Typeable (Typeable)
 import           Data.Word (Word)
 #endif
 import           Data.Word (Word32, Word8)
+#ifdef HAVE_TLS
 import           Data.X509 (SignedCertificate, HashALG(HashSHA256))
 import           Data.X509.Memory (readSignedObjectFromMemory)
 import           Data.X509.CertificateStore (makeCertificateStore)
 import qualified Data.X509.Validation
+#endif
+#ifndef mingw32_HOST_OS
 import           Foreign.C.Error (eWOULDBLOCK, getErrno, errnoToIOError)
 import           Foreign.C.Types (CChar(..), CInt(..), CSize(..))
 import           Foreign.Ptr (Ptr, castPtr)
 import           GHC.IO.Exception (IOErrorType(InvalidArgument))
+#endif
 import qualified Network.Socket as Net
 import qualified Network.Socket.ByteString as NetBS
 import qualified Network.Socket.ByteString.Lazy as NetBSL
+#ifdef HAVE_TLS
 import qualified Network.TLS as TLS
 import qualified Network.TLS.Extra.Cipher as TLS
+#endif
 import           System.IO (stderr, hPutStrLn)
 import           System.IO.Error (IOError, mkIOError, eofErrorType, ioError, ioeSetErrorString)
 import           System.IO.Unsafe (unsafeInterleaveIO)
@@ -126,6 +141,7 @@ data PGState
   | StateClosed
   deriving (Show, Eq)
 
+#ifdef HAVE_TLS
 data PGTlsValidateMode
   = TlsValidateFull
   -- ^ Equivalent to sslmode=verify-full. Ie: Check the FQHN against the
@@ -147,9 +163,16 @@ data PGTlsMode
 pgTlsValidate :: PGTlsValidateMode -> BSC.ByteString -> Either String PGTlsMode
 pgTlsValidate mode certPem =
   case readSignedObjectFromMemory certPem of
-    [x] -> Right (TlsValidate mode x)
     []  -> Left "Could not parse any certificate in PEM"
-    _   -> Left "Many certificates in PEM"
+    (x:_) -> Right (TlsValidate mode x)
+
+pgSupportsTls :: PGConnection -> Bool
+pgSupportsTls PGConnection{connHandle=PGTlsContext _} = True
+pgSupportsTls _ = False
+#else
+pgSupportsTls :: PGConnection -> Bool
+pgSupportsTls _ = False
+#endif
 
 -- |Information for how to connect to a database, to be passed to 'pgConnect'.
 data PGDatabase = PGDatabase
@@ -159,12 +182,19 @@ data PGDatabase = PGDatabase
   , pgDBParams :: [(BS.ByteString, BS.ByteString)] -- ^ Extra parameters to set for the connection (e.g., ("TimeZone", "UTC"))
   , pgDBDebug :: Bool -- ^ Log all low-level server messages
   , pgDBLogMessage :: MessageFields -> IO () -- ^ How to log server notice messages (e.g., @print . PGError@)
+#ifdef HAVE_TLS
   , pgDBTLS :: PGTlsMode -- ^ TLS mode
+#endif
   }
 
 instance Eq PGDatabase where
+#ifdef HAVE_TLS
   PGDatabase a1 n1 u1 p1 l1 _ _ s1 == PGDatabase a2 n2 u2 p2 l2 _ _ s2 =
     a1 == a2 && n1 == n2 && u1 == u2 && p1 == p2 && l1 == l2 && s1 == s2
+#else
+  PGDatabase a1 n1 u1 p1 l1 _ _ == PGDatabase a2 n2 u2 p2 l2 _ _ =
+    a1 == a2 && n1 == n2 && u1 == u2 && p1 == p2 && l1 == l2
+#endif
 
 newtype PGPreparedStatement = PGPreparedStatement Integer
   deriving (Eq, Show)
@@ -174,29 +204,41 @@ preparedStatementName (PGPreparedStatement n) = BSC.pack $ show n
 
 data PGHandle
   = PGSocket Net.Socket
+#ifdef HAVE_TLS
   | PGTlsContext TLS.Context
+#endif
 
 pgPutBuilder :: PGHandle -> B.Builder -> IO ()
 pgPutBuilder (PGSocket s) b = NetBSL.sendAll s (B.toLazyByteString b)
+#ifdef HAVE_TLS
 pgPutBuilder (PGTlsContext c) b = TLS.sendData c (B.toLazyByteString b)
+#endif
 
 pgPut:: PGHandle -> BS.ByteString -> IO ()
 pgPut (PGSocket s) bs = NetBS.sendAll s bs
+#ifdef HAVE_TLS
 pgPut (PGTlsContext c) bs = TLS.sendData c (BSL.fromChunks [bs])
+#endif
 
 pgGetSome :: PGHandle -> Int -> IO BSC.ByteString
 pgGetSome (PGSocket s) count = NetBS.recv s count
+#ifdef HAVE_TLS
 pgGetSome (PGTlsContext c) _ = TLS.recvData c
+#endif
 
 pgCloseHandle :: PGHandle -> IO ()
 pgCloseHandle (PGSocket s) = Net.close s
+#ifdef HAVE_TLS
 pgCloseHandle (PGTlsContext c) = do
   TLS.bye c `catch` \(_ :: IOError) -> pure ()
   TLS.contextClose c
+#endif
 
 pgFlush :: PGConnection -> IO ()
 pgFlush PGConnection{connHandle=PGSocket _} = pure ()
+#ifdef HAVE_TLS
 pgFlush PGConnection{connHandle=PGTlsContext c} = TLS.contextFlush c
+#endif
 
 -- |An established connection to the PostgreSQL server.
 -- These objects are not thread-safe and must only be used for a single request at a time.
@@ -214,10 +256,6 @@ data PGConnection = PGConnection
   , connTransaction :: IORef Word
   , connNotifications :: IORef (Queue PGNotification)
   }
-
-pgSupportsTls :: PGConnection -> Bool
-pgSupportsTls PGConnection{connHandle=PGTlsContext _} = True
-pgSupportsTls _ = False
 
 data PGColDescription = PGColDescription
   { pgColName :: BS.ByteString
@@ -352,7 +390,9 @@ defaultPGDatabase = PGDatabase
   , pgDBParams = []
   , pgDBDebug = False
   , pgDBLogMessage = defaultLogMessage
+#ifdef HAVE_TLS
   , pgDBTLS = TlsDisabled
+#endif
   }
 
 connDebug :: PGConnection -> Bool
@@ -548,13 +588,20 @@ class Show m => RecvMsg m where
 -- |Process all pending messages
 data RecvNonBlock = RecvNonBlock deriving (Show)
 instance RecvMsg RecvNonBlock where
+#ifndef mingw32_HOST_OS
   recvMsgData PGConnection{connHandle=PGSocket s} = do
     r <- recvNonBlock s smallChunkSize
     if BS.null r
       then return (Left RecvNonBlock)
       else return (Right r)
+#else
+  recvMsgData PGConnection{connHandle=PGSocket _} =
+    throwIO (userError "Non-blocking recvMsgData is not supported on mingw32 ATM")
+#endif
+#ifdef HAVE_TLS
   recvMsgData PGConnection{connHandle=PGTlsContext _} =
     throwIO (userError "Non-blocking recvMsgData is not supported on TLS connections")
+#endif
 
 -- |Wait for ReadyForQuery
 data RecvSync = RecvSync deriving (Show)
@@ -684,6 +731,7 @@ pgConnect db = do
   msg _ (Left m) = fail $ "pgConnect: unexpected response: " ++ show m
 
 mkPGHandle :: PGDatabase -> Net.Socket -> IO PGHandle
+#ifdef HAVE_TLS
 mkPGHandle db sock =
   case pgDBTLS db of
     TlsDisabled     -> pure (PGSocket sock)
@@ -728,6 +776,9 @@ mkPGHandle db sock =
       (\_ _ _ -> return TLS.ValidationCachePass)
       (\_ _ _ -> return ())
     sslRequest = B.toLazyByteString (B.word32BE 8 <> B.word32BE 80877103)
+#else
+mkPGHandle _ sock = pure (PGSocket sock)
+#endif
 
 -- |Disconnect cleanly from the PostgreSQL server.
 pgDisconnect :: PGConnection -- ^ a handle from 'pgConnect'
@@ -1070,6 +1121,8 @@ pgGetNotifications c = do
   queueToList (Queue e d) = d ++ reverse e
 
 
+--TODO: Implement non-blocking recv on mingw32
+#ifndef mingw32_HOST_OS
 recvNonBlock
   :: Net.Socket        -- ^ Connected socket
   -> Int               -- ^ Maximum number of bytes to receive
@@ -1100,3 +1153,4 @@ mkInvalidRecvArgError loc = ioeSetErrorString (mkIOError
 
 foreign import ccall unsafe "recv"
   c_recv :: CInt -> Ptr CChar -> CSize -> CInt -> IO CInt
+#endif

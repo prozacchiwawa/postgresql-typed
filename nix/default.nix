@@ -30,13 +30,21 @@ let
     };
 
   # This overlay extends a haskell package set with postgresql-typed
-  haskellOverlay = pkgs: self: super:
+  haskellOverlay = pkgs: self: super: with pkgs.haskell.lib;
     {
+      # version without TLS
       postgresql-typed =
         let
           src = pkgs.lib.cleanSource ../.;
           drv = self.callCabal2nix "postgresql-typed" src {};
-        in pkgs.haskell.lib.withPostgres pkgs.${postgresql} drv;
+          drvWithPostgres = withPostgres pkgs.${postgresql} drv;
+        in appendConfigureFlag drvWithPostgres "-f-TLS";
+
+      # version with TLS
+      postgresql-typed-tls = overrideCabal self.postgresql-typed (old: {
+        configureFlags = old.configureFlags or [] ++ ["-fTLS"];
+        #checkPhase = "..."; #TODO
+      });
     };
 in import realPkgsPath
   { overlays =

@@ -54,25 +54,24 @@ Flag aeson
 Flag HDBC
   Description: Provide an HDBC driver backend using the raw PostgreSQL protocol.
 
+Flag TLS
+  Description: Enable TLS support
+  Default: True
+
 Library
   Build-Depends:
     base >= 4.8 && < 5,
     array,
     binary,
     containers,
-    data-default,
     old-locale,
     time,
-    tls,
     bytestring >= 0.10.2,
     template-haskell,
     haskell-src-meta,
     network,
     attoparsec >= 0.12 && < 0.14,
-    utf8-string,
-    x509,
-    x509-store,
-    x509-validation
+    utf8-string
   Exposed-Modules:
     Database.PostgreSQL.Typed
     Database.PostgreSQL.Typed.Protocol
@@ -109,6 +108,9 @@ Library
     Build-Depends: HDBC >= 2.2
     Exposed-Modules:
       Database.PostgreSQL.Typed.HDBC
+  if flag(TLS)
+    Build-Depends: data-default, tls, x509, x509-store, x509-validation
+    Cpp-options: -DHAVE_TLS
 
 test-suite test
   type: exitcode-stdio-1.0

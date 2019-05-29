@@ -81,6 +81,7 @@ import           Data.Monoid ((<>))
 #if !MIN_VERSION_base(4,8,0)
 import           Data.Monoid (mempty)
 #endif
+import           Data.Time.Clock (getCurrentTime)
 import           Data.Tuple (swap)
 import           Data.Typeable (Typeable)
 #if !MIN_VERSION_base(4,8,0)
@@ -282,8 +283,10 @@ defaultPGDatabase = PGDatabase
   , pgDBLogMessage = defaultLogMessage
   }
 
-connDebug :: PGConnection -> Bool
-connDebug = pgDBDebug . connDatabase
+connDebugMsg :: PGConnection -> String -> IO ()
+connDebugMsg c msg = when (pgDBDebug $ connDatabase c) $ do
+  t <- getCurrentTime
+  hPutStrLn stderr $ show t ++ msg
 
 connLogMessage :: PGConnection -> MessageFields -> IO ()
 connLogMessage = pgDBLogMessage . connDatabase
@@ -358,7 +361,7 @@ messageBody Terminate = (Just 'X', mempty)
 pgSend :: PGConnection -> PGFrontendMessage -> IO ()
 pgSend c@PGConnection{ connHandle = h, connState = sr } msg = do
   modifyIORef' sr $ state msg
-  when (connDebug c) $ putStrLn $ "> " ++ show msg
+  connDebugMsg c $ "> " ++ show msg
   B.hPutBuilder h $ Fold.foldMap B.char7 t <> B.word32BE (fromIntegral $ 4 + BS.length b)
   BS.hPut h b -- or B.hPutBuilder? But we've already had to convert to BS to get length
   where
@@ -513,7 +516,7 @@ pgRecv c@PGConnection{ connInput = dr, connState = sr } =
 
   -- read and parse
   rcv (G.Done b _ m) = do
-    when (connDebug c) $ putStrLn $ "< " ++ show m
+    connDebugMsg c $ "< " ++ show m
     got (new b) m
   rcv (G.Fail _ _ r) = next (new BS.empty) >> fail r -- not clear how can recover
   rcv d@(G.Partial r) = recvMsgData c `onException` next d >>=

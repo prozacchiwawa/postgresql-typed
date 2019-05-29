@@ -678,6 +678,7 @@ pgConnect db = do
       _ -> Net.AF_UNSPEC })
     $ pgDBAddr db
   sock <- Net.socket (Net.addrFamily addr) (Net.addrSocketType addr) (Net.addrProtocol addr)
+  unless (Net.addrFamily addr == Net.AF_UNIX) $ Net.setSocketOption sock Net.NoDelay 1
   Net.connect sock $ Net.addrAddress addr
   pgHandle <- mkPGHandle db sock
   let c = PGConnection

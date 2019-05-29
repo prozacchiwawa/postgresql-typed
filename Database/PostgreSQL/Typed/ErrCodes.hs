@@ -1,4 +1,4 @@
--- Automatically generated from /src/postgresql-9.5.3/src/src/backend/utils/errcodes.txt using errcodes.hs 2016-09-28 20:17:05.706135604 UTC.
+-- Automatically generated from /src/postgresql-11.3/src/src/backend/utils/errcodes.txt using errcodes 2019-05-29 19:31:19.442545643 UTC.
 {-# LANGUAGE OverloadedStrings #-}
 -- |PostgreSQL error codes.
 module Database.PostgreSQL.Typed.ErrCodes (names
@@ -72,6 +72,7 @@ module Database.PostgreSQL.Typed.ErrCodes (names
   , nonstandard_use_of_escape_character
   , invalid_indicator_parameter_value
   , invalid_parameter_value
+  , invalid_preceding_or_following_size
   , invalid_regular_expression
   , invalid_row_count_in_limit_clause
   , invalid_row_count_in_result_offset_clause
@@ -83,6 +84,7 @@ module Database.PostgreSQL.Typed.ErrCodes (names
   , null_value_not_allowed
   , null_value_no_indicator_parameter
   , numeric_value_out_of_range
+  , sequence_generator_limit_exceeded
   , string_data_length_mismatch
   , string_data_right_truncation
   , substring_error
@@ -121,6 +123,7 @@ module Database.PostgreSQL.Typed.ErrCodes (names
   , schema_and_data_statement_mixing_not_supported
   , no_active_sql_transaction
   , in_failed_sql_transaction
+  , idle_in_transaction_session_timeout
   -- * Class 26 - Invalid SQL Statement Name
   , invalid_sql_statement_name
   -- * Class 27 - Triggered Data Change Violation
@@ -184,6 +187,7 @@ module Database.PostgreSQL.Typed.ErrCodes (names
   , collation_mismatch
   , indeterminate_collation
   , wrong_object_type
+  , generated_always
   , undefined_column
   , _UNDEFINED_CURSOR
   , _UNDEFINED_DATABASE
@@ -245,6 +249,8 @@ module Database.PostgreSQL.Typed.ErrCodes (names
   , io_error
   , undefined_file
   , duplicate_file
+  -- * Class 72 - Snapshot Failure
+  , snapshot_too_old
   -- * Class F0 - Configuration File Error
   , config_file_error
   , lock_file_exists
@@ -511,6 +517,10 @@ invalid_indicator_parameter_value = "22010"
 invalid_parameter_value :: ByteString
 invalid_parameter_value = "22023"
 
+-- |@INVALID_PRECEDING_OR_FOLLOWING_SIZE@: 22013 (Error)
+invalid_preceding_or_following_size :: ByteString
+invalid_preceding_or_following_size = "22013"
+
 -- |@INVALID_REGULAR_EXPRESSION@: 2201B (Error)
 invalid_regular_expression :: ByteString
 invalid_regular_expression = "2201B"
@@ -554,6 +564,10 @@ null_value_no_indicator_parameter = "22002"
 -- |@NUMERIC_VALUE_OUT_OF_RANGE@: 22003 (Error)
 numeric_value_out_of_range :: ByteString
 numeric_value_out_of_range = "22003"
+
+-- |@SEQUENCE_GENERATOR_LIMIT_EXCEEDED@: 2200H (Error)
+sequence_generator_limit_exceeded :: ByteString
+sequence_generator_limit_exceeded = "2200H"
 
 -- |@STRING_DATA_LENGTH_MISMATCH@: 22026 (Error)
 string_data_length_mismatch :: ByteString
@@ -694,6 +708,10 @@ no_active_sql_transaction = "25P01"
 -- |@IN_FAILED_SQL_TRANSACTION@: 25P02 (Error)
 in_failed_sql_transaction :: ByteString
 in_failed_sql_transaction = "25P02"
+
+-- |@IDLE_IN_TRANSACTION_SESSION_TIMEOUT@: 25P03 (Error)
+idle_in_transaction_session_timeout :: ByteString
+idle_in_transaction_session_timeout = "25P03"
 
 -- |@INVALID_SQL_STATEMENT_NAME@: 26000 (Error)
 invalid_sql_statement_name :: ByteString
@@ -890,6 +908,10 @@ indeterminate_collation = "42P22"
 -- |@WRONG_OBJECT_TYPE@: 42809 (Error)
 wrong_object_type :: ByteString
 wrong_object_type = "42809"
+
+-- |@GENERATED_ALWAYS@: 428C9 (Error)
+generated_always :: ByteString
+generated_always = "428C9"
 
 -- |@UNDEFINED_COLUMN@: 42703 (Error)
 undefined_column :: ByteString
@@ -1111,6 +1133,10 @@ undefined_file = "58P01"
 duplicate_file :: ByteString
 duplicate_file = "58P02"
 
+-- |@SNAPSHOT_TOO_OLD@: 72000 (Error)
+snapshot_too_old :: ByteString
+snapshot_too_old = "72000"
+
 -- |@CONFIG_FILE_ERROR@: F0000 (Error)
 config_file_error :: ByteString
 config_file_error = "F0000"
@@ -1308,6 +1334,7 @@ names = fromDistinctAscList
   ,(invalid_escape_octet,"invalid_escape_octet")
   ,(zero_length_character_string,"zero_length_character_string")
   ,(most_specific_type_mismatch,"most_specific_type_mismatch")
+  ,(sequence_generator_limit_exceeded,"sequence_generator_limit_exceeded")
   ,(not_an_xml_document,"not_an_xml_document")
   ,(invalid_xml_document,"invalid_xml_document")
   ,(invalid_xml_content,"invalid_xml_content")
@@ -1316,6 +1343,7 @@ names = fromDistinctAscList
   ,(invalid_indicator_parameter_value,"invalid_indicator_parameter_value")
   ,(substring_error,"substring_error")
   ,(division_by_zero,"division_by_zero")
+  ,(invalid_preceding_or_following_size,"invalid_preceding_or_following_size")
   ,(invalid_argument_for_ntile_function,"invalid_argument_for_ntile_function")
   ,(interval_field_overflow,"interval_field_overflow")
   ,(invalid_argument_for_nth_value_function,"invalid_argument_for_nth_value_function")
@@ -1363,6 +1391,7 @@ names = fromDistinctAscList
   ,(held_cursor_requires_same_isolation_level,"held_cursor_requires_same_isolation_level")
   ,(no_active_sql_transaction,"no_active_sql_transaction")
   ,(in_failed_sql_transaction,"in_failed_sql_transaction")
+  ,(idle_in_transaction_session_timeout,"idle_in_transaction_session_timeout")
   ,(invalid_sql_statement_name,"invalid_sql_statement_name")
   ,(_UNDEFINED_PSTATEMENT,"UNDEFINED_PSTATEMENT")
   ,(triggered_data_change_violation,"triggered_data_change_violation")
@@ -1420,6 +1449,7 @@ names = fromDistinctAscList
   ,(invalid_foreign_key,"invalid_foreign_key")
   ,(cannot_coerce,"cannot_coerce")
   ,(undefined_function,"undefined_function")
+  ,(generated_always,"generated_always")
   ,(reserved_name,"reserved_name")
   ,(undefined_table,"undefined_table")
   ,(undefined_parameter,"undefined_parameter")
@@ -1467,6 +1497,7 @@ names = fromDistinctAscList
   ,(io_error,"io_error")
   ,(undefined_file,"undefined_file")
   ,(duplicate_file,"duplicate_file")
+  ,(snapshot_too_old,"snapshot_too_old")
   ,(config_file_error,"config_file_error")
   ,(lock_file_exists,"lock_file_exists")
   ,(fdw_error,"fdw_error")

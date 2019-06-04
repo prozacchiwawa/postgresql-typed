@@ -24,7 +24,11 @@ db = unsafePerformIO $ do
   mPort <- lookupEnv "PGPORT"
   pgDBAddr <- case mPort of
     Nothing ->
+#ifndef mingw32_HOST_OS
       Right . SockAddrUnix . fromMaybe "/tmp/.s.PGSQL.5432" <$> lookupEnv "PGSOCK"
+#else
+      pure $ pgDBAddr defaultPGDatabase
+#endif
     Just port -> pure $ Left ("localhost", port)
 #ifdef HAVE_TLS
   pgDBTLS <- do
@@ -37,6 +41,7 @@ db = unsafePerformIO $ do
       (True,True,Just cert) -> either (throwIO . userError) pure $ pgTlsValidate TlsValidateFull cert
       (True,True,Nothing) -> throwIO $ userError "Need to pass the root certificate on the PGTLS_ROOTCERT environment variable to validate FQHN"
       (True,False,Just cert) -> either (throwIO . userError) pure $ pgTlsValidate TlsValidateCA cert
+  pgDBPass <- maybe BSC.empty BSC.pack <$> lookupEnv "PG_PASS"
 #endif
   pgDBDebug <- isJust <$> lookupEnv "PG_DEBUG"
   pure $ defaultPGDatabase
@@ -47,8 +52,7 @@ db = unsafePerformIO $ do
 #ifdef HAVE_TLS
     , pgDBTLS
 #endif
-#ifndef mingw32_HOST_OS
     , pgDBAddr
-#endif
+    , pgDBPass
     }
 {-# NOINLINE db #-}

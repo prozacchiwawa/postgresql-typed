@@ -4,6 +4,7 @@
 module Main (main) where
 
 import Control.Exception (try)
+import Control.Monad (unless)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import Data.Char (isDigit, toUpper)
@@ -171,8 +172,10 @@ main = do
     Left e2 <- try $ pgSimpleQuery c "SELECT 1"
     assert $ pgErrorCode e2 == PGErr.in_failed_sql_transaction
 
-  [PGNotification _ "channame" "there", PGNotification _ "channame" ""] <- pgGetNotifications c
-  [] <- pgGetNotifications c
+  unless (pgSupportsTls c) $ do
+    [PGNotification _ "channame" "there", PGNotification _ "channame" ""] <- pgGetNotifications c
+    [] <- pgGetNotifications c
+    pure ()
 
   pgDisconnect c
   exitSuccess

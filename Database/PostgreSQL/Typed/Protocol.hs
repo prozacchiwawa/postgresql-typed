@@ -2,8 +2,9 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ViewPatterns #-}
 -- Copyright 2010, 2011, 2012, 2013 Chris Forno
@@ -18,6 +19,10 @@ module Database.PostgreSQL.Typed.Protocol (
   , defaultPGDatabase
   , PGConnection
   , PGError(..)
+#ifdef HAVE_TLS
+  , PGTlsMode(..)
+  , PGTlsValidateMode (..)
+#endif
   , pgErrorCode
   , pgConnectionDatabase
   , pgTypeEnv
@@ -50,15 +55,23 @@ module Database.PostgreSQL.Typed.Protocol (
   , pgFetch
   -- * Notifications
   , PGNotification(..)
-  , pgGetNotifications
   , pgGetNotification
+  , pgGetNotifications
+#ifdef HAVE_TLS
+  -- * TLS Helpers
+  , pgTlsValidate
+#endif
+  , pgSupportsTls
   ) where
 
 #if !MIN_VERSION_base(4,8,0)
 import           Control.Applicative ((<$>), (<$))
 #endif
 import           Control.Arrow ((&&&), first, second)
-import           Control.Exception (Exception, throwIO, onException, finally)
+import           Control.Exception (Exception, onException, finally, throwIO)
+#ifdef HAVE_TLS
+import           Control.Exception (catch)
+#endif
 import           Control.Monad (void, liftM2, replicateM, when, unless)
 #ifdef VERSION_cryptonite
 import qualified Crypto.Hash as Hash
@@ -68,10 +81,13 @@ import qualified Data.Binary.Get as G
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Builder as B
 import qualified Data.ByteString.Char8 as BSC
-import           Data.ByteString.Internal (w2c)
+import           Data.ByteString.Internal (w2c, createAndTrim)
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.Lazy.Char8 as BSLC
 import           Data.ByteString.Lazy.Internal (smallChunkSize)
+#ifdef HAVE_TLS
+import           Data.Default (def)
+#endif
 import qualified Data.Foldable as Fold
 import           Data.IORef (IORef, newIORef, writeIORef, readIORef, atomicModifyIORef, atomicModifyIORef', modifyIORef')
 import           Data.Int (Int32, Int16)
@@ -87,10 +103,28 @@ import           Data.Typeable (Typeable)
 #if !MIN_VERSION_base(4,8,0)
 import           Data.Word (Word)
 #endif
-import           Data.Word (Word32)
+import           Data.Word (Word32, Word8)
+#ifdef HAVE_TLS
+import           Data.X509 (SignedCertificate, HashALG(HashSHA256))
+import           Data.X509.Memory (readSignedObjectFromMemory)
+import           Data.X509.CertificateStore (makeCertificateStore)
+import qualified Data.X509.Validation
+#endif
+#ifndef mingw32_HOST_OS
+import           Foreign.C.Error (eWOULDBLOCK, getErrno, errnoToIOError)
+import           Foreign.C.Types (CChar(..), CInt(..), CSize(..))
+import           Foreign.Ptr (Ptr, castPtr)
+import           GHC.IO.Exception (IOErrorType(InvalidArgument))
+#endif
 import qualified Network.Socket as Net
-import           System.IO (Handle, hFlush, hClose, stderr, hPutStrLn, hSetBuffering, BufferMode(BlockBuffering), IOMode(ReadWriteMode))
-import           System.IO.Error (mkIOError, eofErrorType, ioError)
+import qualified Network.Socket.ByteString as NetBS
+import qualified Network.Socket.ByteString.Lazy as NetBSL
+#ifdef HAVE_TLS
+import qualified Network.TLS as TLS
+import qualified Network.TLS.Extra.Cipher as TLS
+#endif
+import           System.IO (stderr, hPutStrLn)
+import           System.IO.Error (IOError, mkIOError, eofErrorType, ioError, ioeSetErrorString)
 import           System.IO.Unsafe (unsafeInterleaveIO)
 import           Text.Read (readMaybe)
 
@@ -108,6 +142,39 @@ data PGState
   | StateClosed
   deriving (Show, Eq)
 
+#ifdef HAVE_TLS
+data PGTlsValidateMode
+  = TlsValidateFull
+  -- ^ Equivalent to sslmode=verify-full. Ie: Check the FQHN against the
+  -- certicate's CN
+  | TlsValidateCA
+  -- ^ Equivalent to sslmode=verify-ca. Ie: Only check that the certificate has
+  -- been signed by the root certificate we provide
+  deriving (Show, Eq)
+
+data PGTlsMode
+  = TlsDisabled
+  -- ^ TLS is disabled
+  | TlsNoValidate
+  | TlsValidate PGTlsValidateMode SignedCertificate
+  deriving (Eq, Show)
+
+-- | Constructs a 'PGTlsMode' to validate the server certificate with given root
+-- certificate (in PEM format)
+pgTlsValidate :: PGTlsValidateMode -> BSC.ByteString -> Either String PGTlsMode
+pgTlsValidate mode certPem =
+  case readSignedObjectFromMemory certPem of
+    []  -> Left "Could not parse any certificate in PEM"
+    (x:_) -> Right (TlsValidate mode x)
+
+pgSupportsTls :: PGConnection -> Bool
+pgSupportsTls PGConnection{connHandle=PGTlsContext _} = True
+pgSupportsTls _ = False
+#else
+pgSupportsTls :: PGConnection -> Bool
+pgSupportsTls _ = False
+#endif
+
 -- |Information for how to connect to a database, to be passed to 'pgConnect'.
 data PGDatabase = PGDatabase
   { pgDBAddr :: Either (Net.HostName, Net.ServiceName) Net.SockAddr -- ^ The address to connect to the server
@@ -116,11 +183,19 @@ data PGDatabase = PGDatabase
   , pgDBParams :: [(BS.ByteString, BS.ByteString)] -- ^ Extra parameters to set for the connection (e.g., ("TimeZone", "UTC"))
   , pgDBDebug :: Bool -- ^ Log all low-level server messages
   , pgDBLogMessage :: MessageFields -> IO () -- ^ How to log server notice messages (e.g., @print . PGError@)
+#ifdef HAVE_TLS
+  , pgDBTLS :: PGTlsMode -- ^ TLS mode
+#endif
   }
 
 instance Eq PGDatabase where
+#ifdef HAVE_TLS
+  PGDatabase a1 n1 u1 p1 l1 _ _ s1 == PGDatabase a2 n2 u2 p2 l2 _ _ s2 =
+    a1 == a2 && n1 == n2 && u1 == u2 && p1 == p2 && l1 == l2 && s1 == s2
+#else
   PGDatabase a1 n1 u1 p1 l1 _ _ == PGDatabase a2 n2 u2 p2 l2 _ _ =
     a1 == a2 && n1 == n2 && u1 == u2 && p1 == p2 && l1 == l2
+#endif
 
 newtype PGPreparedStatement = PGPreparedStatement Integer
   deriving (Eq, Show)
@@ -128,10 +203,48 @@ newtype PGPreparedStatement = PGPreparedStatement Integer
 preparedStatementName :: PGPreparedStatement -> BS.ByteString
 preparedStatementName (PGPreparedStatement n) = BSC.pack $ show n
 
+data PGHandle
+  = PGSocket Net.Socket
+#ifdef HAVE_TLS
+  | PGTlsContext TLS.Context
+#endif
+
+pgPutBuilder :: PGHandle -> B.Builder -> IO ()
+pgPutBuilder (PGSocket s) b = NetBSL.sendAll s (B.toLazyByteString b)
+#ifdef HAVE_TLS
+pgPutBuilder (PGTlsContext c) b = TLS.sendData c (B.toLazyByteString b)
+#endif
+
+pgPut:: PGHandle -> BS.ByteString -> IO ()
+pgPut (PGSocket s) bs = NetBS.sendAll s bs
+#ifdef HAVE_TLS
+pgPut (PGTlsContext c) bs = TLS.sendData c (BSL.fromChunks [bs])
+#endif
+
+pgGetSome :: PGHandle -> Int -> IO BSC.ByteString
+pgGetSome (PGSocket s) count = NetBS.recv s count
+#ifdef HAVE_TLS
+pgGetSome (PGTlsContext c) _ = TLS.recvData c
+#endif
+
+pgCloseHandle :: PGHandle -> IO ()
+pgCloseHandle (PGSocket s) = Net.close s
+#ifdef HAVE_TLS
+pgCloseHandle (PGTlsContext c) = do
+  TLS.bye c `catch` \(_ :: IOError) -> pure ()
+  TLS.contextClose c
+#endif
+
+pgFlush :: PGConnection -> IO ()
+pgFlush PGConnection{connHandle=PGSocket _} = pure ()
+#ifdef HAVE_TLS
+pgFlush PGConnection{connHandle=PGTlsContext c} = TLS.contextFlush c
+#endif
+
 -- |An established connection to the PostgreSQL server.
 -- These objects are not thread-safe and must only be used for a single request at a time.
 data PGConnection = PGConnection
-  { connHandle :: Handle
+  { connHandle :: PGHandle
   , connDatabase :: !PGDatabase
   , connPid :: !Word32 -- unused
   , connKey :: !Word32 -- unused
@@ -177,9 +290,6 @@ deQueue :: Queue a -> (Queue a, Maybe a)
 deQueue (Queue e (x:d)) = (Queue e d, Just x)
 deQueue (Queue (reverse -> x:d) []) = (Queue [] d, Just x)
 deQueue q = (q, Nothing)
-
-queueToList :: Queue a -> [a]
-queueToList (Queue e d) = d ++ reverse e
 
 -- |PGFrontendMessage represents a PostgreSQL protocol message that we'll send.
 -- See <http://www.postgresql.org/docs/current/interactive/protocol-message-formats.html>.
@@ -281,6 +391,9 @@ defaultPGDatabase = PGDatabase
   , pgDBParams = []
   , pgDBDebug = False
   , pgDBLogMessage = defaultLogMessage
+#ifdef HAVE_TLS
+  , pgDBTLS = TlsDisabled
+#endif
   }
 
 connDebugMsg :: PGConnection -> String -> IO ()
@@ -362,8 +475,8 @@ pgSend :: PGConnection -> PGFrontendMessage -> IO ()
 pgSend c@PGConnection{ connHandle = h, connState = sr } msg = do
   modifyIORef' sr $ state msg
   connDebugMsg c $ "> " ++ show msg
-  B.hPutBuilder h $ Fold.foldMap B.char7 t <> B.word32BE (fromIntegral $ 4 + BS.length b)
-  BS.hPut h b -- or B.hPutBuilder? But we've already had to convert to BS to get length
+  pgPutBuilder h $ Fold.foldMap B.char7 t <> B.word32BE (fromIntegral $ 4 + BS.length b)
+  pgPut h b -- or B.hPutBuilder? But we've already had to convert to BS to get length
   where
   (t, b) = second (BSL.toStrict . B.toLazyByteString) $ messageBody msg
   state _ StateClosed = StateClosed
@@ -371,9 +484,6 @@ pgSend c@PGConnection{ connHandle = h, connState = sr } msg = do
   state SimpleQuery{} _ = StatePending
   state Terminate _ = StateClosed
   state _ _ = StateUnsync
-
-pgFlush :: PGConnection -> IO ()
-pgFlush = hFlush . connHandle
 
 
 getByteStringNul :: G.Get BS.ByteString
@@ -453,13 +563,13 @@ class Show m => RecvMsg m where
   -- |Read from connection, returning immediate value or non-empty data
   recvMsgData :: PGConnection -> IO (Either m BS.ByteString)
   recvMsgData c = do
-    r <- BS.hGetSome (connHandle c) smallChunkSize
+    r <- pgGetSome (connHandle c) smallChunkSize
     if BS.null r
       then do
         writeIORef (connState c) StateClosed
-        hClose (connHandle c)
+        pgCloseHandle (connHandle c)
         -- Should this instead be a special PGError?
-        ioError $ mkIOError eofErrorType "PGConnection" (Just (connHandle c)) Nothing
+        ioError $ mkIOError eofErrorType "PGConnection" Nothing Nothing
       else
         return (Right r)
   -- |Expected ReadyForQuery message
@@ -481,11 +591,20 @@ class Show m => RecvMsg m where
 -- |Process all pending messages
 data RecvNonBlock = RecvNonBlock deriving (Show)
 instance RecvMsg RecvNonBlock where
-  recvMsgData c = do
-    r <- BS.hGetNonBlocking (connHandle c) smallChunkSize
+#ifndef mingw32_HOST_OS
+  recvMsgData PGConnection{connHandle=PGSocket s} = do
+    r <- recvNonBlock s smallChunkSize
     if BS.null r
       then return (Left RecvNonBlock)
       else return (Right r)
+#else
+  recvMsgData PGConnection{connHandle=PGSocket _} =
+    throwIO (userError "Non-blocking recvMsgData is not supported on mingw32 ATM")
+#endif
+#ifdef HAVE_TLS
+  recvMsgData PGConnection{connHandle=PGTlsContext _} =
+    throwIO (userError "Non-blocking recvMsgData is not supported on TLS connections")
+#endif
 
 -- |Wait for ReadyForQuery
 data RecvSync = RecvSync deriving (Show)
@@ -562,11 +681,11 @@ pgConnect db = do
       _ -> Net.AF_UNSPEC })
     $ pgDBAddr db
   sock <- Net.socket (Net.addrFamily addr) (Net.addrSocketType addr) (Net.addrProtocol addr)
+  unless (Net.addrFamily addr == Net.AF_UNIX) $ Net.setSocketOption sock Net.NoDelay 1
   Net.connect sock $ Net.addrAddress addr
-  h <- Net.socketToHandle sock ReadWriteMode
-  hSetBuffering h (BlockBuffering Nothing)
+  pgHandle <- mkPGHandle db sock
   let c = PGConnection
-        { connHandle = h
+        { connHandle = pgHandle
         , connDatabase = db
         , connPid = 0
         , connKey = 0
@@ -615,11 +734,61 @@ pgConnect db = do
 #endif
   msg _ (Left m) = fail $ "pgConnect: unexpected response: " ++ show m
 
+mkPGHandle :: PGDatabase -> Net.Socket -> IO PGHandle
+#ifdef HAVE_TLS
+mkPGHandle db sock =
+  case pgDBTLS db of
+    TlsDisabled     -> pure (PGSocket sock)
+    TlsNoValidate   -> mkTlsContext
+    TlsValidate _ _ -> mkTlsContext
+  where
+    mkTlsContext = do
+      NetBSL.sendAll sock sslRequest
+      resp <- NetBS.recv sock 1
+      case resp of
+        "S" -> do
+          ctx <- TLS.contextNew sock params
+          void $ TLS.handshake ctx
+          pure $ PGTlsContext ctx
+        "N" -> throwIO (userError "Server does not support TLS")
+        _ -> throwIO (userError "Unexpected response from server when issuing SSLRequest")
+    params = (TLS.defaultParamsClient tlsHost tlsPort)
+      { TLS.clientSupported =
+          def { TLS.supportedCiphers = TLS.ciphersuite_strong }
+      , TLS.clientShared = clientShared
+      , TLS.clientHooks = clientHooks
+      }
+    tlsHost = case pgDBAddr db of
+      Left (h,_) -> h
+      Right (Net.SockAddrUnix s) -> s
+      Right _ -> "some-socket"
+    tlsPort = case pgDBAddr db of
+      Left (_,p) -> BSC.pack p
+      Right _    -> "socket"
+    clientShared =
+      case pgDBTLS db of
+        TlsDisabled -> def { TLS.sharedValidationCache = noValidate }
+        TlsNoValidate -> def { TLS.sharedValidationCache = noValidate }
+        TlsValidate _ sc -> def { TLS.sharedCAStore = makeCertificateStore [sc] }
+    clientHooks =
+      case pgDBTLS db of
+        TlsValidate TlsValidateCA _ -> def { TLS.onServerCertificate = validateNoCheckFQHN }
+        _                           -> def
+    validateNoCheckFQHN = Data.X509.Validation.validate HashSHA256 def (def { TLS.checkFQHN = False })
+
+    noValidate = TLS.ValidationCache
+      (\_ _ _ -> return TLS.ValidationCachePass)
+      (\_ _ _ -> return ())
+    sslRequest = B.toLazyByteString (B.word32BE 8 <> B.word32BE 80877103)
+#else
+mkPGHandle _ sock = pure (PGSocket sock)
+#endif
+
 -- |Disconnect cleanly from the PostgreSQL server.
 pgDisconnect :: PGConnection -- ^ a handle from 'pgConnect'
              -> IO ()
 pgDisconnect c@PGConnection{ connHandle = h } =
-  pgSend c Terminate `finally` hClose h
+  pgSend c Terminate `finally` pgCloseHandle h
 
 -- |Disconnect cleanly from the PostgreSQL server, but only if it's still connected.
 pgDisconnectOnce :: PGConnection -- ^ a handle from 'pgConnect'
@@ -940,14 +1109,52 @@ pgFetch c n count = do
   res EmptyQueryResponse = return ([], Just 0)
   res m = fail $ "pgFetch: unexpected response: " ++ show m
 
--- |Retrieve any pending notifications.  Non-blocking.
-pgGetNotifications :: PGConnection -> IO [PGNotification]
-pgGetNotifications c = do
-  RecvNonBlock <- pgRecv c
-  queueToList <$> atomicModifyIORef' (connNotifications c) (emptyQueue, )
-
 -- |Retrieve a notifications, blocking if necessary.
 pgGetNotification :: PGConnection -> IO PGNotification
 pgGetNotification c =
   maybe (pgRecv c) return
    =<< atomicModifyIORef' (connNotifications c) deQueue
+
+-- |Retrieve any pending notifications.  Non-blocking.
+pgGetNotifications :: PGConnection -> IO [PGNotification]
+pgGetNotifications c = do
+  RecvNonBlock <- pgRecv c
+  queueToList <$> atomicModifyIORef' (connNotifications c) (emptyQueue, )
+  where
+  queueToList :: Queue a -> [a]
+  queueToList (Queue e d) = d ++ reverse e
+
+
+--TODO: Implement non-blocking recv on mingw32
+#ifndef mingw32_HOST_OS
+recvNonBlock
+  :: Net.Socket        -- ^ Connected socket
+  -> Int               -- ^ Maximum number of bytes to receive
+  -> IO BS.ByteString  -- ^ Data received
+recvNonBlock s nbytes
+  | nbytes < 0 = ioError (mkInvalidRecvArgError "Database.PostgreSQL.Typed.Protocol.recvNonBlock")
+  | otherwise  = createAndTrim nbytes $ \ptr -> recvBufNonBlock s ptr nbytes
+
+recvBufNonBlock :: Net.Socket -> Ptr Word8 -> Int -> IO Int
+recvBufNonBlock s ptr nbytes
+ | nbytes <= 0 = ioError (mkInvalidRecvArgError "Database.PostgreSQL.Typed.recvBufNonBlock")
+ | otherwise   = do
+    len <- c_recv (Net.fdSocket s) (castPtr ptr) (fromIntegral nbytes) 0
+    if len == -1
+      then do
+        errno <- getErrno
+        if errno == eWOULDBLOCK
+          then return 0
+          else throwIO (errnoToIOError "recvBufNonBlock" errno Nothing (Just "Database.PostgreSQL.Typed"))
+      else
+        return $ fromIntegral len
+
+mkInvalidRecvArgError :: String -> IOError
+mkInvalidRecvArgError loc = ioeSetErrorString (mkIOError
+                                    InvalidArgument
+                                    loc Nothing Nothing) "non-positive length"
+
+
+foreign import ccall unsafe "recv"
+  c_recv :: CInt -> Ptr CChar -> CSize -> CInt -> IO CInt
+#endif

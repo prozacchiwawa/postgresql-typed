@@ -25,8 +25,14 @@ import           Control.Applicative ((<$>), (<$))
 import           Control.Applicative ((<|>))
 import           Control.Concurrent.MVar (MVar, newMVar, takeMVar, putMVar, withMVar)
 import           Control.Exception (onException, finally)
+#ifdef HAVE_TLS
+import           Control.Exception (throwIO)
+#endif
 import           Control.Monad (liftM2)
 import qualified Data.ByteString as BS
+#ifdef HAVE_TLS
+import qualified Data.ByteString.Char8 as BSC
+#endif
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.UTF8 as BSU
 import qualified Data.Foldable as Fold
@@ -57,12 +63,32 @@ getTPGDatabase = do
 #endif
   pass <- fromMaybe "" <$> lookupEnv "TPG_PASS"
   debug <- isJust <$> lookupEnv "TPG_DEBUG"
+#ifdef HAVE_TLS
+  tlsEnabled <- isJust <$> lookupEnv "TPG_TLS"
+  tlsVerifyMode <- lookupEnv "TPG_TLS_MODE" >>= \modeStr ->
+    case modeStr of
+      Just "full" -> pure TlsValidateFull
+      Just "ca"   -> pure TlsValidateCA
+      Just other  -> throwIO (userError ("Unknown verify mode: " ++ other))
+      Nothing     -> pure TlsValidateCA
+  mTlsCertPem <- lookupEnv "TPG_TLS_ROOT_CERT"
+  dbTls <- case mTlsCertPem of
+    Just certPem ->
+      case pgTlsValidate tlsVerifyMode (BSC.pack certPem) of
+        Right x  -> pure x
+        Left err -> throwIO (userError err)
+    Nothing | tlsEnabled -> pure TlsNoValidate
+    Nothing -> pure TlsDisabled
+#endif
   return $ defaultPGDatabase
     { pgDBAddr = either (Right . Net.SockAddrUnix) (Left . (,) host) port
     , pgDBName = BSU.fromString db
     , pgDBUser = BSU.fromString user
     , pgDBPass = BSU.fromString pass
     , pgDBDebug = debug
+#ifdef HAVE_TLS
+    , pgDBTLS = dbTls
+#endif
     }
 
 {-# NOINLINE tpgState #-}

@@ -54,6 +54,10 @@ Flag aeson
 Flag HDBC
   Description: Provide an HDBC driver backend using the raw PostgreSQL protocol.
 
+Flag TLS
+  Description: Enable TLS support
+  Default: True
+
 Library
   Build-Depends:
     base >= 4.8 && < 5,
@@ -104,6 +108,9 @@ Library
     Build-Depends: HDBC >= 2.2
     Exposed-Modules:
       Database.PostgreSQL.Typed.HDBC
+  if flag(TLS)
+    Build-Depends: data-default, tls, x509, x509-store, x509-validation
+    cpp-options: -DHAVE_TLS
 
 test-suite test
   type: exitcode-stdio-1.0
@@ -113,6 +120,8 @@ test-suite test
   Extensions: TemplateHaskell, QuasiQuotes
   build-depends: base, network, time, bytestring, postgresql-typed, QuickCheck
   GHC-Options: -Wall
+  if flag(TLS)
+    cpp-options: -DHAVE_TLS
 
 test-suite hdbc
   type: exitcode-stdio-1.0
@@ -128,9 +137,11 @@ test-suite hdbc
     Testbasics
     Tests
   if flag(HDBC)
-    build-depends: base, network, time, containers, convertible, postgresql-typed, HDBC, HUnit
+    build-depends: base, bytestring, network, time, containers, convertible, postgresql-typed, HDBC, HUnit
   else
     buildable: False
+  if flag(TLS)
+    cpp-options: -DHAVE_TLS
 
 benchmark bench
   type: exitcode-stdio-1.0
@@ -144,3 +155,5 @@ benchmark bench
     network,
     criterion,
     postgresql-typed
+  if flag(TLS)
+    cpp-options: -DHAVE_TLS

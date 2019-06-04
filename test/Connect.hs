@@ -5,8 +5,8 @@ module Connect where
 
 #ifdef HAVE_TLS
 import           Control.Exception                  (throwIO)
-import qualified Data.ByteString.Char8              as BSC
 #endif
+import qualified Data.ByteString.Char8              as BSC
 import           Data.Maybe                         (fromMaybe, isJust)
 import           Database.PostgreSQL.Typed          (PGDatabase (..),
                                                      defaultPGDatabase)

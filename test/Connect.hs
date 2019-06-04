@@ -41,8 +41,8 @@ db = unsafePerformIO $ do
       (True,True,Just cert) -> either (throwIO . userError) pure $ pgTlsValidate TlsValidateFull cert
       (True,True,Nothing) -> throwIO $ userError "Need to pass the root certificate on the PGTLS_ROOTCERT environment variable to validate FQHN"
       (True,False,Just cert) -> either (throwIO . userError) pure $ pgTlsValidate TlsValidateCA cert
-  pgDBPass <- maybe BSC.empty BSC.pack <$> lookupEnv "PG_PASS"
 #endif
+  pgDBPass <- maybe BSC.empty BSC.pack <$> lookupEnv "PG_PASS"
   pgDBDebug <- isJust <$> lookupEnv "PG_DEBUG"
   pure $ defaultPGDatabase
     { pgDBName = "templatepg"

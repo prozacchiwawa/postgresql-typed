@@ -1,9 +1,9 @@
 Name:          postgresql-typed
-Version:       0.5.3.0
+Version:       0.6
 Cabal-Version: >= 1.8
 License:       BSD3
 License-File:  COPYING
-Copyright:     2010-2013 Chris Forno, 2014-2017 Dylan Simon
+Copyright:     2010-2013 Chris Forno, 2014-2019 Dylan Simon
 Author:        Dylan Simon
 Maintainer:    Dylan Simon <dylan-pgtyped@dylex.net>
 Stability:     provisional

@@ -21,7 +21,7 @@ Description:   Automatically type-check SQL statements at compile time.
                Originally based on Chris Forno's templatepg library.
 Tested-With:   GHC == 7.10.3, GHC == 8.0.1
 Build-Type:    Simple
-extra-source-files: README
+extra-source-files: README.md
 
 source-repository head
   type:     git

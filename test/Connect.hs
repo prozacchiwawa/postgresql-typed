@@ -3,14 +3,14 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Connect where
 
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
 import           Control.Exception                  (throwIO)
 #endif
 import qualified Data.ByteString.Char8              as BSC
 import           Data.Maybe                         (fromMaybe, isJust)
 import           Database.PostgreSQL.Typed          (PGDatabase (..),
                                                      defaultPGDatabase)
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
 import           Database.PostgreSQL.Typed.Protocol (PGTlsMode (..),
                                                      PGTlsValidateMode (..),
                                                      pgTlsValidate)
@@ -30,7 +30,7 @@ db = unsafePerformIO $ do
       pure $ pgDBAddr defaultPGDatabase
 #endif
     Just port -> pure $ Left ("localhost", port)
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
   pgDBTLS <- do
     enabled <- isJust <$> lookupEnv "PGTLS"
     validateFull <- isJust <$> lookupEnv "PGTLS_VALIDATEFULL"
@@ -49,7 +49,7 @@ db = unsafePerformIO $ do
     , pgDBUser = "templatepg"
     , pgDBParams = [("TimeZone", "UTC")]
     , pgDBDebug
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
     , pgDBTLS
 #endif
     , pgDBAddr

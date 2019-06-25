@@ -80,7 +80,7 @@ let
 
       # version without TLS
       postgresql-typed-notls = pkgs.lib.overrideDerivation self.postgresql-typed (old: {
-        configureFlags = old.configureFlags or [] ++ ["-f-TLS"];
+        configureFlags = old.configureFlags or [] ++ ["-f-tls"];
         checkPhase = "./Setup test";
       });
     };

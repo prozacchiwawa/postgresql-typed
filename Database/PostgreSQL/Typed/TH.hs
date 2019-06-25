@@ -25,12 +25,12 @@ import           Control.Applicative ((<$>), (<$))
 import           Control.Applicative ((<|>))
 import           Control.Concurrent.MVar (MVar, newMVar, takeMVar, putMVar, withMVar)
 import           Control.Exception (onException, finally)
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
 import           Control.Exception (throwIO)
 #endif
 import           Control.Monad (liftM2)
 import qualified Data.ByteString as BS
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
 import qualified Data.ByteString.Char8 as BSC
 #endif
 import qualified Data.ByteString.Lazy as BSL
@@ -63,7 +63,7 @@ getTPGDatabase = do
 #endif
   pass <- fromMaybe "" <$> lookupEnv "TPG_PASS"
   debug <- isJust <$> lookupEnv "TPG_DEBUG"
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
   tlsEnabled <- isJust <$> lookupEnv "TPG_TLS"
   tlsVerifyMode <- lookupEnv "TPG_TLS_MODE" >>= \modeStr ->
     case modeStr of
@@ -86,7 +86,7 @@ getTPGDatabase = do
     , pgDBUser = BSU.fromString user
     , pgDBPass = BSU.fromString pass
     , pgDBDebug = debug
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
     , pgDBTLS = dbTls
 #endif
     }

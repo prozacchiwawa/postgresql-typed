@@ -19,7 +19,7 @@ module Database.PostgreSQL.Typed.Protocol (
   , defaultPGDatabase
   , PGConnection
   , PGError(..)
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
   , PGTlsMode(..)
   , PGTlsValidateMode (..)
 #endif
@@ -57,7 +57,7 @@ module Database.PostgreSQL.Typed.Protocol (
   , PGNotification(..)
   , pgGetNotification
   , pgGetNotifications
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
   -- * TLS Helpers
   , pgTlsValidate
 #endif
@@ -69,7 +69,7 @@ import           Control.Applicative ((<$>), (<$))
 #endif
 import           Control.Arrow ((&&&), first, second)
 import           Control.Exception (Exception, onException, finally, throwIO)
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
 import           Control.Exception (catch)
 #endif
 import           Control.Monad (void, liftM2, replicateM, when, unless)
@@ -85,7 +85,7 @@ import           Data.ByteString.Internal (w2c, createAndTrim)
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.Lazy.Char8 as BSLC
 import           Data.ByteString.Lazy.Internal (smallChunkSize)
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
 import           Data.Default (def)
 #endif
 import qualified Data.Foldable as Fold
@@ -104,7 +104,7 @@ import           Data.Typeable (Typeable)
 import           Data.Word (Word)
 #endif
 import           Data.Word (Word32, Word8)
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
 import           Data.X509 (SignedCertificate, HashALG(HashSHA256))
 import           Data.X509.Memory (readSignedObjectFromMemory)
 import           Data.X509.CertificateStore (makeCertificateStore)
@@ -119,7 +119,7 @@ import           GHC.IO.Exception (IOErrorType(InvalidArgument))
 import qualified Network.Socket as Net
 import qualified Network.Socket.ByteString as NetBS
 import qualified Network.Socket.ByteString.Lazy as NetBSL
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
 import qualified Network.TLS as TLS
 import qualified Network.TLS.Extra.Cipher as TLS
 #endif
@@ -142,7 +142,7 @@ data PGState
   | StateClosed
   deriving (Show, Eq)
 
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
 data PGTlsValidateMode
   = TlsValidateFull
   -- ^ Equivalent to sslmode=verify-full. Ie: Check the FQHN against the
@@ -183,13 +183,13 @@ data PGDatabase = PGDatabase
   , pgDBParams :: [(BS.ByteString, BS.ByteString)] -- ^ Extra parameters to set for the connection (e.g., ("TimeZone", "UTC"))
   , pgDBDebug :: Bool -- ^ Log all low-level server messages
   , pgDBLogMessage :: MessageFields -> IO () -- ^ How to log server notice messages (e.g., @print . PGError@)
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
   , pgDBTLS :: PGTlsMode -- ^ TLS mode
 #endif
   }
 
 instance Eq PGDatabase where
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
   PGDatabase a1 n1 u1 p1 l1 _ _ s1 == PGDatabase a2 n2 u2 p2 l2 _ _ s2 =
     a1 == a2 && n1 == n2 && u1 == u2 && p1 == p2 && l1 == l2 && s1 == s2
 #else
@@ -205,31 +205,31 @@ preparedStatementName (PGPreparedStatement n) = BSC.pack $ show n
 
 data PGHandle
   = PGSocket Net.Socket
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
   | PGTlsContext TLS.Context
 #endif
 
 pgPutBuilder :: PGHandle -> B.Builder -> IO ()
 pgPutBuilder (PGSocket s) b = NetBSL.sendAll s (B.toLazyByteString b)
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
 pgPutBuilder (PGTlsContext c) b = TLS.sendData c (B.toLazyByteString b)
 #endif
 
 pgPut:: PGHandle -> BS.ByteString -> IO ()
 pgPut (PGSocket s) bs = NetBS.sendAll s bs
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
 pgPut (PGTlsContext c) bs = TLS.sendData c (BSL.fromChunks [bs])
 #endif
 
 pgGetSome :: PGHandle -> Int -> IO BSC.ByteString
 pgGetSome (PGSocket s) count = NetBS.recv s count
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
 pgGetSome (PGTlsContext c) _ = TLS.recvData c
 #endif
 
 pgCloseHandle :: PGHandle -> IO ()
 pgCloseHandle (PGSocket s) = Net.close s
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
 pgCloseHandle (PGTlsContext c) = do
   TLS.bye c `catch` \(_ :: IOError) -> pure ()
   TLS.contextClose c
@@ -237,7 +237,7 @@ pgCloseHandle (PGTlsContext c) = do
 
 pgFlush :: PGConnection -> IO ()
 pgFlush PGConnection{connHandle=PGSocket _} = pure ()
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
 pgFlush PGConnection{connHandle=PGTlsContext c} = TLS.contextFlush c
 #endif
 
@@ -391,7 +391,7 @@ defaultPGDatabase = PGDatabase
   , pgDBParams = []
   , pgDBDebug = False
   , pgDBLogMessage = defaultLogMessage
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
   , pgDBTLS = TlsDisabled
 #endif
   }
@@ -601,7 +601,7 @@ instance RecvMsg RecvNonBlock where
   recvMsgData PGConnection{connHandle=PGSocket _} =
     throwIO (userError "Non-blocking recvMsgData is not supported on mingw32 ATM")
 #endif
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
   recvMsgData PGConnection{connHandle=PGTlsContext _} =
     throwIO (userError "Non-blocking recvMsgData is not supported on TLS connections")
 #endif
@@ -735,7 +735,7 @@ pgConnect db = do
   msg _ (Left m) = fail $ "pgConnect: unexpected response: " ++ show m
 
 mkPGHandle :: PGDatabase -> Net.Socket -> IO PGHandle
-#ifdef HAVE_TLS
+#ifdef VERSION_tls
 mkPGHandle db sock =
   case pgDBTLS db of
     TlsDisabled     -> pure (PGSocket sock)

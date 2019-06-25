@@ -1,3 +1,0 @@
-A PostgreSQL interface that provides type-safety through compile-time database
-access.  See the Haddock documentation in Database.PostgreSQL.Typed or the test
-cases for simple examples.

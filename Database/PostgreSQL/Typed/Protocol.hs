@@ -127,6 +127,7 @@ import           System.IO (stderr, hPutStrLn)
 import           System.IO.Error (IOError, mkIOError, eofErrorType, ioError, ioeSetErrorString)
 import           System.IO.Unsafe (unsafeInterleaveIO)
 import           Text.Read (readMaybe)
+import           Text.Show.Functions ()
 
 import Database.PostgreSQL.Typed.Types
 import Database.PostgreSQL.Typed.Dynamic
@@ -186,7 +187,7 @@ data PGDatabase = PGDatabase
 #ifdef VERSION_tls
   , pgDBTLS :: PGTlsMode -- ^ TLS mode
 #endif
-  }
+  } deriving (Show)
 
 instance Eq PGDatabase where
 #ifdef VERSION_tls

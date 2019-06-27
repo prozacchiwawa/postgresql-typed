@@ -1140,7 +1140,15 @@ recvBufNonBlock :: Net.Socket -> Ptr Word8 -> Int -> IO Int
 recvBufNonBlock s ptr nbytes
  | nbytes <= 0 = ioError (mkInvalidRecvArgError "Database.PostgreSQL.Typed.recvBufNonBlock")
  | otherwise   = do
-    len <- c_recv (Net.fdSocket s) (castPtr ptr) (fromIntegral nbytes) 0
+    len <-
+#if MIN_VERSION_network(3,1,0)
+      Net.withFdSocket s $ \fd ->
+#elif MIN_VERSION_network(3,0,0)
+      Net.fdSocket s >>= \fd ->
+#else
+      let fd = Net.fdSocket s in
+#endif
+        c_recv fd (castPtr ptr) (fromIntegral nbytes) 0
     if len == -1
       then do
         errno <- getErrno

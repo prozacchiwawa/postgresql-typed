@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# OPTIONS_GHC -Wno-deprecations #-}
 -- Copyright 2010, 2011, 2012, 2013 Chris Forno
@@ -20,6 +21,9 @@ module Database.PostgreSQL.Typed.TemplatePG
   , rollback
   , PGException
   , pgConnect
+#if !MIN_VERSION_network(3,0,0)
+  , PortID(..)
+#endif
   , PG.pgDisconnect
   ) where
 
@@ -30,7 +34,11 @@ import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy.Char8 as BSLC
 import           Data.Maybe (listToMaybe, isJust)
 import qualified Language.Haskell.TH as TH
-import           Network (HostName, PortID(..))
+#if MIN_VERSION_network(3,0,0)
+import           Data.Word (Word16)
+#else
+import           Network (PortID(..))
+#endif
 import qualified Network.Socket as Net
 import           System.Environment (lookupEnv)
 
@@ -91,7 +99,12 @@ insertIgnore q = catchJust uniquenessError q (\ _ -> return ()) where
 
 type PGException = PG.PGError
 
-pgConnect :: HostName   -- ^ the host to connect to
+#if MIN_VERSION_network(3,0,0)
+-- |For backwards compatibility with old network package.
+data PortID = Service String | PortNumber Word16 | UnixSocket String
+#endif
+
+pgConnect :: String     -- ^ the host to connect to
           -> PortID     -- ^ the port to connect on
           -> ByteString -- ^ the database to connect to
           -> ByteString -- ^ the username to connect as

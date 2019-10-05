@@ -1,4 +1,4 @@
--- Automatically generated from /src/postgresql-11.3/src/src/backend/utils/errcodes.txt using errcodes 2019-05-29 19:31:19.442545643 UTC.
+-- Automatically generated from /src/postgresql-12.0/src/src/backend/utils/errcodes.txt using errcodes 2019-10-05 16:38:46.694932074 UTC.
 {-# LANGUAGE OverloadedStrings #-}
 -- |PostgreSQL error codes.
 module Database.PostgreSQL.Typed.ErrCodes (names
@@ -101,6 +101,21 @@ module Database.PostgreSQL.Typed.ErrCodes (names
   , invalid_xml_content
   , invalid_xml_comment
   , invalid_xml_processing_instruction
+  , duplicate_json_object_key_value
+  , invalid_json_text
+  , invalid_sql_json_subscript
+  , more_than_one_sql_json_item
+  , no_sql_json_item
+  , non_numeric_sql_json_item
+  , non_unique_keys_in_a_json_object
+  , singleton_sql_json_item_required
+  , sql_json_array_not_found
+  , sql_json_member_not_found
+  , sql_json_number_not_found
+  , sql_json_object_not_found
+  , too_many_json_array_elements
+  , too_many_json_object_members
+  , sql_json_scalar_required
   -- * Class 23 - Integrity Constraint Violation
   , integrity_constraint_violation
   , restrict_violation
@@ -237,6 +252,7 @@ module Database.PostgreSQL.Typed.ErrCodes (names
   , object_in_use
   , cant_change_runtime_param
   , lock_not_available
+  , unsafe_new_enum_value_usage
   -- * Class 57 - Operator Intervention
   , operator_intervention
   , query_canceled
@@ -632,6 +648,66 @@ invalid_xml_comment = "2200S"
 -- |@INVALID_XML_PROCESSING_INSTRUCTION@: 2200T (Error)
 invalid_xml_processing_instruction :: ByteString
 invalid_xml_processing_instruction = "2200T"
+
+-- |@DUPLICATE_JSON_OBJECT_KEY_VALUE@: 22030 (Error)
+duplicate_json_object_key_value :: ByteString
+duplicate_json_object_key_value = "22030"
+
+-- |@INVALID_JSON_TEXT@: 22032 (Error)
+invalid_json_text :: ByteString
+invalid_json_text = "22032"
+
+-- |@INVALID_SQL_JSON_SUBSCRIPT@: 22033 (Error)
+invalid_sql_json_subscript :: ByteString
+invalid_sql_json_subscript = "22033"
+
+-- |@MORE_THAN_ONE_SQL_JSON_ITEM@: 22034 (Error)
+more_than_one_sql_json_item :: ByteString
+more_than_one_sql_json_item = "22034"
+
+-- |@NO_SQL_JSON_ITEM@: 22035 (Error)
+no_sql_json_item :: ByteString
+no_sql_json_item = "22035"
+
+-- |@NON_NUMERIC_SQL_JSON_ITEM@: 22036 (Error)
+non_numeric_sql_json_item :: ByteString
+non_numeric_sql_json_item = "22036"
+
+-- |@NON_UNIQUE_KEYS_IN_A_JSON_OBJECT@: 22037 (Error)
+non_unique_keys_in_a_json_object :: ByteString
+non_unique_keys_in_a_json_object = "22037"
+
+-- |@SINGLETON_SQL_JSON_ITEM_REQUIRED@: 22038 (Error)
+singleton_sql_json_item_required :: ByteString
+singleton_sql_json_item_required = "22038"
+
+-- |@SQL_JSON_ARRAY_NOT_FOUND@: 22039 (Error)
+sql_json_array_not_found :: ByteString
+sql_json_array_not_found = "22039"
+
+-- |@SQL_JSON_MEMBER_NOT_FOUND@: 2203A (Error)
+sql_json_member_not_found :: ByteString
+sql_json_member_not_found = "2203A"
+
+-- |@SQL_JSON_NUMBER_NOT_FOUND@: 2203B (Error)
+sql_json_number_not_found :: ByteString
+sql_json_number_not_found = "2203B"
+
+-- |@SQL_JSON_OBJECT_NOT_FOUND@: 2203C (Error)
+sql_json_object_not_found :: ByteString
+sql_json_object_not_found = "2203C"
+
+-- |@TOO_MANY_JSON_ARRAY_ELEMENTS@: 2203D (Error)
+too_many_json_array_elements :: ByteString
+too_many_json_array_elements = "2203D"
+
+-- |@TOO_MANY_JSON_OBJECT_MEMBERS@: 2203E (Error)
+too_many_json_object_members :: ByteString
+too_many_json_object_members = "2203E"
+
+-- |@SQL_JSON_SCALAR_REQUIRED@: 2203F (Error)
+sql_json_scalar_required :: ByteString
+sql_json_scalar_required = "2203F"
 
 -- |@INTEGRITY_CONSTRAINT_VIOLATION@: 23000 (Error)
 integrity_constraint_violation :: ByteString
@@ -1093,6 +1169,10 @@ cant_change_runtime_param = "55P02"
 lock_not_available :: ByteString
 lock_not_available = "55P03"
 
+-- |@UNSAFE_NEW_ENUM_VALUE_USAGE@: 55P04 (Error)
+unsafe_new_enum_value_usage :: ByteString
+unsafe_new_enum_value_usage = "55P04"
+
 -- |@OPERATOR_INTERVENTION@: 57000 (Error)
 operator_intervention :: ByteString
 operator_intervention = "57000"
@@ -1366,6 +1446,21 @@ names = fromDistinctAscList
   ,(array_subscript_error,"array_subscript_error")
   ,(invalid_tablesample_repeat,"invalid_tablesample_repeat")
   ,(invalid_tablesample_argument,"invalid_tablesample_argument")
+  ,(duplicate_json_object_key_value,"duplicate_json_object_key_value")
+  ,(invalid_json_text,"invalid_json_text")
+  ,(invalid_sql_json_subscript,"invalid_sql_json_subscript")
+  ,(more_than_one_sql_json_item,"more_than_one_sql_json_item")
+  ,(no_sql_json_item,"no_sql_json_item")
+  ,(non_numeric_sql_json_item,"non_numeric_sql_json_item")
+  ,(non_unique_keys_in_a_json_object,"non_unique_keys_in_a_json_object")
+  ,(singleton_sql_json_item_required,"singleton_sql_json_item_required")
+  ,(sql_json_array_not_found,"sql_json_array_not_found")
+  ,(sql_json_member_not_found,"sql_json_member_not_found")
+  ,(sql_json_number_not_found,"sql_json_number_not_found")
+  ,(sql_json_object_not_found,"sql_json_object_not_found")
+  ,(too_many_json_array_elements,"too_many_json_array_elements")
+  ,(too_many_json_object_members,"too_many_json_object_members")
+  ,(sql_json_scalar_required,"sql_json_scalar_required")
   ,(floating_point_exception,"floating_point_exception")
   ,(invalid_text_representation,"invalid_text_representation")
   ,(invalid_binary_representation,"invalid_binary_representation")
@@ -1487,6 +1582,7 @@ names = fromDistinctAscList
   ,(object_in_use,"object_in_use")
   ,(cant_change_runtime_param,"cant_change_runtime_param")
   ,(lock_not_available,"lock_not_available")
+  ,(unsafe_new_enum_value_usage,"unsafe_new_enum_value_usage")
   ,(operator_intervention,"operator_intervention")
   ,(query_canceled,"query_canceled")
   ,(admin_shutdown,"admin_shutdown")

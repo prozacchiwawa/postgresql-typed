@@ -10,9 +10,10 @@ module Database.PostgreSQL.Typed.TypeCache
   , findPGType
   ) where
 
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import           Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import qualified Data.IntMap as IntMap
-import Data.List (find)
+import           Data.List (find)
+import qualified Data.Vector as V
 
 import Database.PostgreSQL.Typed.Types (PGName, OID)
 import Database.PostgreSQL.Typed.Dynamic
@@ -41,7 +42,7 @@ flushPGTypeConnection c =
 -- |Get a map of types from the database.
 pgGetTypes :: PGConnection -> IO PGTypes
 pgGetTypes c =
-  IntMap.fromAscList . map (\[to, tn] -> (fromIntegral (pgDecodeRep to :: OID), pgDecodeRep tn)) .
+  IntMap.fromAscList . map (\t -> (fromIntegral (pgDecodeRep (t V.! 0) :: OID), pgDecodeRep (t V.! 1))) .
     snd <$> pgSimpleQuery c "SELECT oid, format_type(CASE WHEN typtype = 'd' THEN typbasetype ELSE oid END, -1) FROM pg_catalog.pg_type ORDER BY oid"
 
 -- |Get a cached map of types.

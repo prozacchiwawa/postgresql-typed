@@ -16,24 +16,25 @@ module Database.PostgreSQL.Typed.Query
   ) where
 
 #if !MIN_VERSION_base(4,8,0)
-import Control.Applicative ((<$>))
+import           Control.Applicative ((<$>))
 #endif
-import Control.Arrow ((***), first, second)
-import Control.Exception (try)
-import Control.Monad (void, when, mapAndUnzipM)
-import Data.Array (listArray, (!), inRange)
+import           Control.Arrow ((***), first, second)
+import           Control.Exception (try)
+import           Control.Monad (void, when, mapAndUnzipM)
+import           Data.Array (listArray, (!), inRange)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BSL
-import Data.Char (isSpace, isAlphaNum)
+import           Data.Char (isSpace, isAlphaNum)
 import qualified Data.Foldable as Fold
-import Data.List (dropWhileEnd)
-import Data.Maybe (fromMaybe, isNothing)
-import Data.String (IsString(..))
-import Data.Word (Word32)
-import Language.Haskell.Meta.Parse (parseExp)
+import           Data.List (dropWhileEnd)
+import           Data.Maybe (isNothing)
+import           Data.String (IsString(..))
+import qualified Data.Vector as V
+import           Data.Word (Word32)
+import           Language.Haskell.Meta.Parse (parseExp)
 import qualified Language.Haskell.TH as TH
-import Language.Haskell.TH.Quote (QuasiQuoter(..))
+import           Language.Haskell.TH.Quote (QuasiQuoter(..))
 
 import Database.PostgreSQL.Typed.Types
 import Database.PostgreSQL.Typed.Dynamic
@@ -53,7 +54,6 @@ class PGQuery q a | q -> a where
   -- > [pgSQL|SELECT a FROM t|] `unsafeModifyQuery` (<> (" WHERE a = " <> pgSafeLiteral x))
   unsafeModifyQuery :: q -> (BS.ByteString -> BS.ByteString) -> q
   getQueryString :: PGConnection -> q -> BS.ByteString
-class PGQuery q PGValues => PGRawQuery q
 
 -- |Execute a query that does not return results.
 -- Return the number of rows affected (or -1 if not known).
@@ -75,19 +75,17 @@ instance PGQuery SimpleQuery PGValues where
   pgRunQuery c (SimpleQuery sql) = pgSimpleQuery c (BSL.fromStrict sql)
   unsafeModifyQuery (SimpleQuery sql) f = SimpleQuery $ f sql
   getQueryString _ (SimpleQuery q) = q
-instance PGRawQuery SimpleQuery
 
-data PreparedQuery = PreparedQuery BS.ByteString [OID] PGValues [Bool]
+data PreparedQuery = PreparedQuery BS.ByteString (V.Vector OID) PGValues (V.Vector Bool)
   deriving (Show)
 instance PGQuery PreparedQuery PGValues where
   pgRunQuery c (PreparedQuery sql types bind bc) = pgPreparedQuery c sql types bind bc
   unsafeModifyQuery (PreparedQuery sql types bind bc) f = PreparedQuery (f sql) types bind bc
   getQueryString _ (PreparedQuery q _ _ _) = q
-instance PGRawQuery PreparedQuery
 
 
 data QueryParser q a = QueryParser (PGTypeEnv -> q) (PGTypeEnv -> PGValues -> a)
-instance PGRawQuery q => PGQuery (QueryParser q a) a where
+instance PGQuery q PGValues => PGQuery (QueryParser q a) a where
   pgRunQuery c (QueryParser q p) = second (fmap $ p e) <$> pgRunQuery c (q e) where e = pgTypeEnv c
   unsafeModifyQuery (QueryParser q p) f = QueryParser (\e -> unsafeModifyQuery (q e) f) p
   getQueryString c (QueryParser q _) = getQueryString c $ q $ pgTypeEnv c
@@ -118,7 +116,7 @@ instance IsString (PGSimpleQuery ()) where
 
 -- |Make a prepared query directly from a query string and bind parameters, with no type inference
 rawPGPreparedQuery :: BS.ByteString -> PGValues -> PGPreparedQuery PGValues
-rawPGPreparedQuery sql bind = rawParser $ PreparedQuery sql [] bind []
+rawPGPreparedQuery sql bind = rawParser $ PreparedQuery sql V.empty bind V.empty
 
 -- |Run a prepared query in lazy mode, where only chunk size rows are requested at a time.
 -- If you eventually retrieve all the rows this way, it will be far less efficient than using @pgQuery@, since every chunk requires an additional round-trip.
@@ -185,46 +183,38 @@ newName pre = TH.newName . ('_':) . (pre:) . filter (\c -> isAlphaNum c || c == 
 makePGQuery :: QueryFlags -> String -> TH.ExpQ
 makePGQuery QueryFlags{ flagQuery = False } sqle = pgSubstituteLiterals sqle
 makePGQuery QueryFlags{ flagNullable = nulls, flagPrepare = prep } sqle = do
-  (pt, rt) <- TH.runIO $ tpgDescribe (fromString sqlp) (fromMaybe [] prep) (isNothing nulls)
-  when (length pt < length exprs) $ fail "Not all expression placeholders were recognized by PostgreSQL"
+  (pt, rt) <- TH.runIO $ tpgDescribe (fromString sqlp) prepv (isNothing nulls)
+  when (V.length pt < length exprs) $ fail "Not all expression placeholders were recognized by PostgreSQL"
 
   e <- TH.newName "_tenv"
-  l <- TH.newName "l"
+  l <- TH.newName "rowv"
   (vars, vals) <- mapAndUnzipM (\t -> do
     v <- newName 'p' $ tpgValueName t
     return 
       ( TH.VarP v
       , tpgTypeEncoder (isNothing prep) t e `TH.AppE` TH.VarE v
-      )) pt
-  (pats, conv, bins) <- unzip3 <$> mapM (\t -> do
-    v <- newName 'c' $ tpgValueName t
-    return 
-      ( TH.VarP v
-      , tpgTypeDecoder (Fold.and nulls) t e `TH.AppE` TH.VarE v
-      , tpgTypeBinary t e
-      )) rt
+      )) (V.toList pt)
+  let ptp = V.take (V.length prepv) pt
   foldl TH.AppE (TH.LamE vars $ TH.ConE 'QueryParser
-    `TH.AppE` TH.LamE [TH.VarP e] (maybe
-      (TH.ConE 'SimpleQuery
-        `TH.AppE` sqlSubstitute sqlp vals)
-      (\p -> TH.ConE 'PreparedQuery
+    `TH.AppE` TH.LamE [TH.VarP e] (if isNothing prep
+      then TH.ConE 'SimpleQuery
+        `TH.AppE` sqlSubstitute sqlp vals
+      else TH.ConE 'PreparedQuery
         `TH.AppE` (TH.VarE 'fromString `TH.AppE` TH.LitE (TH.StringL sqlp))
-        `TH.AppE` TH.ListE (map (TH.LitE . TH.IntegerL . toInteger . tpgValueTypeOID . snd) $ zip p pt)
-        `TH.AppE` TH.ListE vals 
-        `TH.AppE` TH.ListE 
+        `TH.AppE` (TH.VarE 'V.fromListN `TH.AppE` TH.LitE (TH.IntegerL $ toInteger $ V.length ptp) `TH.AppE` TH.ListE (map (TH.LitE . TH.IntegerL . toInteger . tpgValueTypeOID) $ V.toList ptp))
+        `TH.AppE` (TH.VarE 'V.fromListN `TH.AppE` TH.LitE (TH.IntegerL $ toInteger $ V.length pt) `TH.AppE` TH.ListE vals)
+        `TH.AppE`
 #ifdef VERSION_postgresql_binary
-          bins
+          (TH.VarE 'V.fromListN `TH.AppE` TH.LitE (TH.IntegerL $ toInteger $ V.length rt) `TH.AppE` TH.ListE (map (\t -> tpgTypeBinary t e) $ V.toList rt))
 #else
-          []
+          TH.VarE 'V.empty
 #endif
       )
-      prep)
-    `TH.AppE` TH.LamE [TH.VarP e, TH.VarP l] (TH.CaseE (TH.VarE l)
-      [ TH.Match (TH.ListP pats) (TH.NormalB $ TH.TupE conv) []
-      , TH.Match TH.WildP (TH.NormalB $ TH.VarE 'error `TH.AppE` TH.LitE (TH.StringL "pgSQL: result arity mismatch")) []
-      ]))
+    `TH.AppE` TH.LamE [TH.VarP e, TH.VarP l] (TH.TupE $ V.toList $ V.imap (\i t -> 
+        tpgTypeDecoder (Fold.and nulls) t e `TH.AppE` (TH.InfixE (Just $ TH.VarE l) (TH.VarE '(V.!)) (Just $ TH.LitE $ TH.IntegerL $ toInteger i))) rt))
     <$> mapM parse exprs
   where
+  prepv = maybe V.empty V.fromList prep
   (sqlp, exprs) = sqlPlaceholders sqle
   parse e = either (fail . (++) ("Failed to parse expression {" ++ e ++ "}: ")) return $ parseExp e
 

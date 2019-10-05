@@ -39,6 +39,7 @@ import qualified Data.Foldable as Fold
 import           Data.Maybe (isJust, fromMaybe)
 import           Data.String (fromString)
 import qualified Data.Traversable as Tv
+import qualified Data.Vector as V
 import qualified Language.Haskell.TH as TH
 import qualified Network.Socket as Net
 import           System.Environment (lookupEnv)
@@ -151,12 +152,12 @@ data TPGValueInfo = TPGValueInfo
   }
 
 -- |A type-aware wrapper to 'pgDescribe'
-tpgDescribe :: BS.ByteString -> [String] -> Bool -> IO ([TPGValueInfo], [TPGValueInfo])
+tpgDescribe :: BS.ByteString -> V.Vector String -> Bool -> IO (V.Vector TPGValueInfo, V.Vector TPGValueInfo)
 tpgDescribe sql types nulls = withTPGTypeConnection $ \tpg -> do
-  at <- mapM (getTPGTypeOID tpg . fromString) types
+  at <- V.mapM (getTPGTypeOID tpg . fromString) types
   (pt, rt) <- pgDescribe (pgConnection tpg) (BSL.fromStrict sql) at nulls
   (,)
-    <$> mapM (\o -> do
+    <$> V.mapM (\o -> do
       ot <- tpgType tpg o
       return TPGValueInfo
         { tpgValueName = BS.empty
@@ -164,7 +165,7 @@ tpgDescribe sql types nulls = withTPGTypeConnection $ \tpg -> do
         , tpgValueType = ot
         , tpgValueNullable = True
         }) pt
-    <*> mapM (\(c, o, n) -> do
+    <*> V.mapM (\(c, o, n) -> do
       ot <- tpgType tpg o
       return TPGValueInfo
         { tpgValueName = c

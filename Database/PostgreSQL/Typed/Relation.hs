@@ -18,6 +18,7 @@ module Database.PostgreSQL.Typed.Relation
 
 import qualified Data.ByteString.Lazy as BSL
 import           Data.Proxy (Proxy(..))
+import qualified Data.Vector as V
 import qualified Language.Haskell.TH as TH
 
 import           Database.PostgreSQL.Typed.Types
@@ -60,13 +61,13 @@ dataPGRelation :: String -- ^ Haskell type and constructor to create
   -> TH.DecsQ
 dataPGRelation typs pgtab colf = do
   (pgid, cold) <- TH.runIO $ withTPGTypeConnection $ \tpg -> do
-    cl <- mapM (\[to, cn, ct, cnn] -> do
-      let c = pgDecodeRep cn
+    cl <- mapM (\r -> do
+      let c = pgDecodeRep (r V.! 1)
           n = TH.mkName $ colf $ pgNameString c
-          o = pgDecodeRep ct
+          o = pgDecodeRep (r V.! 2)
       t <- maybe (fail $ "dataPGRelation " ++ typs ++ " = " ++ show pgtab ++ ": column '" ++ show c ++ "' has unknown type " ++ show o) return
         =<< lookupPGType tpg o
-      return (pgDecodeRep to, (c, n, TH.LitT (TH.StrTyLit $ pgNameString t), not $ pgDecodeRep cnn)))
+      return (pgDecodeRep (r V.! 0), (c, n, TH.LitT (TH.StrTyLit $ pgNameString t), not $ pgDecodeRep $ r V.! 3)))
       . snd =<< pgSimpleQuery (pgConnection tpg) (BSL.fromChunks
         [ "SELECT reltype, attname, atttypid, attnotnull"
         ,  " FROM pg_catalog.pg_attribute"

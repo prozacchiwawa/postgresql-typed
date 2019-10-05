@@ -71,7 +71,10 @@ Library
     haskell-src-meta,
     network,
     attoparsec >= 0.12 && < 0.14,
-    utf8-string
+    utf8-string,
+    unordered-containers,
+    vector,
+    vector-instances
   Exposed-Modules:
     Database.PostgreSQL.Typed
     Database.PostgreSQL.Typed.Protocol
@@ -117,7 +120,7 @@ test-suite test
   main-is: Main.hs
   Other-Modules: Connect
   Extensions: TemplateHaskell, QuasiQuotes
-  build-depends: base, network, time, bytestring, postgresql-typed, QuickCheck
+  build-depends: base, network, time, bytestring, vector, postgresql-typed, QuickCheck
   GHC-Options: -Wall
   if flag(tls)
     Build-Depends: tls

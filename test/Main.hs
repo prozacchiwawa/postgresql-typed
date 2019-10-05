@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings, FlexibleInstances, MultiParamTypeClasses, DataKinds, DeriveDataTypeable, TypeFamilies, PatternGuards, StandaloneDeriving #-}
+{-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_GHC -fno-warn-orphans -Wincomplete-uni-patterns #-}
 --{-# OPTIONS_GHC -ddump-splices #-}
 module Main (main) where
@@ -10,6 +11,7 @@ import qualified Data.ByteString.Char8 as BSC
 import Data.Char (isDigit, toUpper)
 import Data.Int (Int32)
 import qualified Data.Time as Time
+import qualified Data.Vector as V
 import Data.Word (Word8)
 import System.Exit (exitSuccess, exitFailure)
 import qualified Test.QuickCheck as Q
@@ -167,7 +169,7 @@ main = do
   (-1, []) <- pgSimpleQuery c "NOTIFY channame"
 
   pgTransaction c $ do
-    (1, [[PGTextValue "1"]]) <- pgSimpleQuery c "SELECT 1"
+    (1, [V.toList -> [PGTextValue "1"]]) <- pgSimpleQuery c "SELECT 1"
     (-1, []) <- pgSimpleQuery c "NOTIFY channame, 'nope'"
     Left e1 <- try $ pgSimpleQuery c "SYNTAX_ERROR"
     assert $ pgErrorCode e1 == PGErr.syntax_error

@@ -91,6 +91,7 @@ import Data.Typeable (Typeable)
 #ifdef VERSION_uuid
 import qualified Data.UUID as UUID
 #endif
+import qualified Data.Vector as V
 import Data.Word (Word8, Word32)
 import GHC.TypeLits (Symbol, symbolVal, KnownSymbol)
 import Numeric (readFloat)
@@ -113,7 +114,7 @@ data PGValue
   | PGBinaryValue { pgBinaryValue :: PGBinaryValue } -- ^ Special binary-encoded data.  Not supported in all cases.
   deriving (Show, Eq)
 -- |A list of (nullable) data values, e.g. a single row or query parameters.
-type PGValues = [PGValue]
+type PGValues = V.Vector PGValue
 
 -- |Parameters that affect how marshalling happens.
 -- Currenly we force all other relevant parameters at connect time.

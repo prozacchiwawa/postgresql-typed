@@ -72,7 +72,7 @@ import           Control.Exception (Exception, onException, finally, throwIO)
 #ifdef VERSION_tls
 import           Control.Exception (catch)
 #endif
-import           Control.Monad (void, liftM2, replicateM, when, unless)
+import           Control.Monad (void, liftM2, when, unless)
 #ifdef VERSION_cryptonite
 import qualified Crypto.Hash as Hash
 import qualified Data.ByteArray.Encoding as BA
@@ -89,17 +89,18 @@ import           Data.ByteString.Lazy.Internal (smallChunkSize)
 import           Data.Default (def)
 #endif
 import qualified Data.Foldable as Fold
+import qualified Data.HashMap.Strict as Map
 import           Data.IORef (IORef, newIORef, writeIORef, readIORef, atomicModifyIORef, atomicModifyIORef', modifyIORef')
 import           Data.Int (Int32, Int16)
-import qualified Data.Map.Lazy as Map
 import           Data.Maybe (fromMaybe)
 import           Data.Monoid ((<>))
 #if !MIN_VERSION_base(4,8,0)
 import           Data.Monoid (mempty)
 #endif
 import           Data.Time.Clock (getCurrentTime)
-import           Data.Tuple (swap)
 import           Data.Typeable (Typeable)
+import qualified Data.Vector as V
+import           Data.Vector.Instances ()
 #if !MIN_VERSION_base(4,8,0)
 import           Data.Word (Word)
 #endif
@@ -250,9 +251,9 @@ data PGConnection = PGConnection
   , connPid :: !Word32 -- unused
   , connKey :: !Word32 -- unused
   , connTypeEnv :: PGTypeEnv
-  , connParameters :: IORef (Map.Map BS.ByteString BS.ByteString)
+  , connParameters :: IORef (Map.HashMap BS.ByteString BS.ByteString)
   , connPreparedStatementCount :: IORef Integer
-  , connPreparedStatementMap :: IORef (Map.Map (BS.ByteString, [OID]) PGPreparedStatement)
+  , connPreparedStatementMap :: IORef (Map.HashMap (BS.ByteString, V.Vector OID) PGPreparedStatement)
   , connState :: IORef PGState
   , connInput :: IORef (G.Decoder PGBackendMessage)
   , connTransaction :: IORef Word
@@ -268,9 +269,9 @@ data PGColDescription = PGColDescription
   , pgColModifier :: !Int32
   , pgColBinary :: !Bool
   } deriving (Show)
-type PGRowDescription = [PGColDescription]
+type PGRowDescription = V.Vector PGColDescription
 
-type MessageFields = Map.Map Char BS.ByteString
+type MessageFields = Map.HashMap Char BS.ByteString
 
 data PGNotification = PGNotification
   { pgNotificationPid :: !Word32
@@ -297,7 +298,7 @@ deQueue q = (q, Nothing)
 data PGFrontendMessage
   = StartupMessage [(BS.ByteString, BS.ByteString)] -- only sent first
   | CancelRequest !Word32 !Word32 -- sent first on separate connection
-  | Bind { portalName :: BS.ByteString, statementName :: BS.ByteString, bindParameters :: PGValues, binaryColumns :: [Bool] }
+  | Bind { portalName :: BS.ByteString, statementName :: BS.ByteString, bindParameters :: PGValues, binaryColumns :: V.Vector Bool }
   | CloseStatement { statementName :: BS.ByteString }
   | ClosePortal { portalName :: BS.ByteString }
   -- |Describe a SQL query/statement. The SQL string can contain
@@ -307,7 +308,7 @@ data PGFrontendMessage
   | Execute { portalName :: BS.ByteString, executeRows :: !Word32 }
   | Flush
   -- |Parse SQL Destination (prepared statement)
-  | Parse { statementName :: BS.ByteString, queryString :: BSL.ByteString, parseTypes :: [OID] }
+  | Parse { statementName :: BS.ByteString, queryString :: BSL.ByteString, parseTypes :: V.Vector OID }
   | PasswordMessage BS.ByteString
   -- |SimpleQuery takes a simple SQL string. Parameters ($1, $2,
   --  etc.) aren't allowed.
@@ -341,7 +342,7 @@ data PGBackendMessage
   --  query/statement parameter ($1, $2, etc.). Unfortunately,
   --  PostgreSQL does not give us nullability information for the
   --  parameter.
-  | ParameterDescription [OID]
+  | ParameterDescription (V.Vector OID)
   | ParameterStatus BS.ByteString BS.ByteString
   | ParseComplete
   | PortalSuspended
@@ -368,15 +369,15 @@ displayMessage m = "PG" ++ f 'S' ++ (if null fC then ": " else " [" ++ fC ++ "]:
   where
   fC = f 'C'
   fD = f 'D'
-  f c = BSC.unpack $ Map.findWithDefault BS.empty c m
+  f c = BSC.unpack $ Map.lookupDefault BS.empty c m
 
 makeMessage :: BS.ByteString -> BS.ByteString -> MessageFields
-makeMessage m d = Map.fromAscList [('D', d), ('M', m)]
+makeMessage m d = Map.fromList [('D', d), ('M', m)]
 
 -- |Message SQLState code.
 --  See <http://www.postgresql.org/docs/current/static/errcodes-appendix.html>.
 pgErrorCode :: PGError -> BS.ByteString
-pgErrorCode (PGError e) = Map.findWithDefault BS.empty 'C' e
+pgErrorCode (PGError e) = Map.lookupDefault BS.empty 'C' e
 
 defaultLogMessage :: MessageFields -> IO ()
 defaultLogMessage = hPutStrLn stderr . displayMessage
@@ -504,10 +505,10 @@ getMessageBody 'R' = auth =<< G.getWord32be where
   auth op = fail $ "pgGetMessage: unsupported authentication type: " ++ show op
 getMessageBody 't' = do
   numParams <- G.getWord16be
-  ParameterDescription <$> replicateM (fromIntegral numParams) G.getWord32be
+  ParameterDescription <$> V.replicateM (fromIntegral numParams) G.getWord32be
 getMessageBody 'T' = do
   numFields <- G.getWord16be
-  RowDescription <$> replicateM (fromIntegral numFields) getField where
+  RowDescription <$> V.replicateM (fromIntegral numFields) getField where
   getField = do
     name <- getByteStringNul
     oid <- G.getWord32be -- table OID
@@ -537,7 +538,7 @@ getMessageBody 'C' = CommandComplete <$> getByteStringNul
 getMessageBody 'S' = liftM2 ParameterStatus getByteStringNul getByteStringNul
 getMessageBody 'D' = do 
   numFields <- G.getWord16be
-  DataRow <$> replicateM (fromIntegral numFields) (getField =<< G.getWord32be) where
+  DataRow <$> V.replicateM (fromIntegral numFields) (getField =<< G.getWord32be) where
   getField 0xFFFFFFFF = return PGNullValue
   getField len = PGTextValue <$> G.getByteString (fromIntegral len)
   -- could be binary, too, but we don't know here, so have to choose one
@@ -828,7 +829,7 @@ pgSync c@PGConnection{ connState = sr } = do
     
 rowDescription :: PGBackendMessage -> PGRowDescription
 rowDescription (RowDescription d) = d
-rowDescription NoData = []
+rowDescription NoData = V.empty
 rowDescription m = error $ "describe: unexpected response: " ++ show m
 
 -- |Describe a SQL statement/query. A statement description consists of 0 or
@@ -836,9 +837,9 @@ rowDescription m = error $ "describe: unexpected response: " ++ show m
 -- field descriptions (for queries) (consist of the name of the field, the
 -- type of the field, and a nullability indicator).
 pgDescribe :: PGConnection -> BSL.ByteString -- ^ SQL string
-                  -> [OID] -- ^ Optional type specifications
+                  -> V.Vector OID -- ^ Optional type specifications
                   -> Bool -- ^ Guess nullability, otherwise assume everything is
-                  -> IO ([OID], [(BS.ByteString, OID, Bool)]) -- ^ a list of parameter types, and a list of result field names, types, and nullability indicators.
+                  -> IO (V.Vector OID, V.Vector (BS.ByteString, OID, Bool)) -- ^ a list of parameter types, and a list of result field names, types, and nullability indicators.
 pgDescribe h sql types nulls = do
   pgSync h
   pgSend h Parse{ queryString = sql, statementName = BS.empty, parseTypes = types }
@@ -859,9 +860,10 @@ pgDescribe h sql types nulls = do
     | nulls && oid /= 0 = do
       -- In cases where the resulting field is tracable to the column of a
       -- table, we can check there.
-      (_, r) <- pgPreparedQuery h "SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = $1 AND attnum = $2" [26, 21] [pgEncodeRep (oid :: OID), pgEncodeRep (col :: Int16)] []
+      (_, r) <- pgPreparedQuery h "SELECT attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = $1 AND attnum = $2"
+        (V.fromListN 2 [26, 21]) (V.fromListN 2 [pgEncodeRep (oid :: OID), pgEncodeRep (col :: Int16)]) V.empty
       case r of
-        [[s]] -> return $ not $ pgDecodeRep s
+        [s] -> return $ not $ pgDecodeRep $ V.head s
         [] -> return True
         _ -> fail $ "Failed to determine nullability of column #" ++ show col
     | otherwise = return True
@@ -872,11 +874,12 @@ rowsAffected = ra . BSC.words where
   ra l = fromMaybe (-1) $ readMaybe $ BSC.unpack $ last l
 
 -- Do we need to use the PGColDescription here always, or are the request formats okay?
-fixBinary :: [Bool] -> PGValues -> PGValues
-fixBinary (False:b) (PGBinaryValue x:r) = PGTextValue x : fixBinary b r
-fixBinary (True :b) (PGTextValue x:r) = PGBinaryValue x : fixBinary b r
-fixBinary (_:b) (x:r) = x : fixBinary b r
-fixBinary _ l = l
+fixBinary :: V.Vector Bool -> PGValues -> PGValues
+fixBinary b v = V.zipWith fb b vb <> vr where
+  (vb, vr) = V.splitAt (V.length b) v
+  fb False (PGBinaryValue x) = PGTextValue x
+  fb True (PGTextValue x) = PGBinaryValue x
+  fb _ x = x
 
 -- |A simple query is one which requires sending only a single 'SimpleQuery'
 -- message to the PostgreSQL server. The query is sent as a single string; you
@@ -890,7 +893,7 @@ pgSimpleQuery h sql = do
   pgFlush h
   go start where 
   go = (pgRecv h >>=)
-  start (RowDescription rd) = go $ row (map pgColBinary rd) id
+  start (RowDescription rd) = go $ row (pgColBinary <$> rd) id
   start (CommandComplete c) = got c []
   start EmptyQueryResponse = return (0, [])
   start m = fail $ "pgSimpleQuery: unexpected response: " ++ show m
@@ -916,7 +919,7 @@ pgSimpleQueries_ h sql = do
   res (Right RecvSync) = return ()
   res m = fail $ "pgSimpleQueries_: unexpected response: " ++ show m
 
-pgPreparedBind :: PGConnection -> BS.ByteString -> [OID] -> PGValues -> [Bool] -> IO (IO ())
+pgPreparedBind :: PGConnection -> BS.ByteString -> V.Vector OID -> PGValues -> V.Vector Bool -> IO (IO ())
 pgPreparedBind c sql types bind bc = do
   pgSync c
   m <- readIORef (connPreparedStatementMap c)
@@ -940,9 +943,9 @@ pgPreparedBind c sql types bind bc = do
 -- |Prepare a statement, bind it, and execute it.
 -- If the given statement has already been prepared (and not yet closed) on this connection, it will be re-used.
 pgPreparedQuery :: PGConnection -> BS.ByteString -- ^ SQL statement with placeholders
-  -> [OID] -- ^ Optional type specifications (only used for first call)
+  -> V.Vector OID -- ^ Optional type specifications (only used for first call)
   -> PGValues -- ^ Paremeters to bind to placeholders
-  -> [Bool] -- ^ Requested binary format for result columns
+  -> V.Vector Bool -- ^ Requested binary format for result columns
   -> IO (Int, [PGValues])
 pgPreparedQuery c sql types bind bc = do
   start <- pgPreparedBind c sql types bind bc
@@ -960,7 +963,7 @@ pgPreparedQuery c sql types bind bc = do
 
 -- |Like 'pgPreparedQuery' but requests results lazily in chunks of the given size.
 -- Does not use a named portal, so other requests may not intervene.
-pgPreparedLazyQuery :: PGConnection -> BS.ByteString -> [OID] -> PGValues -> [Bool] -> Word32 -- ^ Chunk size (1 is common, 0 is all-at-once)
+pgPreparedLazyQuery :: PGConnection -> BS.ByteString -> V.Vector OID -> PGValues -> V.Vector Bool -> Word32 -- ^ Chunk size (1 is common, 0 is all-at-once)
   -> IO [PGValues]
 pgPreparedLazyQuery c sql types bind bc count = do
   start <- pgPreparedBind c sql types bind bc
@@ -981,10 +984,11 @@ pgPreparedLazyQuery c sql types bind bc count = do
   row _ m = fail $ "pgPreparedLazyQuery: unexpected row: " ++ show m
 
 -- |Close a previously prepared query (if necessary).
-pgCloseStatement :: PGConnection -> BS.ByteString -> [OID] -> IO ()
+pgCloseStatement :: PGConnection -> BS.ByteString -> V.Vector OID -> IO ()
 pgCloseStatement c sql types = do
+  let st = (sql, types)
   mn <- atomicModifyIORef (connPreparedStatementMap c) $
-    swap . Map.updateLookupWithKey (\_ _ -> Nothing) (sql, types)
+    Map.delete st &&& Map.lookup st
   Fold.mapM_ (pgClose c) mn
 
 -- |Begin a new transaction. If there is already a transaction in progress (created with 'pgBegin' or 'pgTransaction') instead creates a savepoint.
@@ -1032,11 +1036,11 @@ pgTransaction c f = do
     (pgRollback c)
 
 -- |Prepare, bind, execute, and close a single (unnamed) query, and return the number of rows affected, or Nothing if there are (ignored) result rows.
-pgRun :: PGConnection -> BSL.ByteString -> [OID] -> PGValues -> IO (Maybe Integer)
+pgRun :: PGConnection -> BSL.ByteString -> V.Vector OID -> PGValues -> IO (Maybe Integer)
 pgRun c sql types bind = do
   pgSync c
   pgSend c Parse{ queryString = sql, statementName = BS.empty, parseTypes = types }
-  pgSend c Bind{ portalName = BS.empty, statementName = BS.empty, bindParameters = bind, binaryColumns = [] }
+  pgSend c Bind{ portalName = BS.empty, statementName = BS.empty, bindParameters = bind, binaryColumns = V.empty }
   pgSend c Execute{ portalName = BS.empty, executeRows = 1 } -- 0 does not mean none
   pgSend c Sync
   pgFlush c
@@ -1051,7 +1055,7 @@ pgRun c sql types bind = do
   res m = fail $ "pgRun: unexpected response: " ++ show m
 
 -- |Prepare a single query and return its handle.
-pgPrepare :: PGConnection -> BSL.ByteString -> [OID] -> IO PGPreparedStatement
+pgPrepare :: PGConnection -> BSL.ByteString -> V.Vector OID -> IO PGPreparedStatement
 pgPrepare c sql types = do
   n <- atomicModifyIORef' (connPreparedStatementCount c) (succ &&& PGPreparedStatement)
   pgSync c
@@ -1079,7 +1083,7 @@ pgBind :: PGConnection -> PGPreparedStatement -> PGValues -> IO PGRowDescription
 pgBind c n bind = do
   pgSync c
   pgSend c ClosePortal{ portalName = sn }
-  pgSend c Bind{ portalName = sn, statementName = sn, bindParameters = bind, binaryColumns = [] }
+  pgSend c Bind{ portalName = sn, statementName = sn, bindParameters = bind, binaryColumns = V.empty }
   pgSend c DescribePortal{ portalName = sn }
   pgSend c Sync
   pgFlush c

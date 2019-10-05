@@ -22,6 +22,7 @@ import           Data.Ix (Ix)
 import           Data.Maybe (fromJust, fromMaybe)
 import           Data.Tuple (swap)
 import           Data.Typeable (Typeable)
+import qualified Data.Vector as V
 import qualified Language.Haskell.TH as TH
 
 import Database.PostgreSQL.Typed.Types
@@ -61,7 +62,7 @@ dataPGEnum :: String -- ^ Haskell type to create
   -> TH.DecsQ
 dataPGEnum typs pgenum valnf = do
   (pgid, vals) <- TH.runIO $ withTPGTypeConnection $ \tpg -> do
-    vals <- map (\([eo, v]) -> (pgDecodeRep eo, pgDecodeRep v)) . snd
+    vals <- map (\r -> (pgDecodeRep (r V.! 0), pgDecodeRep (r V.! 1))) . snd
       <$> pgSimpleQuery (pgConnection tpg) (BSL.fromChunks
         [ "SELECT enumtypid, enumlabel"
         ,  " FROM pg_catalog.pg_enum"

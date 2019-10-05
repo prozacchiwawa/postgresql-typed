@@ -19,26 +19,27 @@ module Database.PostgreSQL.Typed.HDBC
   , setFetchSize
   ) where
 
-import Control.Arrow ((&&&))
-import Control.Concurrent.MVar (MVar, newMVar, withMVar)
-import Control.Exception (handle, throwIO)
-import Control.Monad (void, guard)
+import           Control.Arrow ((&&&))
+import           Control.Concurrent.MVar (MVar, newMVar, withMVar)
+import           Control.Exception (handle, throwIO)
+import           Control.Monad (void, guard)
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy.Char8 as BSLC
-import Data.IORef (newIORef, readIORef, writeIORef, modifyIORef')
-import Data.Int (Int16)
+import           Data.IORef (newIORef, readIORef, writeIORef, modifyIORef')
+import           Data.Int (Int16)
 import qualified Data.IntMap.Lazy as IntMap
-import Data.List (uncons)
-import qualified Data.Map.Lazy as Map
-import Data.Maybe (fromMaybe, isNothing)
-import Data.Time.Clock (DiffTime)
-import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
-import Data.Time.LocalTime (zonedTimeToUTC)
-import Data.Word (Word32)
+import           Data.List (uncons)
+import qualified Data.HashMap.Strict as Map
+import           Data.Maybe (fromMaybe, isNothing)
+import           Data.Time.Clock (DiffTime)
+import           Data.Time.Clock.POSIX (posixSecondsToUTCTime)
+import           Data.Time.LocalTime (zonedTimeToUTC)
+import qualified Data.Vector as V
+import           Data.Word (Word32)
 import qualified Database.HDBC.Types as HDBC
 import qualified Database.HDBC.ColTypes as HDBC
-import System.Mem.Weak (addFinalizer)
-import Text.Read (readMaybe)
+import           System.Mem.Weak (addFinalizer)
+import           Text.Read (readMaybe)
 
 import Database.PostgreSQL.Typed.Types
 import Database.PostgreSQL.Typed.Protocol
@@ -63,7 +64,7 @@ data Connection = Connection
 
 sqlError :: IO a -> IO a
 sqlError = handle $ \(PGError m) -> 
-  let f c = BSC.unpack $ Map.findWithDefault BSC.empty c m
+  let f c = BSC.unpack $ Map.lookupDefault BSC.empty c m
       fC = f 'C'
       fD = f 'D' in
   throwIO HDBC.SqlError 
@@ -128,14 +129,14 @@ data ColDesc = ColDesc
   }
 
 data Cursor = Cursor
-  { cursorDesc :: [ColDesc]
+  { cursorDesc :: V.Vector ColDesc
   , cursorRow :: [PGValues]
   , cursorActive :: Bool
   , _cursorStatement :: HDBC.Statement -- keep a handle to prevent GC
   }
 
 noCursor :: HDBC.Statement -> Cursor
-noCursor = Cursor [] [] False
+noCursor = Cursor V.empty [] False
 
 getType :: Connection -> PGConnection -> Maybe Bool -> PGColDescription -> ColDesc
 getType c pg nul PGColDescription{..} = ColDesc
@@ -163,18 +164,18 @@ instance HDBC.IConnection Connection where
     pgSimpleQueries_ pg $ sqls q
   run c q v = withPGConnection c $ \pg -> do
     let q' = sqls $ show $ placeholders 1 $ sqlTokens q
-        v' = map encode v
-    fromMaybe 0 <$> pgRun pg q' [] v'
+        v' = V.fromList $ map encode v
+    fromMaybe 0 <$> pgRun pg q' V.empty v'
   prepare c q = do
     let q' = sqls $ show $ placeholders 1 $ sqlTokens q
-    n <- withPGConnection c $ \pg -> pgPrepare pg q' []
+    n <- withPGConnection c $ \pg -> pgPrepare pg q' V.empty
     cr <- newIORef $ error "Cursor"
     let
       execute v = withPGConnection c $ \pg -> do
-        d <- pgBind pg n (map encode v)
+        d <- pgBind pg n (V.fromList $ map encode v)
         (r, e) <- pgFetch pg n (connectionFetchSize c)
         modifyIORef' cr $ \p -> p
-          { cursorDesc = map (getType c pg Nothing) d
+          { cursorDesc = getType c pg Nothing <$> d
           , cursorRow = r
           , cursorActive = isNothing e
           }
@@ -188,7 +189,7 @@ instance HDBC.IConnection Connection where
           pgClose pg n
         , HDBC.fetchRow = withPGConnection c $ \pg -> do
           p <- readIORef cr
-          fmap (zipWith colDescDecode (cursorDesc p)) <$> case cursorRow p of
+          fmap (V.toList . V.zipWith colDescDecode (cursorDesc p)) <$> case cursorRow p of
             [] | cursorActive p -> do
                 (rl, e) <- pgFetch pg n (connectionFetchSize c)
                 let rl' = uncons rl
@@ -203,10 +204,10 @@ instance HDBC.IConnection Connection where
               writeIORef cr p{ cursorRow = l }
               return $ Just r
         , HDBC.getColumnNames =
-          map colDescName . cursorDesc <$> readIORef cr
+          map colDescName . V.toList . cursorDesc <$> readIORef cr
         , HDBC.originalQuery = q
         , HDBC.describeResult =
-          map (colDescName &&& colDesc) . cursorDesc <$> readIORef cr
+          map (colDescName &&& colDesc) . V.toList . cursorDesc <$> readIORef cr
         }
     writeIORef cr $ noCursor stmt
     addFinalizer stmt $ withPGConnection c $ \pg -> pgClose pg n
@@ -222,7 +223,7 @@ instance HDBC.IConnection Connection where
   dbServerVer = connectionServerVer
   dbTransactionSupport _ = True
   getTables c = withPGConnection c $ \pg ->
-    map (pgDecodeRep . head) . snd <$> pgSimpleQuery pg (BSLC.fromChunks
+    map (pgDecodeRep . V.head) . snd <$> pgSimpleQuery pg (BSLC.fromChunks
       [ "SELECT relname"
       ,  " FROM pg_catalog.pg_class"
       ,  " JOIN pg_catalog.pg_namespace ON relnamespace = pg_namespace.oid"
@@ -230,14 +231,14 @@ instance HDBC.IConnection Connection where
       ,   " AND relkind IN ('r','v','m','f')"
       ])
   describeTable c t = withPGConnection c $ \pg ->
-    map (\[attname, attrelid, attnum, atttypid, attlen, atttypmod, attnotnull] ->
-      colDescName &&& colDesc $ getType c pg (Just $ not $ pgDecodeRep attnotnull) PGColDescription
-        { pgColName = pgDecodeRep attname
-        , pgColTable = pgDecodeRep attrelid
-        , pgColNumber = pgDecodeRep attnum
-        , pgColType = pgDecodeRep atttypid
-        , pgColSize = pgDecodeRep attlen
-        , pgColModifier = pgDecodeRep atttypmod
+    map (\r ->
+      colDescName &&& colDesc $ getType c pg (Just $ not $ pgDecodeRep $ r V.! 6) PGColDescription
+        { pgColName = pgDecodeRep (r V.! 0)
+        , pgColTable = pgDecodeRep (r V.! 1)
+        , pgColNumber = pgDecodeRep (r V.! 2)
+        , pgColType = pgDecodeRep (r V.! 3)
+        , pgColSize = pgDecodeRep (r V.! 4)
+        , pgColModifier = pgDecodeRep (r V.! 5)
         , pgColBinary = False
         })
       . snd <$> pgSimpleQuery pg (BSLC.fromChunks

@@ -52,6 +52,7 @@ class PGQuery q a | q -> a where
   --
   -- > [pgSQL|SELECT a FROM t|] `unsafeModifyQuery` (<> (" WHERE a = " <> pgSafeLiteral x))
   unsafeModifyQuery :: q -> (BS.ByteString -> BS.ByteString) -> q
+  getQueryString :: PGConnection -> q -> BS.ByteString
 class PGQuery q PGValues => PGRawQuery q
 
 -- |Execute a query that does not return results.
@@ -66,12 +67,14 @@ pgQuery c q = snd <$> pgRunQuery c q
 instance PGQuery BS.ByteString PGValues where
   pgRunQuery c sql = pgSimpleQuery c (BSL.fromStrict sql)
   unsafeModifyQuery q f = f q
+  getQueryString _ = id
 
 newtype SimpleQuery = SimpleQuery BS.ByteString
   deriving (Show)
 instance PGQuery SimpleQuery PGValues where
   pgRunQuery c (SimpleQuery sql) = pgSimpleQuery c (BSL.fromStrict sql)
   unsafeModifyQuery (SimpleQuery sql) f = SimpleQuery $ f sql
+  getQueryString _ (SimpleQuery q) = q
 instance PGRawQuery SimpleQuery
 
 data PreparedQuery = PreparedQuery BS.ByteString [OID] PGValues [Bool]
@@ -79,6 +82,7 @@ data PreparedQuery = PreparedQuery BS.ByteString [OID] PGValues [Bool]
 instance PGQuery PreparedQuery PGValues where
   pgRunQuery c (PreparedQuery sql types bind bc) = pgPreparedQuery c sql types bind bc
   unsafeModifyQuery (PreparedQuery sql types bind bc) f = PreparedQuery (f sql) types bind bc
+  getQueryString _ (PreparedQuery q _ _ _) = q
 instance PGRawQuery PreparedQuery
 
 
@@ -86,6 +90,7 @@ data QueryParser q a = QueryParser (PGTypeEnv -> q) (PGTypeEnv -> PGValues -> a)
 instance PGRawQuery q => PGQuery (QueryParser q a) a where
   pgRunQuery c (QueryParser q p) = second (fmap $ p e) <$> pgRunQuery c (q e) where e = pgTypeEnv c
   unsafeModifyQuery (QueryParser q p) f = QueryParser (\e -> unsafeModifyQuery (q e) f) p
+  getQueryString c (QueryParser q _) = getQueryString c $ q $ pgTypeEnv c
 
 instance Functor (QueryParser q) where
   fmap f (QueryParser q p) = QueryParser q (\e -> f . p e)

@@ -137,7 +137,7 @@ main = do
     $ selectProp c
     Q..&&. tokenProp
     Q..&&. [pgSQL|#abc ${3.14::Float} def $f$ $$ ${1} $f$${2::Int32}|] Q.=== "abc 3.14::real def $f$ $$ ${1} $f$2::integer"
-    Q..&&. getQueryString c ([pgSQL|SELECT ${"ab'cd"::String}::text, ${3.14::Float}::float4|] :: PGSimpleQuery (Maybe String, Maybe Float)) Q.=== "SELECT 'ab''cd'::text, 3.14::float4"
+    Q..&&. getQueryString (pgTypeEnv c) ([pgSQL|SELECT ${"ab'cd"::String}::text, ${3.14::Float}::float4|] :: PGSimpleQuery (Maybe String, Maybe Float)) Q.=== "SELECT 'ab''cd'::text, 3.14::float4"
     Q..&&. pgEnumValues Q.=== [(MyEnum_abc, "abc"), (MyEnum_DEF, "DEF"), (MyEnum_XX_ye, "XX_ye")]
     Q..&&. Q.conjoin (map (\(s, t) -> sqlTokens s Q.=== t)
       [ ("",

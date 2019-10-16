@@ -52,7 +52,7 @@ class PGQuery q a | q -> a where
   --
   -- > [pgSQL|SELECT a FROM t|] `unsafeModifyQuery` (<> (" WHERE a = " <> pgSafeLiteral x))
   unsafeModifyQuery :: q -> (BS.ByteString -> BS.ByteString) -> q
-  getQueryString :: PGConnection -> q -> BS.ByteString
+  getQueryString :: PGTypeEnv -> q -> BS.ByteString
 class PGQuery q PGValues => PGRawQuery q
 
 -- |Execute a query that does not return results.
@@ -90,7 +90,7 @@ data QueryParser q a = QueryParser (PGTypeEnv -> q) (PGTypeEnv -> PGValues -> a)
 instance PGRawQuery q => PGQuery (QueryParser q a) a where
   pgRunQuery c (QueryParser q p) = second (fmap $ p e) <$> pgRunQuery c (q e) where e = pgTypeEnv c
   unsafeModifyQuery (QueryParser q p) f = QueryParser (\e -> unsafeModifyQuery (q e) f) p
-  getQueryString c (QueryParser q _) = getQueryString c $ q $ pgTypeEnv c
+  getQueryString e (QueryParser q _) = getQueryString e $ q e
 
 instance Functor (QueryParser q) where
   fmap f (QueryParser q p) = QueryParser q (\e -> f . p e)

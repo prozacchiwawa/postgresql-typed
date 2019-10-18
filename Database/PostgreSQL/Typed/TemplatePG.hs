@@ -21,7 +21,7 @@ module Database.PostgreSQL.Typed.TemplatePG
   , rollback
   , PGException
   , pgConnect
-#if !MIN_VERSION_network(3,0,0)
+#if !MIN_VERSION_network(2,7,0)
   , PortID(..)
 #endif
   , PG.pgDisconnect
@@ -34,12 +34,14 @@ import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy.Char8 as BSLC
 import           Data.Maybe (listToMaybe, isJust)
 import qualified Language.Haskell.TH as TH
-#if MIN_VERSION_network(3,0,0)
+#if MIN_VERSION_network(2,7,0)
 import           Data.Word (Word16)
 #else
 import           Network (PortID(..))
 #endif
+#if !defined(mingw32_HOST_OS)
 import qualified Network.Socket as Net
+#endif
 import           System.Environment (lookupEnv)
 
 import qualified Database.PostgreSQL.Typed.Protocol as PG
@@ -99,9 +101,14 @@ insertIgnore q = catchJust uniquenessError q (\ _ -> return ()) where
 
 type PGException = PG.PGError
 
-#if MIN_VERSION_network(3,0,0)
+#if MIN_VERSION_network(2,7,0)
 -- |For backwards compatibility with old network package.
-data PortID = Service String | PortNumber Word16 | UnixSocket String
+data PortID
+  = Service String
+  | PortNumber Word16
+#if !defined(mingw32_HOST_OS)
+  | UnixSocket String
+#endif
 #endif
 
 pgConnect :: String     -- ^ the host to connect to
@@ -116,7 +123,9 @@ pgConnect h n d u p = do
     { PG.pgDBAddr = case n of
         PortNumber s -> Left (h, show s)
         Service    s -> Left (h, s)
+#if !defined(mingw32_HOST_OS)
         UnixSocket s -> Right (Net.SockAddrUnix s)
+#endif
     , PG.pgDBName = d
     , PG.pgDBUser = u
     , PG.pgDBPass = p

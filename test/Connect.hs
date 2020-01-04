@@ -24,7 +24,7 @@ db = unsafePerformIO $ do
   mPort <- lookupEnv "PGPORT"
   pgDBAddr <- case mPort of
     Nothing ->
-#ifndef mingw32_HOST_OS
+#if !defined(mingw32_HOST_OS) && !defined(ETA_VERSION)
       Right . SockAddrUnix . fromMaybe "/tmp/.s.PGSQL.5432" <$> lookupEnv "PGSOCK"
 #else
       pure $ pgDBAddr defaultPGDatabase

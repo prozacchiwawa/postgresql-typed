@@ -122,25 +122,25 @@ test-suite test
   if flag(tls)
     Build-Depends: tls
 
-test-suite hdbc
-  type: exitcode-stdio-1.0
-  hs-source-dirs: test/hdbc, test
-  main-is: runtests.hs
-  other-modules:
-    Connect
-    SpecificDB
-    TestMisc
-    TestSbasics
-    TestTime
-    TestUtils
-    Testbasics
-    Tests
-  if flag(HDBC)
-    build-depends: base, bytestring, network, time, containers, convertible, postgresql-typed, HDBC, HUnit
-  else
-    buildable: False
-  if flag(tls)
-    Build-Depends: tls
+-- test-suite hdbc
+--   type: exitcode-stdio-1.0
+--   hs-source-dirs: test/hdbc, test
+--   main-is: runtests.hs
+--   other-modules:
+--     Connect
+--     SpecificDB
+--     TestMisc
+--     TestSbasics
+--     TestTime
+--     TestUtils
+--     Testbasics
+--     Tests
+--   if flag(HDBC)
+--     build-depends: base, bytestring, network, time, containers, convertible, postgresql-typed, HDBC, HUnit
+--   else
+--     buildable: False
+--   if flag(tls)
+--     Build-Depends: tls
 
 benchmark bench
   type: exitcode-stdio-1.0

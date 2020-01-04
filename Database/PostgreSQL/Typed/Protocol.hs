@@ -110,6 +110,7 @@ import           Data.X509.Memory (readSignedObjectFromMemory)
 import           Data.X509.CertificateStore (makeCertificateStore)
 import qualified Data.X509.Validation
 #endif
+import           Debug.Trace
 #ifndef mingw32_HOST_OS
 import           Foreign.C.Error (eWOULDBLOCK, getErrno, errnoToIOError)
 import           Foreign.C.Types (CChar(..), CInt(..), CSize(..))
@@ -398,7 +399,7 @@ defaultPGDatabase = PGDatabase
   }
 
 connDebugMsg :: PGConnection -> String -> IO ()
-connDebugMsg c msg = when (pgDBDebug $ connDatabase c) $ do
+connDebugMsg c msg = do -- when (pgDBDebug $ connDatabase c) $ do
   t <- getCurrentTime
   hPutStrLn stderr $ show t ++ msg
 
@@ -558,7 +559,7 @@ getMessage :: G.Decoder PGBackendMessage
 getMessage = G.runGetIncremental $ do
   typ <- G.getWord8
   len <- G.getWord32be
-  G.isolate (fromIntegral len - 4) $ getMessageBody (w2c typ)
+  G.isolate (fromIntegral (trace ("len " ++ show len) len) - 4) $ getMessageBody (w2c $ trace ("typ " ++ show typ) typ)
 
 class Show m => RecvMsg m where
   -- |Read from connection, returning immediate value or non-empty data
@@ -592,7 +593,7 @@ class Show m => RecvMsg m where
 -- |Process all pending messages
 data RecvNonBlock = RecvNonBlock deriving (Show)
 instance RecvMsg RecvNonBlock where
-#ifndef mingw32_HOST_OS
+#if !defined(mingw32_HOST_OS) && !defined(ETA_VERSION)
   recvMsgData PGConnection{connHandle=PGSocket s} = do
     r <- recvNonBlock s smallChunkSize
     if BS.null r
@@ -907,6 +908,8 @@ pgSimpleQueries_ h sql = do
   pgSync h
   pgSend h $ SimpleQuery sql
   pgFlush h
+  msg <- pgRecv h
+  firstLevel msg
   go where
   go = pgRecv h >>= res
   res (Left (RowDescription _)) = go
@@ -915,6 +918,8 @@ pgSimpleQueries_ h sql = do
   res (Left (DataRow _)) = go
   res (Right RecvSync) = return ()
   res m = fail $ "pgSimpleQueries_: unexpected response: " ++ show m
+  firstLevel ParseComplete = go
+  firstLevel (CommandComplete d) = return ()
 
 pgPreparedBind :: PGConnection -> BS.ByteString -> [OID] -> PGValues -> [Bool] -> IO (IO ())
 pgPreparedBind c sql types bind bc = do
@@ -1040,6 +1045,8 @@ pgRun c sql types bind = do
   pgSend c Execute{ portalName = BS.empty, executeRows = 1 } -- 0 does not mean none
   pgSend c Sync
   pgFlush c
+  msg <- pgRecv c
+  res msg
   go where
   go = pgRecv c >>= res
   res ParseComplete = go
@@ -1058,7 +1065,10 @@ pgPrepare c sql types = do
   pgSend c Parse{ queryString = sql, statementName = preparedStatementName n, parseTypes = types }
   pgSend c Sync
   pgFlush c
-  ParseComplete <- pgRecv c
+  res <- pgRecv c
+  case res of
+    ParseComplete -> pure ()
+    (CommandComplete d) -> pure ()
   return n
 
 -- |Close a previously prepared query.
@@ -1125,9 +1135,8 @@ pgGetNotifications c = do
   queueToList :: Queue a -> [a]
   queueToList (Queue e d) = d ++ reverse e
 
-
 --TODO: Implement non-blocking recv on mingw32
-#ifndef mingw32_HOST_OS
+#if !defined(mingw32_HOST_OS) && !defined(ETA_VERSION)
 recvNonBlock
   :: Net.Socket        -- ^ Connected socket
   -> Int               -- ^ Maximum number of bytes to receive

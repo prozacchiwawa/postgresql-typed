@@ -102,16 +102,17 @@ prepared c t = pgQuery c . [pgSQL|?$SELECT typname FROM pg_catalog.pg_type WHERE
 preparedApply :: PGConnection -> Int32 -> IO [String]
 preparedApply c = pgQuery c . [pgSQL|$(integer)SELECT typname FROM pg_catalog.pg_type WHERE oid = $1|]
 
-selectProp :: PGConnection -> Bool -> Word8 -> Int32 -> Float -> Time.LocalTime -> Time.UTCTime -> Time.Day -> Time.DiffTime -> Str -> [Maybe Str] -> Range.Range Int32 -> MyEnum -> PGInet -> Q.Property
-selectProp pgc b c i f t z d p s l r e a = Q.ioProperty $ do
-  [(Just b', Just c', Just i', Just f', Just s', Just d', Just t', Just z', Just p', Just l', Just r', Just e', Just a')] <- pgQuery pgc
-    [pgSQL|$SELECT ${b}::bool, ${c}::"char", ${Just i}::int, ${f}::float4, ${strString s}::varchar, ${Just d}::date, ${t}::timestamp, ${z}::timestamptz, ${p}::interval, ${map (fmap strByte) l}::text[], ${r}::int4range, ${e}::myenum, ${a}::inet|]
+selectProp :: PGConnection -> Bool -> Word8 -> Int32 -> {- Float -> -} Time.LocalTime -> Time.UTCTime -> Time.Day -> Time.DiffTime -> Str -> [Maybe Str] -> Range.Range Int32 -> MyEnum -> {- PGInet -> -} Q.Property
+selectProp pgc b c i {- f -} t z d p s l r e {- a -} = Q.ioProperty $ do
+  [(Just b', Just c', Just i', {- Just f', -} Just s', Just d', Just t', Just z', Just p', Just l', Just r', Just e'{- , Just a' -})] <- pgQuery pgc
+    [pgSQL|$SELECT ${b}::bool, ${c}::"char", ${Just i}::int, ${strString s}::varchar, ${Just d}::date, ${t}::timestamp, ${z}::timestamptz, ${p}::interval, ${map (fmap strByte) l}::text[], ${r}::int4range, ${e}::myenum|]
+--    [pgSQL|$SELECT ${b}::bool, ${c}::"char", ${Just i}::int, ${strString s}::varchar, ${Just d}::date, ${t}::timestamp, ${z}::timestamptz, ${p}::interval, ${map (fmap strByte) l}::text[], ${r}::int4range, ${e}::myenum, ${a}::inet|]
   return $ Q.conjoin 
     [ i Q.=== i'
     , c Q.=== c'
     , b Q.=== b'
     , strString s Q.=== s'
-    , f Q.=== f'
+{-    , f Q.=== f' -}
     , d Q.=== d'
     , t Q.=== t'
     , z Q.=== z'
@@ -119,7 +120,7 @@ selectProp pgc b c i f t z d p s l r e a = Q.ioProperty $ do
     , l Q.=== map (fmap byteStr) l'
     , Range.normalize' r Q.=== r'
     , e Q.=== e'
-    , a Q.=== a'
+{-    , a Q.=== a' -}
     ]
 
 tokenProp :: String -> Q.Property
